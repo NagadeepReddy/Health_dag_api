@@ -1,0 +1,14 @@
+<html><body>
+<h2>System Health</h2>
+<p>Status: {{ overall_status }}</p>
+<table border="1" cellpadding="5">
+<tr><th>Level</th><th>Name</th><th>ID</th><th>Status</th><th>Detail</th></tr>
+{% for n in nodes %}
+<tr>
+<td>{{n.level}}</td><td>{{n.name}}</td>
+<td>{{n.id}}</td><td>{{n.status}}</td>
+<td>{{n.detail}}</td>
+</tr>
+{% endfor %}
+</table>
+</body></html>

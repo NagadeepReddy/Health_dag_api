@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+httpx
+networkx
+matplotlib
+jinja2
+python-multipart

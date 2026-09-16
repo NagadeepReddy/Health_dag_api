@@ -1,0 +1,29 @@
+{
+  "nodes":[
+    {"id":"step1","name":"Step 1"},
+    {"id":"step2","name":"Step 2"},
+    {"id":"step3","name":"Step 3"},
+    {"id":"step4","name":"Step 4"},
+    {"id":"step5","name":"Step 5"},
+    {"id":"step6","name":"Step 6"},
+    {"id":"step7","name":"Step 7"},
+    {"id":"step8","name":"Step 8"},
+    {"id":"step9","name":"Step 9"},
+    {"id":"step10","name":"Step 10"},
+    {"id":"step11","name":"Step 11"}
+  ],
+  "edges":[
+    {"source":"step1","target":"step2"},
+    {"source":"step2","target":"step3"},
+    {"source":"step2","target":"step4"},
+    {"source":"step3","target":"step5"},
+    {"source":"step3","target":"step7"},
+    {"source":"step5","target":"step6"},
+    {"source":"step7","target":"step8"},
+    {"source":"step6","target":"step10"},
+    {"source":"step8","target":"step10"},
+    {"source":"step4","target":"step9"},
+    {"source":"step9","target":"step10"},
+    {"source":"step10","target":"step11"}
+  ]
+}

@@ -1,18 +1,23 @@
 python - <<'PY'
-p="artifacts/v1.168-max/cta_max/run_transformer_max.py"
+p="artifacts/v1.168-max/cta_max/parallel_transformer_block.py"
 
 with open(p) as f:
     s=f.read()
 
 s=s.replace(
-    "fn_attn_out_1_weight.npy",
-    "fn_attn_out_weight.npy"
+    'RMSNorm(256, dtype, name="sequence_transformer.ptransformer.0.norm1")',
+    'RMSNorm(256, dtype)'
+)
+
+s=s.replace(
+    'RMSNorm(2048, dtype, name="sequence_transformer.ptransformer.0.norm2")',
+    'RMSNorm(2048, dtype)'
 )
 
 with open(p,"w") as f:
     f.write(s)
 
-print("ATTN OUTPUT WEIGHT FILENAME FIXED")
+print("TRANSFORMER RMSNORM NAME FIXED")
 PY
 
 podman run --rm \

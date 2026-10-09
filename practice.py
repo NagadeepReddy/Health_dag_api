@@ -5,19 +5,21 @@ with open(p) as f:
     s=f.read()
 
 s=s.replace(
-    'RMSNorm(256, dtype, name="sequence_transformer.ptransformer.0.norm1")',
-    'RMSNorm(256, dtype)'
-)
-
-s=s.replace(
-    'RMSNorm(2048, dtype, name="sequence_transformer.ptransformer.0.norm2")',
-    'RMSNorm(2048, dtype)'
+'''q, k, v, ff = self.fused_attn_ff_proj(x_norm).split(
+            [512, 256, 256, 2048],
+            axis=-1,
+        )''',
+'''q, k, v, ff = ops.split(
+            self.fused_attn_ff_proj(x_norm),
+            [512, 256, 256, 2048],
+            axis=-1,
+        )'''
 )
 
 with open(p,"w") as f:
     f.write(s)
 
-print("TRANSFORMER RMSNORM NAME FIXED")
+print("MAX TENSOR SPLIT FIXED")
 PY
 
 podman run --rm \

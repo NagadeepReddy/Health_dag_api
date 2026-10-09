@@ -1,63 +1,63 @@
-python - <<'PY'
-p="artifacts/v1.168-max/cta_max/parallel_transformer_block.py"
+cat > artifacts/v1.168-max/cta_max/run_transformer_parity.py <<'PY'
+import sys
+import torch
+import numpy as np
 
-with open(p) as f:
-    s=f.read()
+# Original CTA implementation is the source of truth.
+sys.path.insert(0, "artifacts/v1.168/utils/dependency-utils")
+from models import ParallelTransformerBlock
 
-start=s.index("    def __call__(self, x: TensorValue):")
+CKPT = "artifacts/v1.168/core-artifact/model_0_base.pt"
+PREFIX = "sequence_transformer.ptransformer.0.fn."
 
-new='''    def __call__(
-        self,
-        x: TensorValue,
-        pos_emb: TensorValue,
-    ) -> TensorValue:
-        # CTA: norm -> fused Q/K/V/FF projection
-        x_norm = self.norm1(x)
-        q, k, v, ff = self.fused_attn_ff_proj(x_norm).split(
-            [512, 256, 256, 2048],
-            axis=-1,
-        )
+torch.manual_seed(1234)
 
-        # Verified CTA dimensions:
-        # Q = 2 heads x 256
-        # K/V = 1 head x 256 (broadcast over Q heads)
-        q = q.reshape([q.shape[0], q.shape[1], 2, 256]).permute([0, 2, 1, 3])
-        k = k.reshape([k.shape[0], k.shape[1], 1, 256]).permute([0, 2, 1, 3])
-        v = v.reshape([v.shape[0], v.shape[1], 1, 256]).permute([0, 2, 1, 3])
+# Exact block dimensions already verified from the real CTA model.
+pt = ParallelTransformerBlock(
+    dim=256,
+    dim_head=256,
+    heads=2,
+    ff_mult=4,
+)
+pt.eval()
 
-        # CTA rotary position embedding.
-        q = apply_rotary_pos_emb_max(pos_emb, q)
-        k = apply_rotary_pos_emb_max(pos_emb, k)
+state = torch.load(CKPT, map_location="cpu")
+block_state = {
+    k[len(PREFIX):]: v
+    for k, v in state.items()
+    if k.startswith(PREFIX)
+}
 
-        # Scaled dot-product attention.
-        q = q * self.scale
-        scores = ops.matmul(q, k.transpose(-1, -2))
+result = pt.load_state_dict(block_state, strict=True)
+print("PYTORCH REAL WEIGHTS:", result)
 
-        # Softmax attention. Padding mask will be supplied by the
-        # sequence-level wrapper where valid_length is available.
-        attn = ops.softmax(scores, axis=-1)
-        out = ops.matmul(attn, v)
+# Deterministic input to be reused by MAX.
+x = torch.randn(1, 4, 256)
 
-        # [B, H, N, D] -> [B, N, H*D]
-        out = out.permute([0, 2, 1, 3])
-        out = out.reshape([out.shape[0], out.shape[1], 512])
-        attn_out = self.attn_out(out)
+# All four positions valid.
+vl = torch.tensor([4], dtype=torch.long)
 
-        # Exact CTA SwiGLU:
-        # ff is 2048 = two 1024 branches.
-        ff1 = ff[..., :1024]
-        ff3 = ff[..., 1024:]
-        swiglu = ops.silu(ff1) * ff3
-        ff_out = self.ff_out(swiglu)
+np.save(
+    "artifacts/v1.168-max/cta_max/transformer_input.npy",
+    x.numpy(),
+)
 
-        # CTA parallel attention + feed-forward output.
-        return attn_out + ff_out
-'''
+with torch.no_grad():
+    y = pt(x, vl=vl)
 
-s=s[:start]+new+"\n"
+np.save(
+    "artifacts/v1.168-max/cta_max/transformer_pytorch_output.npy",
+    y.detach().cpu().numpy(),
+)
 
-with open(p,"w") as f:
-    f.write(s)
-
-print("MAX TRANSFORMER ATTENTION AND FF IMPLEMENTED")
+print("INPUT :", tuple(x.shape))
+print("OUTPUT:", tuple(y.shape))
+print("PYTORCH TRANSFORMER REFERENCE SAVED")
 PY
+
+podman run --rm \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_transformer_parity.py

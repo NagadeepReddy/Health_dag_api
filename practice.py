@@ -5,14 +5,14 @@ with open(p) as f:
     s=f.read()
 
 s=s.replace(
-    "ops.softmax(scores, axis=-1)",
-    "ops.softmax(scores, -1)"
+    "ops.softmax(scores, -1)",
+    "ops.softmax(scores)"
 )
 
 with open(p,"w") as f:
     f.write(s)
 
-print("MAX SOFTMAX AXIS FIXED")
+print("MAX SOFTMAX CALL FIXED")
 PY
 
 podman run --rm \

@@ -5,23 +5,14 @@ with open(p) as f:
     s=f.read()
 
 s=s.replace(
-'''WeightData(
-        arr,
-        dtype=DType.float32,
-        shape=Shape(arr.shape),
-    )''',
-'''WeightData(
-        name,
-        arr,
-        dtype=DType.float32,
-        shape=Shape(arr.shape),
-    )'''
+    "fn_attn_out_1_weight.npy",
+    "fn_attn_out_weight.npy"
 )
 
 with open(p,"w") as f:
     f.write(s)
 
-print("TRANSFORMER WEIGHTDATA NAME FIXED")
+print("ATTN OUTPUT WEIGHT FILENAME FIXED")
 PY
 
 podman run --rm \

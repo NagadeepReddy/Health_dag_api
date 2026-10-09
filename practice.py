@@ -1,29 +1,39 @@
-podman run --rm \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -c '
-import sys, torch
-sys.path.insert(0,"artifacts/v1.168/utils/dependency-utils")
-from models import ParallelTransformerBlock
+python - <<'PY'
+p="artifacts/v1.168-max/cta_max/parallel_transformer_block.py"
 
-m=ParallelTransformerBlock(dim=256, dim_head=256, heads=2, ff_mult=4)
-sd=torch.load("artifacts/v1.168/core-artifact/model_0_base.pt",map_location="cpu")
+with open(p) as f:
+    s=f.read()
 
-p="sequence_transformer.ptransformer.0.fn."
-m.load_state_dict({k[len(p):]:v for k,v in sd.items() if k.startswith(p)},strict=True)
+s=s.replace(
+'''        # Match original ParallelTransformerBlock head layout.
+        # q: [batch, seq, 512] -> [batch, 2, seq, 256]
+        # k/v: [batch, seq, 256] -> [batch, 1, seq, 256]''',
+'''        # Verified directly against the real CTA PyTorch block:
+        # fused_dims = (512, 256, 256, 2048)
+        # Q  -> 2 x 256 heads
+        # K/V -> 1 x 256 head (broadcast across Q heads during attention)'''
+)
 
-x=torch.randn(1,4,256)
-with torch.no_grad():
-    xn=m.norm1(x)
-    z=m.fused_attn_ff_proj(xn)
-    q,k,v,ff=z.split(m.fused_dims,dim=-1)
+# Add verified block constants.
+needle='''        super().__init__()
+'''
 
-print("FUSED_DIMS:",m.fused_dims)
-print("Q:",tuple(q.shape))
-print("K:",tuple(k.shape))
-print("V:",tuple(v.shape))
-print("FF:",tuple(ff.shape))
-print("REAL PYTORCH BLOCK READY")
-'
+replacement='''        super().__init__()
+
+        # Verified from the real CTA ParallelTransformerBlock.
+        self.heads = 2
+        self.dim_head = 256
+        self.scale = 256 ** -0.5
+        self.fused_dims = (512, 256, 256, 2048)
+'''
+
+if needle not in s:
+    raise SystemExit("Constructor location not found")
+
+s=s.replace(needle,replacement,1)
+
+with open(p,"w") as f:
+    f.write(s)
+
+print("CTA TRANSFORMER DIMENSIONS LOCKED")
+PY

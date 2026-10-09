@@ -5,21 +5,14 @@ with open(p) as f:
     s=f.read()
 
 s=s.replace(
-'''q, k, v, ff = self.fused_attn_ff_proj(x_norm).split(
-            [512, 256, 256, 2048],
-            axis=-1,
-        )''',
-'''q, k, v, ff = ops.split(
-            self.fused_attn_ff_proj(x_norm),
-            [512, 256, 256, 2048],
-            axis=-1,
-        )'''
+    "ops.softmax(scores, axis=-1)",
+    "ops.softmax(scores, -1)"
 )
 
 with open(p,"w") as f:
     f.write(s)
 
-print("MAX TENSOR SPLIT FIXED")
+print("MAX SOFTMAX AXIS FIXED")
 PY
 
 podman run --rm \

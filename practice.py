@@ -1,1 +1,1 @@
-grep -n -A90 "def forward(self, x" artifacts/v1.168/utils/dependency-utils/models.py
+sed -n '620,690p' artifacts/v1.168/utils/dependency-utils/models.py

@@ -1,30 +1,64 @@
-cat > artifacts/v1.168-max/cta_max/context_head_wide_graph.py <<'PY'
+cat > artifacts/v1.168-max/cta_max/run_context_head_wide.py <<'PY'
+from pathlib import Path
+import numpy as np
+
+from max.driver import CPU, Tensor
 from max.dtype import DType
-from max.graph import DeviceRef, Graph, TensorType
-from cta_max.context_head_wide import ContextHeadWideMAX
+from max.engine import InferenceSession
+from max.graph import DeviceRef, WeightData
+from max.graph.weights import Shape
+
+from cta_max.context_head_wide_graph import build_context_head_wide_graph
 
 
-def build_context_head_wide_graph(device: DeviceRef) -> Graph:
-    input_types = [
-        TensorType(DType.float32, shape=[1, 127], device=device),  # wide_in
-        TensorType(DType.float32, shape=[127], device=device),     # BN weight
-        TensorType(DType.float32, shape=[127], device=device),     # BN bias
-        TensorType(DType.float32, shape=[127], device=device),     # running mean
-        TensorType(DType.float32, shape=[127], device=device),     # running var
-    ]
+device = CPU()
+device_ref = DeviceRef.from_device(device)
+graph = build_context_head_wide_graph(device_ref)
 
-    with Graph("cta_context_head_wide", input_types=input_types) as graph:
-        model = ContextHeadWideMAX(DType.float32, device)
+weight_dir = Path("artifacts/v1.168-max/cta_max/context_head_weights")
 
-        output = model(
-            graph.inputs[0],
-            graph.inputs[1],
-            graph.inputs[2],
-            graph.inputs[3],
-            graph.inputs[4],
-        )
+weights = {}
 
-        graph.output(output)
+for name in [
+    "wide_dense.weight",
+    "wide_dense.bias",
+    "wide_swiglu.w1.weight",
+    "wide_swiglu.w2.weight",
+    "wide_swiglu.w3.weight",
+]:
+    arr = np.load(weight_dir / f"{name}.npy")
+    registry_name = f"context_head.{name}"
 
-    return graph
+    weights[registry_name] = WeightData(
+        arr,
+        name=registry_name,
+        dtype=DType.float32,
+        shape=Shape(arr.shape),
+    )
+
+session = InferenceSession(devices=[device])
+model = session.load(graph, weights_registry=weights)
+
+# Deterministic input for MAX/PyTorch parity.
+wide_in = np.zeros((1, 127), dtype=np.float32)
+
+inputs = [
+    Tensor.from_numpy(wide_in),
+    Tensor.from_numpy(np.load(weight_dir / "num_batch_norm.weight.npy").astype(np.float32)),
+    Tensor.from_numpy(np.load(weight_dir / "num_batch_norm.bias.npy").astype(np.float32)),
+    Tensor.from_numpy(np.load(weight_dir / "num_batch_norm.running_mean.npy").astype(np.float32)),
+    Tensor.from_numpy(np.load(weight_dir / "num_batch_norm.running_var.npy").astype(np.float32)),
+]
+
+outputs = model.execute(*inputs)
+
+print("CONTEXTHEAD WIDE MAX REAL-WEIGHT EXECUTION SUCCESS")
+print("OUTPUT:", outputs)
+
+np.save(
+    "artifacts/v1.168-max/cta_max/context_head_wide_max_output.npy",
+    outputs[0].to_numpy(),
+)
+
+print("MAX WIDE OUTPUT SAVED")
 PY

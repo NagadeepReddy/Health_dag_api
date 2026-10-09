@@ -1,43 +1,36 @@
-cat > artifacts/v1.168-max/cta_max/parallel_transformer_block.py <<'PY'
-from __future__ import annotations
+python - <<'PY'
+p="artifacts/v1.168-max/cta_max/parallel_transformer_block.py"
 
-from max.dtype import DType
-from max.graph import DeviceRef, TensorValue
-from max.nn import Linear, RMSNorm
-from max.nn.layer import Module
+with open(p) as f:
+    s=f.read()
 
-
-class ParallelTransformerBlockMAX(Module):
-    """MAX-native CTA ParallelTransformerBlock — sequence_transformer block 0."""
-
-    def __init__(self, dtype: DType, device: DeviceRef) -> None:
-        super().__init__()
-
-        # Exact CTA block dimensions:
-        # dim=256, dim_head=256, heads=2, ff_mult=4
-        self.norm1 = RMSNorm(256, dtype, name="sequence_transformer.ptransformer.0.norm1")
-        self.norm2 = RMSNorm(2048, dtype, name="sequence_transformer.ptransformer.0.norm2")
-
-        # PyTorch checkpoint: (3072, 256)
-        self.fused_attn_ff_proj = Linear(
-            256, 3072, dtype, device,
-            has_bias=False,
-            name="sequence_transformer.ptransformer.0.fused_attn_ff_proj",
-        )
-
-        # PyTorch checkpoint: (256, 512)
-        self.attn_out = Linear(
-            512, 256, dtype, device,
-            has_bias=False,
-            name="sequence_transformer.ptransformer.0.attn_out",
-        )
-
-        # PyTorch checkpoint: (256, 1024)
-        self.ff_out = Linear(
+s=s.replace(
+'''        self.ff_out = Linear(
             1024, 256, dtype, device,
             has_bias=False,
             name="sequence_transformer.ptransformer.0.ff_out.1",
         )
-PY
+''',
+'''        self.ff_out = Linear(
+            1024, 256, dtype, device,
+            has_bias=False,
+            name="sequence_transformer.ptransformer.0.ff_out.1",
+        )
 
-echo "MAX TRANSFORMER BLOCK SKELETON CREATED"
+    def __call__(self, x: TensorValue):
+        # Original CTA flow:
+        # norm1 -> fused projection -> Q/K/V/FF split
+        x_norm = self.norm1(x)
+        q, k, v, ff = self.fused_attn_ff_proj(x_norm).split(
+            [512, 256, 256, 2048],
+            axis=-1,
+        )
+        return q, k, v, ff
+'''
+)
+
+with open(p,"w") as f:
+    f.write(s)
+
+print("TRANSFORMER QKV FF FRONTEND ADDED")
+PY

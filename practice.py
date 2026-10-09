@@ -1,66 +1,30 @@
-cat > artifacts/v1.168-max/cta_max/context_head_wide.py <<'PY'
-from __future__ import annotations
-
+cat > artifacts/v1.168-max/cta_max/context_head_wide_graph.py <<'PY'
 from max.dtype import DType
-from max.graph import DeviceRef, TensorValue, ops
-from max.nn import Linear
-from max.nn.layer import Module
+from max.graph import DeviceRef, Graph, TensorType
+from cta_max.context_head_wide import ContextHeadWideMAX
 
 
-class ContextHeadWideMAX(Module):
-    """MAX-native CTA ContextHead wide path."""
+def build_context_head_wide_graph(device: DeviceRef) -> Graph:
+    input_types = [
+        TensorType(DType.float32, shape=[1, 127], device=device),  # wide_in
+        TensorType(DType.float32, shape=[127], device=device),     # BN weight
+        TensorType(DType.float32, shape=[127], device=device),     # BN bias
+        TensorType(DType.float32, shape=[127], device=device),     # running mean
+        TensorType(DType.float32, shape=[127], device=device),     # running var
+    ]
 
-    def __init__(self, dtype: DType, device: DeviceRef) -> None:
-        super().__init__()
+    with Graph("cta_context_head_wide", input_types=input_types) as graph:
+        model = ContextHeadWideMAX(DType.float32, device)
 
-        self.wide_dense = Linear(
-            in_dim=127,
-            out_dim=128,
-            dtype=dtype,
-            device=device,
-            has_bias=True,
-            name="context_head.wide_dense",
+        output = model(
+            graph.inputs[0],
+            graph.inputs[1],
+            graph.inputs[2],
+            graph.inputs[3],
+            graph.inputs[4],
         )
 
-        self.swiglu_w1 = Linear(
-            128, 86, dtype, device,
-            has_bias=False,
-            name="context_head.wide_swiglu.w1",
-        )
-        self.swiglu_w3 = Linear(
-            128, 86, dtype, device,
-            has_bias=False,
-            name="context_head.wide_swiglu.w3",
-        )
-        self.swiglu_w2 = Linear(
-            86, 128, dtype, device,
-            has_bias=False,
-            name="context_head.wide_swiglu.w2",
-        )
+        graph.output(output)
 
-    def __call__(
-        self,
-        wide_in: TensorValue,
-        bn_weight: TensorValue,
-        bn_bias: TensorValue,
-        running_mean: TensorValue,
-        running_var: TensorValue,
-    ) -> TensorValue:
-
-        # PyTorch BatchNorm1d inference:
-        # (x - mean) / sqrt(var + eps) * weight + bias
-        x = (wide_in - running_mean) / ops.sqrt(running_var + 1e-5)
-        x = x * bn_weight + bn_bias
-
-        x = self.wide_dense(x)
-
-        # Original source: LeakyReLU(0.2)
-        x = ops.relu(x) - (ops.relu(-x) * 0.2)
-
-        # Original FFSwiGLU: w2(silu(w1(x)) * w3(x))
-        x = self.swiglu_w2(
-            ops.silu(self.swiglu_w1(x)) * self.swiglu_w3(x)
-        )
-
-        return x
+    return graph
 PY

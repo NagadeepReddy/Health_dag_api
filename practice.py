@@ -1,32 +1,29 @@
-podman run --rm \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
-import sys
-sys.path.insert(0, "/workspace")
-
+python - <<'PY'
 p="artifacts/v1.168-max/cta_max/run_transformer_max.py"
 
-# Execute only the runner setup before the failing mapping/session.load.
-src=open(p).read()
-cut=src.find('# RMSNorm internally requests')
-if cut < 0:
-    cut=src.find('model = session.load')
+with open(p) as f:
+    s=f.read()
 
-assert cut >= 0, "Could not locate registry/load section"
+old='''weights["weight"] = weights[
+    "sequence_transformer.ptransformer.0.fn.norm1.g"
+]'''
 
-exec(src[:cut], globals())
+new='''weights["weight"] = WeightData(
+    np.load(
+        "artifacts/v1.168-max/cta_max/sequence_weights/"
+        "sequence_transformer.ptransformer.0.fn.norm1.g.npy"
+    ),
+    name="weight",
+)'''
 
-print("\n=== ACTUAL WEIGHTS REGISTRY KEYS ===")
-for k in sorted(weights.keys()):
-    print(k)
+assert old in s, "Old failing norm1 registry mapping not found"
+assert "import numpy as np" in s, "numpy import missing"
+assert "WeightData" in s, "WeightData import missing"
 
-print("\n=== NORM KEYS ===")
-for k in sorted(weights.keys()):
-    if "norm" in k.lower():
-        print(k)
+s=s.replace(old,new,1)
 
-print("\nREGISTRY INSPECTION COMPLETE")
+with open(p,"w") as f:
+    f.write(s)
+
+print("TRANSFORMER NORM1 DIRECT WEIGHT MAPPED")
 PY

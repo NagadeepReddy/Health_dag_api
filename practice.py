@@ -1,15 +1,6 @@
-python - <<'PY'
-p="artifacts/v1.168-max/cta_max/parallel_transformer_block.py"
-s=open(p).read()
-
-for name in [
-    "sequence_transformer.ptransformer.0.norm1.weight",
-    "sequence_transformer.ptransformer.0.norm2.weight",
-]:
-    lines=s.splitlines()
-    lines=[x for x in lines if name not in x]
-    s="\n".join(lines)+"\n"
-
-open(p,"w").write(s)
-print("ORPHANED RMSNORM WEIGHT ARGUMENTS REMOVED")
-PY
+podman run --rm \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_transformer_max.py

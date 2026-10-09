@@ -1,6 +1,1 @@
-podman run --rm \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -c 'import numpy as np, torch, torch.nn.functional as F; wd="artifacts/v1.168-max/cta_max/context_head_weights"; x=torch.cat([torch.from_numpy(np.load(f"{wd}/deep_embedding_{i}.npy"))[0] for i in range(17)]).unsqueeze(0).float(); g=torch.from_numpy(np.load(f"{wd}/deep_norm.g.npy")).float(); x=x*torch.rsqrt(x.pow(2).mean(-1,keepdim=True)+1e-6)*g; x=F.linear(x,torch.from_numpy(np.load(f"{wd}/deep_dense.weight.npy")).float(),torch.from_numpy(np.load(f"{wd}/deep_dense.bias.npy")).float()); w1=torch.from_numpy(np.load(f"{wd}/deep_swiglu.w1.weight.npy")).float(); w2=torch.from_numpy(np.load(f"{wd}/deep_swiglu.w2.weight.npy")).float(); w3=torch.from_numpy(np.load(f"{wd}/deep_swiglu.w3.weight.npy")).float(); pt=F.linear(F.silu(F.linear(x,w1))*F.linear(x,w3),w2); mx=torch.from_numpy(np.load("artifacts/v1.168-max/cta_max/context_head_deep_max_output.npy")).float(); print("PT SHAPE:",tuple(pt.shape)); print("MAX SHAPE:",tuple(mx.shape)); print("MAX DIFF:",torch.max(torch.abs(pt-mx)).item()); print("MATCH:",torch.allclose(pt,mx,rtol=1e-4,atol=1e-5))'
+sed -n '350,455p' artifacts/v1.168/utils/dependency-utils/models.py

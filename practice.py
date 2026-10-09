@@ -6,11 +6,12 @@ with open(p) as f:
 
 s=s.replace(
 '''WeightData(
-        arr=arr,
+        arr,
         dtype=DType.float32,
         shape=Shape(arr.shape),
     )''',
 '''WeightData(
+        name,
         arr,
         dtype=DType.float32,
         shape=Shape(arr.shape),
@@ -20,7 +21,7 @@ s=s.replace(
 with open(p,"w") as f:
     f.write(s)
 
-print("TRANSFORMER WEIGHTDATA FIXED")
+print("TRANSFORMER WEIGHTDATA NAME FIXED")
 PY
 
 podman run --rm \

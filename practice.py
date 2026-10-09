@@ -1,46 +1,40 @@
-cat > artifacts/v1.168-max/cta_max/context_head_full.py <<'PY'
-from __future__ import annotations
+python - <<'PY'
+from pathlib import Path
 
-from max.dtype import DType
-from max.graph import DeviceRef, TensorValue
-from max.nn.layer import Module
+p = Path("artifacts/v1.168-max/cta_max/grecbase_max.py")
+s = p.read_text()
 
-from cta_max.context_head_deep import ContextHeadDeepMAX
-from cta_max.context_head_wide import ContextHeadWideMAX
-from cta_max.context_head_combined import ContextHeadCombinedMAX
+# Add full ContextHead import.
+if "from cta_max.context_head_full import ContextHeadFullMAX" not in s:
+    s = s.replace(
+        "from max.nn import Embedding",
+        "from max.nn import Embedding\nfrom cta_max.context_head_full import ContextHeadFullMAX"
+    )
 
+# Add ContextHead module after the existing item_pre_embedding block.
+needle = '''        self.item_pre_embedding = Embedding(
+            vocab_size=10727,
+            hidden_dim=112,
+            dtype=dtype,
+            device=device,
+            name="item_pre_embedding",
+        )'''
 
-class ContextHeadFullMAX(Module):
-    """Integrated MAX-native CTA ContextHead."""
+replacement = needle + '''
 
-    def __init__(self, dtype: DType, device: DeviceRef) -> None:
-        super().__init__()
+        # Integrated ContextHead:
+        # proven deep path + proven wide path.
+        self.context_head = ContextHeadFullMAX(
+            dtype=dtype,
+            device=device,
+        )'''
 
-        self.deep = ContextHeadDeepMAX(dtype, device)
-        self.wide = ContextHeadWideMAX(dtype, device)
-        self.combine = ContextHeadCombinedMAX()
+if needle not in s:
+    raise SystemExit("Expected item_pre_embedding block not found - no changes made")
 
-    def __call__(
-        self,
-        deep_in: list[TensorValue],
-        wide_in: TensorValue,
-        bn_weight: TensorValue,
-        bn_bias: TensorValue,
-        running_mean: TensorValue,
-        running_var: TensorValue,
-    ) -> TensorValue:
+if "self.context_head = ContextHeadFullMAX" not in s:
+    s = s.replace(needle, replacement)
 
-        deep_out = self.deep(deep_in)
-
-        wide_out = self.wide(
-            wide_in,
-            bn_weight,
-            bn_bias,
-            running_mean,
-            running_var,
-        )
-
-        return self.combine(deep_out, wide_out)
+p.write_text(s)
+print("GRECBASE CONTEXTHEAD INTEGRATED")
 PY
-
-echo "FULL CONTEXTHEAD INTEGRATED"

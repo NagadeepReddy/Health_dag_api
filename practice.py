@@ -1,6 +1,5 @@
 podman run --rm \
--v "$PWD:/workspace" \
--w /workspace \
+-v "$PWD:/workspace" -w /workspace \
 --entrypoint python \
 docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-artifacts/v1.168-max/cta_max/run_transformer_max.py
+-c "import sys,torch,numpy as np; sys.path.insert(0,'artifacts/v1.168/utils/dependency-utils'); from models import apply_rotary_pos_emb; B='artifacts/v1.168-max/cta_max'; f=torch.from_numpy(np.load(B+'/transformer_fused_pytorch.npy')).float(); q,k,v,ff=torch.split(f,[512,256,256,2048],dim=-1); q=q.reshape(q.shape[0],q.shape[1],2,256).permute(0,2,1,3); k=k.reshape(k.shape[0],k.shape[1],1,256).permute(0,2,1,3); inv=torch.from_numpy(np.load(B+'/sequence_weights/fn_rotary_emb_inv_freq.npy')).float(); seq=torch.arange(f.shape[1],dtype=torch.float32); freqs=torch.einsum('i,j->ij',seq,inv); pos=torch.cat((freqs,freqs),dim=-1)[None,None,:,:]; qr=apply_rotary_pos_emb(pos,q); kr=apply_rotary_pos_emb(pos,k); np.save(B+'/transformer_q_rotary_pytorch.npy',qr.numpy()); np.save(B+'/transformer_k_rotary_pytorch.npy',kr.numpy()); print('Q ROTARY:',tuple(qr.shape),'K ROTARY:',tuple(kr.shape)); print('ROTARY REFERENCES SAVED')"

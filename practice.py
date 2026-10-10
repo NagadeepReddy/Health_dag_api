@@ -1,24 +1,6 @@
-python - <<'PY'
-from pathlib import Path
-
-src = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_max.py")
-dst = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_rotary_test.py")
-
-s = src.read_text()
-
-old = """        q = apply_rotary_pos_emb_max(pos_emb, q)
-        k = apply_rotary_pos_emb_max(pos_emb, k)
-"""
-
-new = """        q = apply_rotary_pos_emb_max(pos_emb, q)
-        k = apply_rotary_pos_emb_max(pos_emb, k)
-
-        # Temporary parity boundary
-        return q, k, v
-"""
-
-assert old in s, "ROTARY BOUNDARY NOT FOUND - NOTHING CHANGED"
-
-dst.write_text(s.replace(old, new, 1))
-print("MAX ROTARY PARITY BLOCK CREATED")
-PY
+podman run --rm \
+-v "$PWD:/workspace" \
+-w /workspace \
+--entrypoint python \
+docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+-c "import sys,torch,numpy as np; sys.path.insert(0,'artifacts/v1.168/utils/dependency-utils'); from models import apply_rotary_pos_emb; B='artifacts/v1.168-max/cta_max'; q=torch.from_numpy(np.load(B+'/transformer_q_pytorch.npy')).float(); k=torch.from_numpy(np.load(B+'/transformer_k_pytorch.npy')).float(); inv=torch.from_numpy(np.load(B+'/sequence_weights/fn_rotary_emb_inv_freq.npy')).float(); seq=torch.arange(q.shape[2],dtype=torch.float32); freqs=torch.einsum('i,j->ij',seq,inv); pos=torch.cat((freqs,freqs),dim=-1)[None,None,:,:]; qr=apply_rotary_pos_emb(pos,q); kr=apply_rotary_pos_emb(pos,k); np.save(B+'/transformer_q_rotary_pytorch.npy',qr.numpy()); np.save(B+'/transformer_k_rotary_pytorch.npy',kr.numpy()); print('Q ROTARY',tuple(qr.shape)); print('K ROTARY',tuple(kr.shape)); print('PYTORCH ROTARY REFERENCES SAVED')"

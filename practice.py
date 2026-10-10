@@ -1,1 +1,4 @@
-nl -ba artifacts/v1.168/utils/dependency-utils/models.py | sed -n '620,675p'
+grep -R -n \
+"transformer_pytorch_output.npy" \
+artifacts/v1.168-max/cta_max \
+--include="*.py"

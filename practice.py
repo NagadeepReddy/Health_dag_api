@@ -3,4 +3,4 @@ podman run --rm \
 -w /workspace \
 --entrypoint python \
 docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-artifacts/v1.168-max/cta_max/test_transformer_attention_max.py
+-c "from max.driver import Tensor; import inspect; print([x for x in dir(Tensor) if any(k in x.lower() for k in ['numpy','dlpack','copy','host','item'])])"

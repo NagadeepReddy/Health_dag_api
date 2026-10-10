@@ -1,1 +1,6 @@
-nl -ba artifacts/v1.168/utils/dependency-utils/models.py | sed -n '670,710p'
+podman run --rm \
+-v "$PWD:/workspace" \
+-w /workspace \
+--entrypoint python \
+docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+-c "import torch,numpy as np; B='artifacts/v1.168-max/cta_max'; W=B+'/sequence_weights'; att=torch.from_numpy(np.load(B+'/transformer_attention_pytorch.npy')).float(); ff=torch.from_numpy(np.load(B+'/transformer_ff_pytorch.npy')).float(); wa=torch.from_numpy(np.load(W+'/fn_attn_out_weight.npy')).float(); wf=torch.from_numpy(np.load(W+'/fn_ff_out_1_weight.npy')).float(); ng=torch.from_numpy(np.load(W+'/fn_norm2_g.npy')).float(); att=att.permute(0,2,1,3).reshape(1,4,512); att_out=torch.nn.functional.linear(att,wa); ff=torch.nn.functional.normalize(ff,dim=-1)*(2048**0.5)*ng; xff,gate=ff.chunk(2,dim=-1); ff=torch.nn.functional.silu(gate)*xff; ff_out=torch.nn.functional.linear(ff,wf); rebuilt=att_out+ff_out; real=torch.from_numpy(np.load(B+'/transformer_pytorch_output.npy')).float(); np.save(B+'/transformer_block0_exact_pytorch.npy',rebuilt.numpy()); print('REAL SHAPE   :',tuple(real.shape)); print('REBUILT SHAPE:',tuple(rebuilt.shape)); print('REBUILD DIFF :',torch.max(torch.abs(real-rebuilt)).item()); print('REBUILD MATCH:',torch.allclose(real,rebuilt,rtol=1e-4,atol=1e-5))"

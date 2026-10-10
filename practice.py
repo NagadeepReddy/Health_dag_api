@@ -1,1 +1,6 @@
-nl -ba artifacts/v1.168-max/cta_max/run_transformer_max.py | sed -n '78,90p'
+podman run --rm \
+-v "$PWD:/workspace" \
+-w /workspace \
+--entrypoint python \
+docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+-c 'from max.driver import Tensor; print([x for x in dir(Tensor) if any(k in x.lower() for k in ["numpy","dlpack","copy","cpu"])])'

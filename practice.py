@@ -4,61 +4,37 @@ import ast
 
 base = Path("artifacts/v1.168-max/cta_max")
 
-files = {
-    "parallel_transformer_block_intermediate.py": "parallel_transformer_block_layer1_ff.py",
-    "parallel_transformer_graph_intermediate.py": "parallel_transformer_graph_layer1_ff.py",
-    "run_transformer_intermediate_parity.py": "run_transformer_layer1_ff.py",
-}
+changes = [
+    (
+        base / "models_raw_attn_diagnostic.py",
+        "return self.ff_out(ff)  # diagnostic: ff_out only",
+        "return ff  # diagnostic: after norm2",
+    ),
+    (
+        base / "parallel_transformer_block_layer1_ff.py",
+        "return self.ff_out(swiglu)  # diagnostic: ff_out after norm2",
+        "return ff  # diagnostic: after norm2",
+    ),
+]
 
-prepared = {}
+prepared = []
+for path, old, new in changes:
+    original = path.read_text()
+    count = original.count(old)
+    assert count == 1, f"STOP: {path.name}: found {count} matching returns"
+    updated = original.replace(old, new, 1)
+    ast.parse(updated)
+    prepared.append((path, original, updated))
 
-for src_name, dst_name in files.items():
-    src, dst = base / src_name, base / dst_name
-    assert src.is_file(), f"STOP: missing {src_name}"
-    assert not dst.exists(), f"STOP: already exists {dst_name}"
+for path, original, updated in prepared:
+    backup = path.with_suffix(".before_norm2_compare.bak")
+    assert not backup.exists(), f"STOP: backup exists: {backup}"
 
-    s = src.read_text()
+for path, original, updated in prepared:
+    path.with_suffix(".before_norm2_compare.bak").write_text(original)
+    path.write_text(updated)
+    print("READY:", path.name)
 
-    if src_name.startswith("parallel_transformer_block_"):
-        assert "fn_norm2_g.npy" in s
-        s = s.replace("fn_norm2_g.npy", "fn_norm2_g_layer1.npy")
-    elif src_name.startswith("parallel_transformer_graph_"):
-        assert "from parallel_transformer_block_intermediate import" in s
-        s = s.replace(
-            "from parallel_transformer_block_intermediate import",
-            "from parallel_transformer_block_layer1_ff import"
-        )
-    else:
-        assert "from parallel_transformer_graph_intermediate import" in s
-        assert "transformer_pytorch_output.npy" in s
-        s = s.replace(
-            "from parallel_transformer_graph_intermediate import",
-            "from parallel_transformer_graph_layer1_ff import"
-        )
-        s = s.replace(
-            "transformer_pytorch_output.npy",
-            "transformer_pytorch_layer1_ff.npy"
-        )
-        for name in [
-            "fn_norm1_g",
-            "fn_norm2_g",
-            "fn_fused_attn_ff_proj_weight",
-            "fn_attn_out_weight",
-            "fn_ff_out_1_weight",
-        ]:
-            s = s.replace(name + ".npy", name + "_layer1.npy")
-
-    s = s.replace(
-        "sequence_transformer.ptransformer.0.",
-        "sequence_transformer.ptransformer.1."
-    )
-    ast.parse(s)
-    prepared[dst] = s
-
-for dst, s in prepared.items():
-    dst.write_text(s)
-    print("CREATED:", dst.name)
-
-print("BLOCK-1 FF DIAGNOSTICS READY")
-print("ORIGINAL MAX AND DS FILES UNCHANGED")
+print("BLOCK-1 NORM2 COMPARISON PREPARED")
+print("REAL MAX BLOCK AND DS CODE UNCHANGED")
 PY

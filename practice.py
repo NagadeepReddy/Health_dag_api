@@ -3,36 +3,36 @@ from pathlib import Path
 import ast
 
 base = Path("artifacts/v1.168-max/cta_max")
-src = base / "parallel_transformer_graph.py"
-dst = base / "parallel_transformer_graph_layer1.py"
+src = base / "run_transformer_max.py"
+dst = base / "run_transformer_layer1.py"
 
 s = src.read_text()
 
-old_import = "from parallel_transformer_block import ParallelTransformerBlockMAX"
-old_call = """block = ParallelTransformerBlockMAX(
-        dtype=DType.float32,
-        device=device_ref,
-    )"""
-new_call = """block = ParallelTransformerBlockMAX(
-        dtype=DType.float32,
-        device=device_ref,
-        layer_idx=1,
-    )"""
+changes = {
+    "from parallel_transformer_graph import": "from parallel_transformer_graph_layer1 import",
+    "fn_norm1_g.npy": "fn_norm1_g_layer1.npy",
+    "fn_norm2_g.npy": "fn_norm2_g_layer1.npy",
+    "fn_fused_attn_ff_proj_weight.npy": "fn_fused_attn_ff_proj_weight_layer1.npy",
+    "fn_attn_out_weight.npy": "fn_attn_out_weight_layer1.npy",
+    "fn_ff_out_1_weight.npy": "fn_ff_out_1_weight_layer1.npy",
+}
 
-assert s.count(old_import) == 1, "STOP: import differs"
-assert s.count(old_call) == 1, "STOP: constructor differs"
-assert not dst.exists(), "STOP: graph already exists"
+assert src.is_file(), "STOP: original runner missing"
+assert not dst.exists(), "STOP: Block-1 runner already exists"
 
-s = s.replace(
-    old_import,
-    "from parallel_transformer_block_multilayer import ParallelTransformerBlockMAX",
-    1
-)
-s = s.replace(old_call, new_call, 1)
+for old, new in changes.items():
+    assert s.count(old) == 1, f"STOP: expected one {old}, found {s.count(old)}"
+    s = s.replace(old, new, 1)
 
 ast.parse(s)
+
+for filename in list(changes.values())[1:]:
+    assert (base / "sequence_weights" / filename).is_file(), \
+        f"STOP: missing {filename}"
+
 dst.write_text(s)
 
-print("BLOCK-1 GRAPH CREATED — SYNTAX OK")
-print("VERIFIED BLOCK-0 UNCHANGED")
+print("BLOCK-1 RUNNER CREATED — SYNTAX OK")
+print("BLOCK-1 WEIGHTS VERIFIED")
+print("BLOCK-0 AND DS CODE UNCHANGED")
 PY

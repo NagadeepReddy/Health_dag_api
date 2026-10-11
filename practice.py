@@ -1,33 +1,36 @@
-python - <<'PY'
+podman run --rm \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  - <<'PY'
+import torch
+import numpy as np
 from pathlib import Path
-import ast
 
-base = Path("artifacts/v1.168-max/cta_max")
-src = base / "parallel_transformer_block.py"
-dst = base / "parallel_transformer_block_multilayer.py"
-
-s = src.read_text()
-
-old_sig = "def __init__(self, dtype: DType, device: DeviceRef) -> None:"
-old_prefix = '"sequence_transformer.ptransformer.0.'
-
-assert s.count(old_sig) == 1, "STOP: constructor differs"
-assert s.count(old_prefix) == 3, "STOP: layer weight names differ"
-assert not dst.exists(), "STOP: target already exists"
-
-s = s.replace(
-    old_sig,
-    "def __init__(self, dtype: DType, device: DeviceRef, layer_idx: int = 0) -> None:",
-    1
-)
-s = s.replace(
-    old_prefix,
-    'f"sequence_transformer.ptransformer.{layer_idx}.'
+s = torch.load(
+    "artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu",
+    weights_only=False
 )
 
-ast.parse(s)
-dst.write_text(s)
+base = Path("artifacts/v1.168-max/cta_max/sequence_weights")
+prefix = "sequence_transformer.ptransformer.1.fn."
 
-print("MULTILAYER COPY CREATED — SYNTAX OK")
-print("VERIFIED BLOCK-0 UNCHANGED")
+weights = {
+    "norm1.g": ("fn_norm1_g_layer1.npy", (256,)),
+    "fused_attn_ff_proj.weight": ("fn_fused_attn_ff_proj_weight_layer1.npy", (3072, 256)),
+    "attn_out.weight": ("fn_attn_out_weight_layer1.npy", (256, 512)),
+    "ff_out.1.weight": ("fn_ff_out_1_weight_layer1.npy", (256, 1024)),
+}
+
+for key, (name, shape) in weights.items():
+    assert prefix + key in s, f"STOP: missing {key}"
+    assert tuple(s[prefix + key].shape) == shape, f"STOP: shape mismatch {key}"
+    assert not (base / name).exists(), f"STOP: already exists {name}"
+
+for key, (name, _) in weights.items():
+    np.save(base / name, s[prefix + key].detach().numpy().astype(np.float32))
+    print("SAVED:", name)
+
+print("BLOCK-1 PROJECTION WEIGHTS READY")
 PY

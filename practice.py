@@ -2,30 +2,34 @@ python - <<'PY'
 from pathlib import Path
 import ast
 
-p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_multilayer.py")
-s = p.read_text()
+base = Path("artifacts/v1.168-max/cta_max")
+src = base / "parallel_transformer_graph.py"
+dst = base / "parallel_transformer_graph_layer1.py"
 
-constructor = "        super().__init__()\n"
-old = 'np.load("artifacts/v1.168-max/cta_max/sequence_weights/fn_norm2_g.npy")'
+s = src.read_text()
 
-assert s.count(constructor) == 1, "STOP: constructor differs"
-assert s.count(old) == 1, "STOP: norm2 load differs"
-
-s = s.replace(
-    constructor,
-    constructor + "        self.layer_idx = layer_idx\n",
-    1
-)
+old = "from parallel_transformer_block import ParallelTransformerBlockMAX"
+assert s.count(old) == 1, "STOP: import differs"
+assert not dst.exists(), "STOP: graph already exists"
 
 s = s.replace(
     old,
-    'np.load("artifacts/v1.168-max/cta_max/sequence_weights/" + ("fn_norm2_g.npy" if self.layer_idx == 0 else "fn_norm2_g_layer1.npy"))',
+    "from parallel_transformer_block_multilayer import ParallelTransformerBlockMAX",
+    1
+)
+
+old_call = "device=device_ref,"
+assert s.count(old_call) == 1, "STOP: constructor differs"
+
+s = s.replace(
+    old_call,
+    old_call + "\n        layer_idx=1,",
     1
 )
 
 ast.parse(s)
-p.write_text(s)
+dst.write_text(s)
 
-print("LAYER-SPECIFIC NORM2 ROUTING READY — SYNTAX OK")
-print("VERIFIED BLOCK-0 UNCHANGED")
+print("BLOCK-1 GRAPH READY — SYNTAX OK")
+print("BLOCK-0 UNCHANGED")
 PY

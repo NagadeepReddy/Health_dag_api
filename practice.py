@@ -1,4 +1,4 @@
-podman run --rm \
+podman run --rm -i \
   -v "$PWD:/workspace" -w /workspace \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
@@ -7,12 +7,8 @@ import torch
 import numpy as np
 from pathlib import Path
 
-s = torch.load(
-    "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu",
-    weights_only=False
-)
-
+s = torch.load("artifacts/v1.168/core-artifact/model_0_base.pt",
+               map_location="cpu", weights_only=False)
 base = Path("artifacts/v1.168-max/cta_max/sequence_weights")
 prefix = "sequence_transformer.ptransformer.1.fn."
 
@@ -24,13 +20,16 @@ weights = {
 }
 
 for key, (name, shape) in weights.items():
-    assert prefix + key in s, f"STOP: missing {key}"
-    assert tuple(s[prefix + key].shape) == shape, f"STOP: shape mismatch {key}"
-    assert not (base / name).exists(), f"STOP: already exists {name}"
+    assert prefix + key in s
+    assert tuple(s[prefix + key].shape) == shape
 
 for key, (name, _) in weights.items():
-    np.save(base / name, s[prefix + key].detach().numpy().astype(np.float32))
-    print("SAVED:", name)
+    path = base / name
+    if path.exists():
+        print("ALREADY EXISTS:", name)
+    else:
+        np.save(path, s[prefix + key].detach().numpy().astype(np.float32))
+        print("SAVED:", name)
 
-print("BLOCK-1 PROJECTION WEIGHTS READY")
+print("BLOCK-1 WEIGHTS READY")
 PY

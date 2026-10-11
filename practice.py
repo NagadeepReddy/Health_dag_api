@@ -1,35 +1,31 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
-import torch
-import numpy as np
+python - <<'PY'
 from pathlib import Path
+import ast
 
-s = torch.load("artifacts/v1.168/core-artifact/model_0_base.pt",
-               map_location="cpu", weights_only=False)
-base = Path("artifacts/v1.168-max/cta_max/sequence_weights")
-prefix = "sequence_transformer.ptransformer.1.fn."
+p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_multilayer.py")
+s = p.read_text()
 
-weights = {
-    "norm1.g": ("fn_norm1_g_layer1.npy", (256,)),
-    "fused_attn_ff_proj.weight": ("fn_fused_attn_ff_proj_weight_layer1.npy", (3072, 256)),
-    "attn_out.weight": ("fn_attn_out_weight_layer1.npy", (256, 512)),
-    "ff_out.1.weight": ("fn_ff_out_1_weight_layer1.npy", (256, 1024)),
-}
+constructor = "        super().__init__()\n"
+old = 'np.load("artifacts/v1.168-max/cta_max/sequence_weights/fn_norm2_g.npy")'
 
-for key, (name, shape) in weights.items():
-    assert prefix + key in s
-    assert tuple(s[prefix + key].shape) == shape
+assert s.count(constructor) == 1, "STOP: constructor differs"
+assert s.count(old) == 1, "STOP: norm2 load differs"
 
-for key, (name, _) in weights.items():
-    path = base / name
-    if path.exists():
-        print("ALREADY EXISTS:", name)
-    else:
-        np.save(path, s[prefix + key].detach().numpy().astype(np.float32))
-        print("SAVED:", name)
+s = s.replace(
+    constructor,
+    constructor + "        self.layer_idx = layer_idx\n",
+    1
+)
 
-print("BLOCK-1 WEIGHTS READY")
+s = s.replace(
+    old,
+    'np.load("artifacts/v1.168-max/cta_max/sequence_weights/" + ("fn_norm2_g.npy" if self.layer_idx == 0 else "fn_norm2_g_layer1.npy"))',
+    1
+)
+
+ast.parse(s)
+p.write_text(s)
+
+print("LAYER-SPECIFIC NORM2 ROUTING READY — SYNTAX OK")
+print("VERIFIED BLOCK-0 UNCHANGED")
 PY

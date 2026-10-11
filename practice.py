@@ -1,36 +1,30 @@
-python - <<'PY'
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  - <<'PY'
+import torch
+import numpy as np
 from pathlib import Path
-import ast
 
-base = Path("artifacts/v1.168-max/cta_max")
-pt_src = base / "run_transformer_parity.py"
-pt_dst = base / "run_transformer_parity_layer1.py"
-max_runner = base / "run_transformer_layer1.py"
+ckpt = torch.load(
+    "artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu", weights_only=False
+)
+base = Path("artifacts/v1.168-max/cta_max/sequence_weights")
+prefix = "sequence_transformer.ptransformer.1.fn."
 
-assert pt_src.is_file() and max_runner.is_file()
-assert not pt_dst.exists(), "STOP: Block-1 PT runner exists"
+names = {
+    "norm1.g": "fn_norm1_g_layer1.npy",
+    "norm2.g": "fn_norm2_g_layer1.npy",
+    "fused_attn_ff_proj.weight": "fn_fused_attn_ff_proj_weight_layer1.npy",
+    "attn_out.weight": "fn_attn_out_weight_layer1.npy",
+    "ff_out.1.weight": "fn_ff_out_1_weight_layer1.npy",
+}
 
-pt = pt_src.read_text()
-mx = max_runner.read_text()
-
-old_prefix = "sequence_transformer.ptransformer.0.fn."
-old_ref = "transformer_pytorch_output.npy"
-new_ref = "transformer_pytorch_output_layer1.npy"
-
-assert pt.count(old_prefix) == 1, "STOP: PT prefix differs"
-assert pt.count(old_ref) == 1, "STOP: PT output differs"
-assert mx.count(old_ref) == 1, "STOP: MAX reference differs"
-
-pt = pt.replace(old_prefix, "sequence_transformer.ptransformer.1.fn.", 1)
-pt = pt.replace(old_ref, new_ref, 1)
-mx = mx.replace(old_ref, new_ref, 1)
-
-ast.parse(pt)
-ast.parse(mx)
-
-pt_dst.write_text(pt)
-max_runner.write_text(mx)
-
-print("BLOCK-1 PARITY RUNNERS READY — SYNTAX OK")
-print("BLOCK-0 REFERENCE AND DS CODE UNCHANGED")
+for key, filename in names.items():
+    actual = np.load(base / filename)
+    expected = ckpt[prefix + key].numpy()
+    print(key, "MATCH:", np.array_equal(actual, expected),
+          "MAX DIFF:", np.max(np.abs(actual - expected)))
 PY

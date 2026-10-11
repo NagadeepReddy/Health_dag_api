@@ -2,37 +2,27 @@ python - <<'PY'
 from pathlib import Path
 import ast
 
-base = Path("artifacts/v1.168-max/cta_max")
-src = base / "run_transformer_max.py"
-dst = base / "run_transformer_layer1.py"
+p = Path("artifacts/v1.168-max/cta_max/run_transformer_layer1.py")
+s = p.read_text()
 
-s = src.read_text()
+old = 'WBASE = BASE + "/sequence_weights"'
+assert s.count(old) == 1, "STOP: WBASE differs"
 
-changes = {
-    "from parallel_transformer_graph import": "from parallel_transformer_graph_layer1 import",
-    "fn_norm1_g.npy": "fn_norm1_g_layer1.npy",
-    "fn_norm2_g.npy": "fn_norm2_g_layer1.npy",
-    "fn_fused_attn_ff_proj_weight.npy": "fn_fused_attn_ff_proj_weight_layer1.npy",
-    "fn_attn_out_weight.npy": "fn_attn_out_weight_layer1.npy",
-    "fn_ff_out_1_weight.npy": "fn_ff_out_1_weight_layer1.npy",
-}
+needle = 'weights_registry=weights'
+assert s.count(needle) == 1, "STOP: registry call differs"
 
-assert src.is_file(), "STOP: original runner missing"
-assert not dst.exists(), "STOP: Block-1 runner already exists"
+# Change only the registry keys, not file paths.
+import re
+updated, count = re.subn(
+    r'(weights\[\s*["\'])(sequence_transformer\.ptransformer\.)0(\.[^"\']+["\']\s*\])',
+    lambda m: m.group(1) + m.group(2) + "1" + m.group(3),
+    s
+)
 
-for old, new in changes.items():
-    assert s.count(old) == 1, f"STOP: expected one {old}, found {s.count(old)}"
-    s = s.replace(old, new, 1)
+assert count == 5, f"STOP: expected 5 layer keys, found {count}"
+ast.parse(updated)
+p.write_text(updated)
 
-ast.parse(s)
-
-for filename in list(changes.values())[1:]:
-    assert (base / "sequence_weights" / filename).is_file(), \
-        f"STOP: missing {filename}"
-
-dst.write_text(s)
-
-print("BLOCK-1 RUNNER CREATED — SYNTAX OK")
-print("BLOCK-1 WEIGHTS VERIFIED")
+print("BLOCK-1 REGISTRY KEYS UPDATED — SYNTAX OK")
 print("BLOCK-0 AND DS CODE UNCHANGED")
 PY

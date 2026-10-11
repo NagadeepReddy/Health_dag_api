@@ -2,21 +2,35 @@ python - <<'PY'
 from pathlib import Path
 import ast
 
-p = Path("artifacts/v1.168-max/cta_max/run_transformer_layer1.py")
-s = p.read_text()
+base = Path("artifacts/v1.168-max/cta_max")
+pt_src = base / "run_transformer_parity.py"
+pt_dst = base / "run_transformer_parity_layer1.py"
+max_runner = base / "run_transformer_layer1.py"
 
-old = "sequence_transformer.ptransformer.0."
-new = "sequence_transformer.ptransformer.1."
+assert pt_src.is_file() and max_runner.is_file()
+assert not pt_dst.exists(), "STOP: Block-1 PT runner exists"
 
-count = s.count(old)
-print("BLOCK-0 NAME REFERENCES:", count)
+pt = pt_src.read_text()
+mx = max_runner.read_text()
 
-assert count == 5, f"STOP: expected 5 registry names, found {count}"
+old_prefix = "sequence_transformer.ptransformer.0.fn."
+old_ref = "transformer_pytorch_output.npy"
+new_ref = "transformer_pytorch_output_layer1.npy"
 
-updated = s.replace(old, new)
-ast.parse(updated)
-p.write_text(updated)
+assert pt.count(old_prefix) == 1, "STOP: PT prefix differs"
+assert pt.count(old_ref) == 1, "STOP: PT output differs"
+assert mx.count(old_ref) == 1, "STOP: MAX reference differs"
 
-print("BLOCK-1 REGISTRY NAMES FIXED — SYNTAX OK")
-print("BLOCK-0 AND DS CODE UNCHANGED")
+pt = pt.replace(old_prefix, "sequence_transformer.ptransformer.1.fn.", 1)
+pt = pt.replace(old_ref, new_ref, 1)
+mx = mx.replace(old_ref, new_ref, 1)
+
+ast.parse(pt)
+ast.parse(mx)
+
+pt_dst.write_text(pt)
+max_runner.write_text(mx)
+
+print("BLOCK-1 PARITY RUNNERS READY — SYNTAX OK")
+print("BLOCK-0 REFERENCE AND DS CODE UNCHANGED")
 PY

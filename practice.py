@@ -1,35 +1,26 @@
 python - <<'PY'
+import ast
 from pathlib import Path
-import numpy as np
 
-base = Path("artifacts/v1.168-max/cta_max")
+p = Path(
+    "artifacts/v1.168-max/cta_max/"
+    "grecbase_aux_features_max.py"
+)
 
-targets = [
-    "seq_dense",
-    "nlp_dense_1",
-    "task_embedding",
-    "ihq_embedding",
-    "jet_embedding",
-    "sibling_context_head",
-]
+source = p.read_text()
+tree = ast.parse(source)
+lines = source.splitlines()
 
-files = list(base.rglob("*.npy"))
+print("=== AUXILIARY BRANCH IMPLEMENTATION ===")
 
-print("=== REAL GRECBASE BRANCH WEIGHTS ===")
+for node in tree.body:
+    if isinstance(node, ast.FunctionDef):
+        print("\nFUNCTION:", node.name)
+        print("ARGS:", ast.unparse(node.args))
 
-for target in targets:
-    matches = [
-        p for p in files
-        if target in p.name
-    ]
-    print(f"\n{target}: {len(matches)} files")
+        if node.name == "grecbase_aux_features":
+            for i in range(node.lineno, node.end_lineno + 1):
+                print(f"{i}: {lines[i-1]}")
 
-    for p in sorted(matches)[:5]:
-        arr = np.load(p, mmap_mode="r")
-        print(" ", p.name, tuple(arr.shape))
-
-print("\n=== CURRENT FUSION CONTRACT ===")
-print("8 inputs: each (1, 256)")
-print("Final output: (1, 10819) — already validated")
 print("\nREAD ONLY — NO FILES MODIFIED")
 PY

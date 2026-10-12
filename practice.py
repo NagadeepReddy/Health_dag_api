@@ -2,27 +2,47 @@ python - <<'PY'
 from pathlib import Path
 
 base = Path("artifacts/v1.168-max/cta_max")
-terms = (
-    "weights_registry",
-    "InferenceSession(",
-    "session.load(",
-    "fused_attn_ff_proj.weight",
-)
-
-matches = []
+found = 0
 
 for p in sorted(base.rglob("*.py")):
     lines = p.read_text().splitlines()
-    for i, line in enumerate(lines):
-        if any(term in line for term in terms):
-            matches.append((p, lines, i))
+    source = "\n".join(lines)
 
-print("MATCHES FOUND:", len(matches))
+    if not (
+        "AttPoolingBlockMAX" in source
+        or "fused_attn_ff_proj" in source
+    ):
+        continue
 
-for p, lines, i in matches[:12]:
-    print(f"\n===== {p.name}:{i+1} =====")
-    for j in range(max(0, i-3), min(len(lines), i+5)):
-        print(f"{j+1}: {lines[j]}")
+    if not (
+        "weights_registry" in source
+        or "WeightsRegistry" in source
+    ):
+        continue
 
-print("\nREAD ONLY — NO FILES MODIFIED")
+    print(f"\n===== {p.name} =====")
+    indices = [
+        i for i, line in enumerate(lines)
+        if any(term in line for term in (
+            "weights_registry",
+            "WeightsRegistry",
+            "weights =",
+            "session.load(",
+            "fused_attn_ff_proj",
+        ))
+    ]
+
+    shown = set()
+    for i in indices[:8]:
+        for j in range(max(0, i-4), min(len(lines), i+6)):
+            if j not in shown:
+                print(f"{j+1}: {lines[j]}")
+                shown.add(j)
+
+    found += 1
+    if found >= 3:
+        break
+
+print("\nMATCHING FILES:", found)
+print("READ ONLY — NO FILES MODIFIED")
 PY

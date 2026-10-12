@@ -2,58 +2,58 @@ python - <<'PY'
 from pathlib import Path
 import ast
 
-b = Path("artifacts/v1.168-max/cta_max")
-src = b / "parallel_transformer_graph_2layers.py"
-dst = b / "parallel_transformer_graph_sequence.py"
+base = Path("artifacts/v1.168-max/cta_max")
+src = base / "run_transformer_2layers.py"
+dst = base / "run_transformer_sequence.py"
 
 assert src.is_file()
-assert (b / "sequence_postprocess_max.py").is_file()
-assert not dst.exists(), "STOP: sequence graph already exists"
+assert (base / "parallel_transformer_graph_sequence.py").is_file()
+assert not dst.exists(), "STOP: combined runner already exists"
 
 s = src.read_text()
 
-old_import = (
-    "from parallel_transformer_block_2layers "
-    "import ParallelTransformerBlockMAX"
+old = "from parallel_transformer_graph_2layers import build_parallel_transformer_graph"
+new = "from parallel_transformer_graph_sequence import build_parallel_transformer_graph"
+assert s.count(old) == 1, "STOP: original graph import differs"
+
+s = s.replace(old, new, 1)
+
+# Make the cta_max package importable.
+s = (
+    'import sys\n'
+    'sys.path.insert(0, "artifacts/v1.168-max")\n'
+    + s
 )
 
-assert s.count(old_import) == 1, "STOP: block import differs"
-assert s.count("graph.output(output)") == 1, "STOP: graph output differs"
+# Add dense weights to the existing proven WeightData loading loops.
+marker = "weights = {}"
+assert s.count(marker) >= 1, "STOP: weight registry differs"
 
-s = s.replace(
-    old_import,
-    old_import + "\nfrom cta_max.sequence_postprocess_max import SequencePostprocessMAX",
-    1
-)
+addition = '''
+weight_files.update({
+    "sequence_transformer.seq_dense.weight":
+        "artifacts/v1.168-max/cta_max/sequence_weights/seq_dense_weight.npy",
+    "sequence_transformer.seq_dense.bias":
+        "artifacts/v1.168-max/cta_max/sequence_weights/seq_dense_bias.npy",
+})
+weights = {}
+'''
+s = s.replace(marker, addition)
 
-lines = s.splitlines()
-
-matches = [
-    i for i, line in enumerate(lines)
-    if line.strip() == "graph = Graph("
-]
-
-assert len(matches) == 1, "STOP: graph construction differs"
-
-i = matches[0]
-indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
-
-lines.insert(
-    i,
-    indent + "postprocess = SequencePostprocessMAX("
-    "dtype=DType.float32, device=device_ref)"
-)
-
-s = "\n".join(lines) + "\n"
-s = s.replace(
-    "graph.output(output)",
-    "graph.output(postprocess(output))",
-    1
-)
+# Protect the saved transformer-only parity output.
+old_output = "transformer_max_output_2layers.npy"
+assert s.count(old_output) == 1, "STOP: transformer output handling differs"
+s = s.replace(old_output, "sequence_combined_output.npy")
 
 ast.parse(s)
 dst.write_text(s)
 
-print("COMBINED SEQUENCE GRAPH CREATED — SYNTAX OK")
-print("TWO-LAYER GRAPH AND DS CODE UNCHANGED")
+print("COMBINED SEQUENCE RUNNER CREATED")
+print("ORIGINAL TRANSFORMER RUNNER UNCHANGED")
 PY
+
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_transformer_sequence.py

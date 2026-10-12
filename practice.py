@@ -7,33 +7,109 @@ import sys
 import ast
 from pathlib import Path
 
-sys.path.insert(0, "/workspace/artifacts/v1.168-max")
+root = Path("/workspace/artifacts/v1.168-max")
+base = root / "cta_max"
+target = base / "grecbase_fusion_all8_max.py"
 
-from max.graph import DeviceRef
+sys.path.insert(0, str(root))
+sys.path.insert(0, str(base))
 
-p = Path(
-    "artifacts/v1.168-max/cta_max/"
-    "grecbase_fusion_all8_max.py"
+assert target.is_file(), "Eight-branch source missing"
+
+tree = ast.parse(target.read_text())
+
+# 1. Identify the existing incorrect block import.
+imports = [
+    node for node in tree.body
+    if isinstance(node, ast.ImportFrom)
+    and any(
+        alias.name == "ParallelTransformerBlockMAX"
+        for alias in node.names
+    )
+]
+
+assert len(imports) == 1, (
+    "Cannot uniquely identify transformer block import"
 )
 
-assert p.exists(), "Eight-branch source not found"
+# 2. Find the actual class implementation.
+candidates = []
 
-tree = ast.parse(p.read_text())
+for p in root.rglob("*.py"):
+    if p == target:
+        continue
 
-graphs = [
+    text = p.read_text()
+
+    if "class ParallelTransformerBlockMAX" not in text:
+        continue
+
+    try:
+        parsed = ast.parse(text)
+    except SyntaxError:
+        continue
+
+    if any(
+        isinstance(node, ast.ClassDef)
+        and node.name == "ParallelTransformerBlockMAX"
+        for node in parsed.body
+    ):
+        candidates.append(p)
+
+# Prefer the implementation referenced by the
+# previously validated full-sequence graph.
+seq_file = base / "parallel_transformer_graph_full_sequence.py"
+seq_tree = ast.parse(seq_file.read_text())
+
+preferred = [
+    node.module for node in seq_tree.body
+    if isinstance(node, ast.ImportFrom)
+    and any(
+        alias.name == "ParallelTransformerBlockMAX"
+        for alias in node.names
+    )
+]
+
+if len(candidates) > 1 and len(preferred) == 1:
+    matching = [
+        p for p in candidates
+        if p.stem == preferred[0].split(".")[-1]
+    ]
+    if len(matching) == 1:
+        candidates = matching
+
+print("TRANSFORMER CLASS CANDIDATES:",
+      [str(p.relative_to(root)) for p in candidates])
+
+assert len(candidates) == 1, (
+    "Transformer class location is ambiguous; "
+    "no changes made"
+)
+
+module = ".".join(
+    candidates[0].relative_to(root).with_suffix("").parts
+)
+
+imports[0].module = module
+
+print("CORRECTED IMPORT MODULE:", module)
+
+# 3. Apply the previously confirmed sequence shapes.
+graph_calls = [
     n for n in ast.walk(tree)
     if isinstance(n, ast.Call)
     and isinstance(n.func, ast.Name)
     and n.func.id == "Graph"
 ]
-assert len(graphs) == 1
+
+assert len(graph_calls) == 1
 
 kw = next(
-    k for k in graphs[0].keywords
+    k for k in graph_calls[0].keywords
     if k.arg == "input_types"
 )
 
-candidates = [
+groups = [
     n for n in ast.walk(kw.value)
     if isinstance(n, ast.List)
     and len(n.elts) == 5
@@ -45,26 +121,18 @@ candidates = [
     )
 ]
 
-assert len(candidates) == 1, (
-    "Sequence input definitions not uniquely identified"
+assert len(groups) == 1, (
+    "Sequence input group ambiguous; no changes made"
 )
 
-seq_inputs = candidates[0].elts
+seq_inputs = groups[0].elts
 
-current = [
-    ast.literal_eval(x.args[1])
-    for x in seq_inputs
+old_shapes = [
+    ast.literal_eval(n.args[1])
+    for n in seq_inputs
 ]
 
-expected = [
-    [1, 4],
-    [1, 4, 1],
-    [1, 4, 1],
-    [1, 1, 4, 256],
-    [1, 1, 4, 256],
-]
-
-correct = [
+correct_shapes = [
     [1, 4],
     [1, 4],
     [1, 4],
@@ -72,41 +140,57 @@ correct = [
     [1, 1, 4, 256],
 ]
 
-assert current in (expected, correct), (
-    f"Unexpected sequence contract: {current}"
+previous_shapes = [
+    [1, 4],
+    [1, 4, 1],
+    [1, 4, 1],
+    [1, 1, 4, 256],
+    [1, 1, 4, 256],
+]
+
+assert old_shapes in (previous_shapes, correct_shapes), (
+    f"Unexpected sequence shapes: {old_shapes}"
 )
 
-for node, shape in zip(seq_inputs, correct):
+for node, shape in zip(seq_inputs, correct_shapes):
     node.args[1] = ast.parse(
         repr(shape), mode="eval"
     ).body
 
+print("SEQUENCE INPUT SHAPES:", correct_shapes)
+
+# 4. Validate corrected source without modifying it.
 updated = ast.unparse(
     ast.fix_missing_locations(tree)
 ) + "\n"
 
-compile(updated, str(p), "exec")
+code = compile(updated, str(target), "exec")
 
 namespace = {
-    "__file__": str(p.resolve()),
-    "__name__": "cta_max.all8_shape_validation",
+    "__file__": str(target),
+    "__name__": "cta_max.all8_validation",
     "__package__": "cta_max",
 }
 
-exec(compile(updated, str(p), "exec"), namespace)
+exec(code, namespace)
 
-print("SEQUENCE INPUT SHAPES:", correct)
+print("EIGHT-BRANCH IMPORTS: PASS")
+print("PYTHON SYNTAX: PASS")
 
-graph = namespace[
-    "build_grecbase_fusion_graph_all8"
-](DeviceRef.CPU())
+# 5. Construct complete graph.
+from max.graph import DeviceRef
+
+builder = namespace["build_grecbase_fusion_graph_all8"]
+
+graph = builder(DeviceRef.CPU())
 
 print("EIGHT-BRANCH GRAPH CONSTRUCTION: PASS")
 
-if p.read_text() != updated:
-    p.write_text(updated)
+# Save only after successful construction.
+if target.read_text() != updated:
+    target.write_text(updated)
 
-print("CORRECTED MAX GRAPH SAVED")
-print("SIX-BRANCH GRAPH UNCHANGED")
+print("CORRECTED EIGHT-BRANCH GRAPH SAVED")
+print("PREVIOUS SIX-BRANCH GRAPH UNCHANGED")
 print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
 PY

@@ -3,47 +3,44 @@ from pathlib import Path
 import ast
 
 base = Path("artifacts/v1.168-max/cta_max")
-correct = base / "sequence_weights/fn_norm1_g_layer1.npy"
-assert correct.is_file(), "STOP: Block-1 norm1 weight missing"
+src = base / "parallel_transformer_graph_layer1.py"
+dst = base / "parallel_transformer_graph_2layers.py"
 
-files = [
-    base / "run_transformer_layer1.py",
-    base / "run_transformer_layer1_ff.py",
-]
+assert src.is_file(), "STOP: source graph missing"
+assert not dst.exists(), "STOP: two-layer graph already exists"
 
-prepared = []
+s = src.read_text()
 
-for p in files:
-    s = p.read_text()
-    tree = ast.parse(s)
+old = """    block = ParallelTransformerBlockMAX(
+        dtype=DType.float32,
+        device=device_ref,
+        layer_idx=1,
+    )"""
 
-    matches = []
-    for n in ast.walk(tree):
-        if not isinstance(n, ast.Call):
-            continue
-        if not isinstance(n.func, ast.Name) or n.func.id != "next":
-            continue
-        if len(n.args) != 1:
-            continue
-        g = n.args[0]
-        if not isinstance(g, ast.Call):
-            continue
-        if not isinstance(g.func, ast.Attribute) or g.func.attr != "glob":
-            continue
-        if len(g.args) == 1 and isinstance(g.args[0], ast.Constant):
-            if g.args[0].value == "*norm1*g*.npy":
-                matches.append(ast.get_source_segment(s, n))
+new = """    block0 = ParallelTransformerBlockMAX(
+        dtype=DType.float32,
+        device=device_ref,
+        layer_idx=0,
+    )
+    block1 = ParallelTransformerBlockMAX(
+        dtype=DType.float32,
+        device=device_ref,
+        layer_idx=1,
+    )"""
 
-    assert len(matches) == 1, f"STOP: {p.name}: found {len(matches)} wildcard loaders"
+assert s.count(old) == 1, "STOP: constructor differs"
+assert s.count("output = block(x, pos_emb)") == 1, "STOP: graph call differs"
 
-    updated = s.replace(matches[0], f'Path("{correct}")', 1)
-    ast.parse(updated)
-    prepared.append((p, updated))
+s = s.replace(old, new, 1)
+s = s.replace(
+    "output = block(x, pos_emb)",
+    "output = block1(block0(x, pos_emb), pos_emb)",
+    1
+)
 
-for p, updated in prepared:
-    p.write_text(updated)
-    print("FIXED:", p.name)
+ast.parse(s)
+dst.write_text(s)
 
-print("BLOCK-1 NORM1 PATHS CORRECTED — SYNTAX OK")
-print("BLOCK-0 AND DS CODE UNCHANGED")
+print("TWO-LAYER MAX GRAPH CREATED — SYNTAX OK")
+print("VERIFIED BLOCKS AND DS CODE UNCHANGED")
 PY

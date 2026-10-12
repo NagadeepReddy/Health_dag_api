@@ -2,71 +2,55 @@ python - <<'PY'
 import ast
 from pathlib import Path
 
-p = Path("artifacts/v1.168/core-artifact/pipeline.py")
-src = p.read_text()
-tree = ast.parse(src)
+root = Path("artifacts/v1.168")
+files = [root / "core-artifact/pipeline.py"]
+files += sorted(root.rglob("Model.py"))
 
-methods = [
-    n for n in ast.walk(tree)
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "preprocess"
-]
-
-assert len(methods) == 1, "Expected one preprocess method"
-fn = methods[0]
-
-print("=== ORIGINAL MODEL INPUT CONSTRUCTION ===")
-count = 0
-
-for n in ast.walk(fn):
-    value = None
-
-    if isinstance(n, ast.Assign):
-        targets = n.targets
-        value = n.value
-    elif isinstance(n, ast.AnnAssign):
-        targets = [n.target]
-        value = n.value
-    else:
+for path in files:
+    if not path.is_file():
         continue
 
-    for target in targets:
-        text = ast.unparse(target)
+    src = path.read_text()
+    lines = src.splitlines()
+    tree = ast.parse(src)
 
-        if text == "model_in":
-            print(f"LINE {n.lineno}: model_in initialized")
-            if isinstance(value, ast.Dict):
-                for key, val in zip(value.keys, value.values):
-                    print(" ", ast.unparse(key) if key else "**",
-                          "<-", ast.unparse(val)[:160])
-            else:
-                print(" SOURCE:", ast.unparse(value)[:350])
-            count += 1
+    print(f"\n===== {path} =====")
 
-        elif text.startswith("model_in["):
-            print(f"LINE {n.lineno}: {text}")
-            print(" VALUE:", ast.unparse(value)[:180])
-            count += 1
+    for cls in [n for n in tree.body if isinstance(n, ast.ClassDef)]:
+        methods = {
+            n.name: n for n in cls.body
+            if isinstance(n, ast.FunctionDef)
+        }
 
-print("\nMODEL INPUT ASSIGNMENTS FOUND:", count)
+        if not any(name in methods for name in
+                   ("preprocess", "predict_raw", "_extract_json")):
+            continue
 
-print("\n=== MODEL INPUT READS IN INFERENCE ===")
-for n in ast.walk(tree):
-    if isinstance(n, ast.FunctionDef) and n.name == "inference":
-        keys = sorted({
-            a.args[0].value
-            for a in ast.walk(n)
-            if isinstance(a, ast.Call)
-            and isinstance(a.func, ast.Attribute)
-            and isinstance(a.func.value, ast.Name)
-            and a.func.value.id == "model_in"
-            and a.func.attr == "get"
-            and a.args
-            and isinstance(a.args[0], ast.Constant)
-            and isinstance(a.args[0].value, str)
-        })
-        for key in keys:
-            print(" ", key)
+        print("CLASS:", cls.name)
+
+        for name in ("__init__", "preprocess", "predict_raw", "predict"):
+            if name in methods:
+                n = methods[name]
+                print(" METHOD:", name, ast.unparse(n.args)[:200])
+
+        if "__init__" in methods:
+            n = methods["__init__"]
+            print(" INITIALIZATION:")
+            for i in range(n.lineno, min(n.end_lineno, n.lineno + 24) + 1):
+                print(f"  {i}: {lines[i-1][:180]}")
+
+    print(" PIPELINE CALL SITES:")
+    shown = 0
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call):
+            expr = ast.unparse(n.func)
+            if any(k in expr for k in
+                   ("Pipeline(", "pipeline.predict_raw",
+                    "pipeline.preprocess", "self.pipeline")):
+                print(" ", n.lineno, ast.unparse(n)[:220])
+                shown += 1
+                if shown >= 8:
+                    break
 
 print("\nREAD ONLY — NO FILES MODIFIED")
 PY

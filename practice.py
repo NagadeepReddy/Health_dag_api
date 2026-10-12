@@ -2,27 +2,32 @@ python - <<'PY'
 import ast
 from pathlib import Path
 
-p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
-source = p.read_text()
-tree = ast.parse(source)
-
-matches = [
-    node for node in ast.walk(tree)
-    if isinstance(node, ast.ClassDef)
-    and node.name == "ParallelTransformerAEP"
+files = [
+    ("ORIGINAL", Path("artifacts/v1.168/utils/dependency-utils/models.py"), "ParallelTransformerAEP"),
+    ("MAX", Path("artifacts/v1.168-max/cta_max/sequence_transformer_max.py"), "ParallelTransformerMAEPMAX"),
 ]
 
-assert len(matches) == 1, "STOP: Original sequence class not uniquely found"
+for label, path, name in files:
+    source = path.read_text()
+    tree = ast.parse(source)
+    classes = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.ClassDef) and n.name == name
+    ]
+    assert len(classes) == 1, f"STOP: {name} not uniquely found"
 
-methods = [
-    node for node in matches[0].body
-    if isinstance(node, ast.FunctionDef)
-    and node.name == "forward"
-]
+    init = next(
+        n for n in classes[0].body
+        if isinstance(n, ast.FunctionDef) and n.name == "__init__"
+    )
 
-assert len(methods) == 1, "STOP: Original forward not found"
-
-print("===== ORIGINAL SEQUENCE FORWARD =====")
-print(ast.get_source_segment(source, methods[0]))
-print("===== END =====")
+    print(f"\n===== {label} CONSTRUCTOR =====")
+    for node in init.body:
+        line = ast.get_source_segment(source, node)
+        if line and any(k in line for k in [
+            "page_meta_wide", "item_meta_wide",
+            "embedding", "num_layers", "ptransformer",
+            "out_norm", "seq_pooling", "seq_dense"
+        ]):
+            print(line[:1200])
 PY

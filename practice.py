@@ -2,61 +2,56 @@ python - <<'PY'
 import ast
 from pathlib import Path
 
-original = Path(
-    "artifacts/v1.168/utils/dependency-utils/models.py"
+p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
+s = p.read_text()
+tree = ast.parse(s)
+
+cls = next(
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
 )
-current = Path(
-    "artifacts/v1.168-max/cta_max/grecbase_max.py"
+
+init = next(
+    n for n in cls.body
+    if isinstance(n, ast.FunctionDef) and n.name == "__init__"
 )
 
-def get_class(path, name):
-    tree = ast.parse(path.read_text())
-    matches = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.ClassDef)
-        and n.name == name
-    ]
-    assert len(matches) == 1, f"STOP: {name} not found uniquely"
-    return matches[0]
+targets = {
+    "nlp_encoder", "nlp_dense_0", "nlp_dense_1",
+    "nlp_act", "sequence_transformer",
+    "task_embedding", "jet_embedding", "ihq_embedding",
+    "sibling_context_head", "att_pooling", "mm_pooling",
+    "seq_dense", "moe_norm1", "moe_norm2",
+    "context_dim", "task_type_dim", "extract_deep_idx"
+}
 
-def get_method(cls, name):
-    matches = [
-        n for n in cls.body
-        if isinstance(n, ast.FunctionDef)
-        and n.name == name
-    ]
-    assert len(matches) == 1, f"STOP: {name} missing"
-    return matches[0]
+found = set()
 
-def self_attributes(node, context):
-    return sorted({
-        n.attr for n in ast.walk(node)
-        if isinstance(n, ast.Attribute)
-        and isinstance(n.value, ast.Name)
-        and n.value.id == "self"
-        and isinstance(n.ctx, context)
-    })
+print("===== ORIGINAL GRecBase MISSING-LAYER DEFINITIONS =====")
 
-pt = get_class(original, "GRecBase")
-mx = get_class(current, "GRecBaseMAX")
+for node in ast.walk(init):
+    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+        continue
 
-pt_forward = get_method(pt, "forward")
-mx_init = get_method(mx, "__init__")
+    assigned = (
+        node.targets if isinstance(node, ast.Assign)
+        else [node.target]
+    )
 
-needed = set(self_attributes(pt_forward, ast.Load))
-implemented = set(self_attributes(mx_init, ast.Store))
+    for target in assigned:
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+            and target.attr in targets
+        ):
+            name = target.attr
+            if name not in found:
+                found.add(name)
+                print("\n###", name)
+                print(ast.get_source_segment(s, node))
 
-print("===== ORIGINAL GRecBase INPUTS =====")
-print(ast.unparse(pt_forward.args))
-
-print("\n===== ALREADY DECLARED IN GRecBaseMAX =====")
-for name in sorted(implemented):
-    print("READY:", name)
-
-print("\n===== ORIGINAL FORWARD DEPENDENCIES NOT DECLARED =====")
-for name in sorted(needed - implemented):
-    print("MISSING:", name)
-
-print("\nREAD-ONLY CHECK COMPLETE")
-print("VERIFIED MAX COMPONENTS UNCHANGED")
+print("\nNOT DIRECTLY ASSIGNED IN CONSTRUCTOR:")
+print(sorted(targets - found))
+print("\nREAD-ONLY — NO FILES MODIFIED")
 PY

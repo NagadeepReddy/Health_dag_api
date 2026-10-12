@@ -3,63 +3,52 @@ import ast
 from pathlib import Path
 
 base = Path("artifacts/v1.168-max/cta_max")
-models = Path("artifacts/v1.168/utils/dependency-utils/models.py")
 
-print("=== ORIGINAL NLP OPERATIONS ===")
-lines = models.read_text().splitlines()
-for i, line in enumerate(lines):
-    if any(s in line for s in (
-        "nlp_act0", "nlp_act1", "nlp_dense0",
-        "nlp_dense1", "seq_dense"
-    )):
-        print(f"{i+1}: {line.strip()[:180]}")
-
-print("\n=== EXISTING MAX BRANCH INTERFACES ===")
-targets = {
-    "nlp_bert_in_graph.py": ["nlp_bert_forward"],
-    "sibling_context_max.py": ["sibling_context_forward"],
-    "main_context_max.py": ["main_context_forward"],
-    "grecbase_aux_branches_max.py": ["grecbase_aux_features"],
-}
-
-for filename, names in targets.items():
-    p = base / filename
-    print(f"\n{filename}:")
-    if not p.exists():
-        print("MISSING")
-        continue
-    tree = ast.parse(p.read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name in names:
-            print("ARGS:", ast.unparse(node.args)[:240])
-            for child in ast.walk(node):
-                if isinstance(child, ast.Return):
-                    print("RETURN:", ast.unparse(child.value)[:240])
-
-print("\n=== SEQUENCE GRAPH CONNECTIONS ===")
+print("=== SEQUENCE GRAPH INPUT CONTRACT ===")
 p = base / "parallel_transformer_graph_full_sequence.py"
-if p.exists():
+src = p.read_text()
+tree = ast.parse(src)
+
+for node in ast.walk(tree):
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name) and node.func.id == "Graph":
+            print(ast.unparse(node)[:2400])
+
+print("\n=== SEQUENCE COMPONENT CONSTRUCTION ===")
+for node in ast.walk(tree):
+    if isinstance(node, ast.Assign):
+        if any(
+            isinstance(t, ast.Name) and t.id in
+            ("features", "block0", "block1", "postprocess")
+            for t in node.targets
+        ):
+            print(ast.unparse(node)[:700])
+
+print("\n=== SIBLING INPUT CONTRACT ===")
+p = base / "sibling_context_max.py"
+src = p.read_text()
+tree = ast.parse(src)
+
+for node in ast.walk(tree):
+    if isinstance(node, ast.Assign):
+        text = ast.unparse(node)
+        if any(x in text.upper() for x in
+               ("DEEP_DIMS", "WIDE_DIM", "DEEP_EMBEDDING")):
+            print(text[:500])
+
+for p in sorted(base.glob("run*sibling*.py"))[:2]:
     tree = ast.parse(p.read_text())
+    print("RUNNER:", p.name)
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef):
-            if "graph" in node.name or "sequence" in node.name:
-                print("FUNCTION:", node.name, ast.unparse(node.args)[:180])
         if isinstance(node, ast.Call):
-            name = ast.unparse(node.func)
-            if name.endswith(".output"):
-                print("OUTPUT:", ast.unparse(node)[:240])
-else:
-    print("SEQUENCE FILE MISSING")
+            if isinstance(node.func, ast.Name) and node.func.id == "Graph":
+                print("GRAPH:", ast.unparse(node)[:1800])
 
-print("\n=== CURRENT WORKING FUSION ===")
-p = base / "grecbase_fusion_with_context_max.py"
-print("FILE EXISTS:", p.exists())
-if p.exists():
-    tree = ast.parse(p.read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("build_"):
-            print("BUILDER:", node.name)
-            print("ARGS:", ast.unparse(node.args))
+print("\n=== ORIGINAL MODEL NLP ACTIVATION ===")
+p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
+src = p.read_text()
+for term in ("nlp_act1", "nlp_dense1"):
+    print(term, "occurrences:", src.count(term))
 
-print("\nREAD ONLY — NO FILES MODIFIED")
+print("\nNO FILES MODIFIED")
 PY

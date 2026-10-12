@@ -1,27 +1,32 @@
-python - <<'PY'
-import ast
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  - <<'PY'
 from pathlib import Path
+import ast
+from max.graph import ops
 
-p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
-tree = ast.parse(p.read_text())
+assert all(hasattr(ops, n) for n in ("mean", "max", "concat")), \
+    "STOP: required MAX operation unavailable"
 
-cls = next(n for n in tree.body
-    if isinstance(n, ast.ClassDef)
-    and n.name == "ParallelTransformerAEP")
+p = Path("artifacts/v1.168-max/cta_max/sequence_pooling_max.py")
+assert not p.exists(), "STOP: file already exists"
 
-init = next(n for n in cls.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "__init__")
+code = '''
+from max.graph import TensorValue, ops
+from max.nn.layer import Module
 
-wanted = {
-    "ptransformer", "ff1", "seq_pooling_dp",
-    "seq_dense", "out_norm1", "out_norm2"
-}
+class MeanMaxPoolingMAX(Module):
+    def __call__(self, x: TensorValue) -> TensorValue:
+        mean_out = ops.mean(x, axis=1)
+        max_out = ops.max(x, axis=1)
+        return ops.concat([mean_out, max_out], axis=1)
+'''
 
-for n in ast.walk(init):
-    if isinstance(n, (ast.Assign, ast.AnnAssign)):
-        targets = n.targets if isinstance(n, ast.Assign) else [n.target]
-        for t in targets:
-            if isinstance(t, ast.Attribute) and t.attr in wanted:
-                print(f"{t.attr}: {ast.unparse(n.value)}")
+ast.parse(code)
+p.write_text(code)
+
+print("MAX MEAN-MAX POOLING CREATED — SYNTAX OK")
+print("ORIGINAL MODEL AND VERIFIED TRANSFORMER UNCHANGED")
 PY

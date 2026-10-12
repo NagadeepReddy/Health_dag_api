@@ -3,52 +3,70 @@ import ast
 from pathlib import Path
 
 p = Path("artifacts/v1.168/core-artifact/pipeline.py")
-lines = p.read_text().splitlines()
-tree = ast.parse(p.read_text())
+src = p.read_text()
+tree = ast.parse(src)
 
-def show(a, b):
-    for n in range(max(1, a), min(len(lines), b) + 1):
-        print(f"{n}: {lines[n-1]}")
+methods = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "preprocess"
+]
 
-for node in ast.walk(tree):
-    if not isinstance(node, ast.FunctionDef):
+assert len(methods) == 1, "Expected one preprocess method"
+fn = methods[0]
+
+print("=== ORIGINAL MODEL INPUT CONSTRUCTION ===")
+count = 0
+
+for n in ast.walk(fn):
+    value = None
+
+    if isinstance(n, ast.Assign):
+        targets = n.targets
+        value = n.value
+    elif isinstance(n, ast.AnnAssign):
+        targets = [n.target]
+        value = n.value
+    else:
         continue
 
-    if node.name == "predict_raw":
-        print("===== REAL INPUT CREATION AND INFERENCE CALL =====")
-        locations = set()
+    for target in targets:
+        text = ast.unparse(target)
 
-        for n in ast.walk(node):
-            if isinstance(n, ast.Call):
-                name = ast.unparse(n.func)
-                if "preprocess" in name or name.endswith(".inference"):
-                    locations.add(n.lineno)
+        if text == "model_in":
+            print(f"LINE {n.lineno}: model_in initialized")
+            if isinstance(value, ast.Dict):
+                for key, val in zip(value.keys, value.values):
+                    print(" ", ast.unparse(key) if key else "**",
+                          "<-", ast.unparse(val)[:160])
+            else:
+                print(" SOURCE:", ast.unparse(value)[:350])
+            count += 1
 
-            if isinstance(n, (ast.Assign, ast.AnnAssign)):
-                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
-                if any(
-                    isinstance(t, ast.Name) and t.id == "model_in"
-                    for t in targets
-                ):
-                    locations.add(n.lineno)
+        elif text.startswith("model_in["):
+            print(f"LINE {n.lineno}: {text}")
+            print(" VALUE:", ast.unparse(value)[:180])
+            count += 1
 
-        shown = set()
-        for location in sorted(locations):
-            for i in range(max(node.lineno, location - 7),
-                           min(node.end_lineno, location + 7) + 1):
-                if i not in shown:
-                    print(f"{i}: {lines[i-1]}")
-                    shown.add(i)
-            print("---")
+print("\nMODEL INPUT ASSIGNMENTS FOUND:", count)
 
-    if node.name == "preprocess":
-        print("===== PREPROCESS RETURN CONTRACT =====")
-        returns = [
-            n for n in ast.walk(node)
-            if isinstance(n, ast.Return)
-        ]
-        for r in returns[-3:]:
-            show(r.lineno - 3, r.end_lineno)
+print("\n=== MODEL INPUT READS IN INFERENCE ===")
+for n in ast.walk(tree):
+    if isinstance(n, ast.FunctionDef) and n.name == "inference":
+        keys = sorted({
+            a.args[0].value
+            for a in ast.walk(n)
+            if isinstance(a, ast.Call)
+            and isinstance(a.func, ast.Attribute)
+            and isinstance(a.func.value, ast.Name)
+            and a.func.value.id == "model_in"
+            and a.func.attr == "get"
+            and a.args
+            and isinstance(a.args[0], ast.Constant)
+            and isinstance(a.args[0].value, str)
+        })
+        for key in keys:
+            print(" ", key)
 
 print("\nREAD ONLY — NO FILES MODIFIED")
 PY

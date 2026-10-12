@@ -20,7 +20,7 @@ x = np.load(base / "transformer_max_output_2layers.npy").astype(np.float32)
 assert x.shape == (1, 4, 256)
 
 def load(name):
-    return np.load(wdir / (name + ".npy")).astype(np.float32)
+    return np.load(wdir / f"{name}.npy").astype(np.float32)
 
 g1 = load("out_norm1_g")
 g2 = load("out_norm2_g")
@@ -32,21 +32,24 @@ assert (g1.shape, g2.shape, w.shape, b.shape) == (
 )
 
 dense = Linear(
-    in_dim=512, out_dim=256,
-    dtype=DType.float32, device=device,
+    in_dim=512,
+    out_dim=256,
+    dtype=DType.float32,
+    device=device,
     has_bias=True,
-    name="sequence_transformer.seq_dense",
+    name="sequence_transformer.seq_dense"
 )
 
 graph = Graph(
     "cta_sequence_postprocess_test",
-    input_types=[TensorType(
-        DType.float32, shape=[1, 4, 256], device=device
-    )],
+    input_types=[
+        TensorType(DType.float32, shape=[1, 4, 256], device=device)
+    ]
 )
 
 with graph:
     v = graph.inputs[0]
+
     norm1 = ops.constant(g1, dtype=DType.float32, device=device)
     norm2 = ops.constant(g2, dtype=DType.float32, device=device)
 
@@ -56,23 +59,30 @@ with graph:
     mean = ops.mean(v, axis=1)
     maximum = ops.max(v, axis=1)
 
-    # MAX concat gives [1, 2, 256]; flatten to [1, 512].
     v = ops.reshape(
         ops.concat([mean, maximum], axis=1),
         [1, 512]
     )
 
     v = dense(v)
+
     var2 = ops.reshape(ops.mean(v * v, axis=-1), [1, 1])
     v = v * ops.rsqrt(var2 + 1e-6) * norm2
+
     graph.output(v)
 
-registry = {
-    "sequence_transformer.seq_dense.weight":
-        WeightData(w, name="sequence_transformer.seq_dense.weight", dtype=DType.float32),
-    "sequence_transformer.seq_dense.bias":
-        WeightData(b, name="sequence_transformer.seq_dense.bias", dtype=DType.float32),
-}
+registry = {}
+
+for name, arr in {
+    "sequence_transformer.seq_dense.weight": w,
+    "sequence_transformer.seq_dense.bias": b
+}.items():
+    registry[name] = WeightData(
+        arr,
+        name=name,
+        dtype=DType.float32,
+        shape=arr.shape
+    )
 
 session = InferenceSession(devices=[device])
 model = session.load(graph, weights_registry=registry)

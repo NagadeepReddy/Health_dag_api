@@ -1,41 +1,28 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys
-import numpy as np
+python - <<'PY'
+from pathlib import Path
 
-sys.path.insert(0, "/workspace/artifacts/v1.168-max")
+base = Path("artifacts/v1.168-max/cta_max")
+terms = (
+    "weights_registry",
+    "InferenceSession(",
+    "session.load(",
+    "fused_attn_ff_proj.weight",
+)
 
-from max.driver import CPU, Tensor
-from max.engine import InferenceSession
-from max.graph import DeviceRef
-from cta_max.grecbase_fusion_graph_max import build_grecbase_fusion_graph
+matches = []
 
-device = CPU()
-graph = build_grecbase_fusion_graph(DeviceRef.CPU())
+for p in sorted(base.rglob("*.py")):
+    lines = p.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if any(term in line for term in terms):
+            matches.append((p, lines, i))
 
-session = InferenceSession(devices=[device])
-model = session.load(graph)
+print("MATCHES FOUND:", len(matches))
 
-print("UPDATED FUSION COMPILATION: PASS")
+for p, lines, i in matches[:12]:
+    print(f"\n===== {p.name}:{i+1} =====")
+    for j in range(max(0, i-3), min(len(lines), i+5)):
+        print(f"{j+1}: {lines[j]}")
 
-inputs = [
-    Tensor.from_numpy(
-        np.random.default_rng(i).standard_normal((1, 256)).astype(np.float32)
-    ).to(device)
-    for i in range(8)
-]
-
-result = model.execute(*inputs)[0].to_numpy()
-
-print("OUTPUT SHAPE:", result.shape)
-print("FINITE:", bool(np.isfinite(result).all()))
-
-assert result.shape == (1, 10819), result.shape
-assert np.isfinite(result).all()
-
-print("UPDATED FUSION RUNTIME: PASS")
-print("ORIGINAL DS CODE UNCHANGED")
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

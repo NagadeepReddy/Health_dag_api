@@ -5,7 +5,6 @@ podman run --rm -i \
   - <<'PY'
 from pathlib import Path
 import ast
-import re
 import sys
 
 from max.driver import CPU
@@ -14,50 +13,44 @@ from max.graph import DeviceRef, Graph, TensorType
 
 base = Path("artifacts/v1.168-max/cta_max")
 p = base / "att_pooling_max.py"
-source = p.read_text()
+s = p.read_text()
 
-pattern = (
-    r'q\.reshape\(\(\s*'
-    r'q\.shape\[0\]\s*,\s*2\s*,\s*'
-    r'q\.shape\[1\]\s*,\s*256\s*'
-    r'\)\)'
-)
+changes = {
+    "q.reshape((q.shape[0], 2, q.shape[1], 256))":
+    "q.reshape((q.shape[0], 1, q.shape[1], 256))",
 
-replacement = (
-    "q.reshape((q.shape[0], 1, q.shape[1], 256))"
-)
+    "out.reshape([out.shape[0], out.shape[2], 512])":
+    "out.reshape([out.shape[0], out.shape[2], 256])",
+}
 
-updated, count = re.subn(pattern, replacement, source)
+for old, new in changes.items():
+    assert s.count(old) == 1, f"STOP: code differs: {old}"
+    s = s.replace(old, new, 1)
 
-assert count == 1, (
-    f"STOP: expected exactly one Q reshape, found {count}"
-)
+assert "self.heads = 1" in s
+assert "[256, 256, 256, 2048]" in s
+ast.parse(s)
 
-assert "self.heads = 1" in updated
-assert "[256, 256, 256, 2048]" in updated
-
-ast.parse(updated)
-
-# Test corrected code in memory before saving.
+# Test modified code WITHOUT saving first.
 sys.path.insert(0, str(base))
 
-namespace = {
+ns = {
     "__name__": "att_pooling_preflight",
     "__file__": str(p),
 }
 
-exec(compile(updated, str(p), "exec"), namespace)
+exec(compile(s, str(p), "exec"), ns)
 
 device = DeviceRef.from_device(CPU())
 
-block = namespace["AttPoolingBlockMAX"](
+block = ns["AttPoolingBlockMAX"](
     dtype=DType.float32,
     device=device,
     layer_idx=0,
 )
 
 graph = Graph(
-    "cta_attention_q_fix_preflight",
+    "cta_attention_shape_preflight",
     input_types=[
         TensorType(DType.float32, [1, 8, 256], device=device),
         TensorType(DType.float32, [1, 1, 8, 256], device=device),
@@ -70,15 +63,16 @@ with graph:
 
 print("GRAPH OUTPUT:", output.shape, flush=True)
 
+assert all(
+    int(dim) == expected
+    for dim, expected in zip(output.shape, (1, 8, 256))
+), "STOP: unexpected output dimensions"
 assert len(output.shape) == 3
-assert [int(d) for d in output.shape] == [1, 8, 256], (
-    f"STOP: unexpected output shape {output.shape}"
-)
 
-p.write_text(updated)
+p.write_text(s)
 
-print("Q HEAD FIX SAVED: 2 -> 1")
-print("K AND V UNCHANGED")
+print("Q HEAD CORRECTED: 1")
+print("ATTENTION OUTPUT DIMENSION: 256")
 print("ATTENTION GRAPH CONSTRUCTION: PASS")
-print("ORIGINAL MODEL AND DS CODE UNCHANGED")
+print("ORIGINAL TRANSFORMER AND DS CODE UNCHANGED")
 PY

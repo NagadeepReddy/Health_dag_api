@@ -5,30 +5,35 @@ podman run --rm -i \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 import sys
 import json
-import subprocess
+import types
 import importlib.util
 from pathlib import Path
 
 root = Path("/workspace/artifacts/v1.168")
+sample = root / "samples/sanity_input.json"
 output = Path(
-    "/workspace/artifacts/v1.168-max/cta_max/"
-    "real_sanity_model_in.pt"
+    "/workspace/artifacts/v1.168-max/cta_max/real_sanity_model_in.pt"
 )
 
-# Install only the missing runtime package.
-# Preserve existing NumPy and other dependencies.
+assert sample.is_file()
+
+# Allow import for preprocessing only.
+# Any actual FAISS operation must fail explicitly.
 try:
     import faiss
+    print("NATIVE FAISS AVAILABLE")
 except ImportError:
-    print("INSTALLING FAISS IN TEMPORARY CONTAINER...", flush=True)
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install",
-        "--disable-pip-version-check",
-        "--no-cache-dir", "--no-deps", "faiss-cpu"
-    ])
-    import faiss
+    stub = types.ModuleType("faiss")
 
-print("FAISS IMPORT: PASS", flush=True)
+    def unavailable(name):
+        raise RuntimeError(
+            f"Real FAISS operation '{name}' requested. "
+            "Native FAISS is required; no simulated results allowed."
+        )
+
+    stub.__getattr__ = unavailable
+    sys.modules["faiss"] = stub
+    print("FAISS IMPORT GUARD ACTIVE — PREPROCESSING ONLY")
 
 import torch
 
@@ -40,14 +45,9 @@ for path in (
 ):
     sys.path.insert(0, str(path))
 
-pipeline_file = root / "core-artifact/pipeline.py"
-sample = root / "samples/sanity_input.json"
-
-assert pipeline_file.is_file()
-assert sample.is_file()
-
 spec = importlib.util.spec_from_file_location(
-    "original_cta_pipeline", pipeline_file
+    "original_cta_pipeline",
+    root / "core-artifact/pipeline.py"
 )
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
@@ -84,5 +84,5 @@ for name, value in model_in.items():
 torch.save(model_in, output)
 
 print("REAL MODEL INPUT SAVED:", output)
-print("ORIGINAL DS SOURCE UNCHANGED")
+print("ORIGINAL PYTORCH AND DS SOURCE UNCHANGED")
 PY

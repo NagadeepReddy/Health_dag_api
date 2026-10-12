@@ -3,59 +3,47 @@ from pathlib import Path
 import ast
 
 base = Path("artifacts/v1.168-max/cta_max")
-names = [
-    "models_raw_attn_diagnostic.py",
-    "parallel_transformer_block_layer1_ff.py",
+correct = base / "sequence_weights/fn_norm1_g_layer1.npy"
+assert correct.is_file(), "STOP: Block-1 norm1 weight missing"
+
+files = [
+    base / "run_transformer_layer1.py",
+    base / "run_transformer_layer1_ff.py",
 ]
 
 prepared = []
 
-for name in names:
-    p = base / name
+for p in files:
     s = p.read_text()
-    lines = s.splitlines()
     tree = ast.parse(s)
 
-    splits = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Assign)
-        and len(n.targets) == 1
-        and isinstance(n.targets[0], ast.Tuple)
-        and [getattr(x, "id", None) for x in n.targets[0].elts]
-            == ["q", "k", "v", "ff"]
-    ]
+    matches = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        if not isinstance(n.func, ast.Name) or n.func.id != "next":
+            continue
+        if len(n.args) != 1:
+            continue
+        g = n.args[0]
+        if not isinstance(g, ast.Call):
+            continue
+        if not isinstance(g.func, ast.Attribute) or g.func.attr != "glob":
+            continue
+        if len(g.args) == 1 and isinstance(g.args[0], ast.Constant):
+            if g.args[0].value == "*norm1*g*.npy":
+                matches.append(ast.get_source_segment(s, n))
 
-    returns = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Return)
-        and isinstance(n.value, ast.Name)
-        and n.value.id == "ff"
-        and "diagnostic: after norm2" in lines[n.lineno - 1]
-    ]
+    assert len(matches) == 1, f"STOP: {p.name}: found {len(matches)} wildcard loaders"
 
-    assert len(splits) == 1, f"STOP {name}: split count={len(splits)}"
-    assert len(returns) == 1, f"STOP {name}: return count={len(returns)}"
-
-    split = splits[0]
-    ret = returns[0]
-    assert split.end_lineno < ret.lineno
-
-    indent = lines[split.lineno - 1][:split.col_offset]
-    lines[ret.lineno - 1] = ""
-    lines.insert(split.end_lineno, indent + "return ff  # diagnostic: raw ff layer1")
-
-    updated = "\n".join(lines) + "\n"
+    updated = s.replace(matches[0], f'Path("{correct}")', 1)
     ast.parse(updated)
+    prepared.append((p, updated))
 
-    backup = Path(str(p) + ".before_raw_ff_layer1.bak")
-    assert not backup.exists(), f"STOP: backup exists: {backup}"
-    prepared.append((p, backup, s, updated))
-
-for p, backup, original, updated in prepared:
-    backup.write_text(original)
+for p, updated in prepared:
     p.write_text(updated)
-    print("READY:", p.name)
+    print("FIXED:", p.name)
 
-print("BLOCK-1 RAW-FF DIAGNOSTICS READY")
-print("REAL MAX BLOCK AND DS CODE UNCHANGED")
+print("BLOCK-1 NORM1 PATHS CORRECTED — SYNTAX OK")
+print("BLOCK-0 AND DS CODE UNCHANGED")
 PY

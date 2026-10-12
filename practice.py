@@ -3,25 +3,26 @@ import ast
 from pathlib import Path
 
 p = Path("artifacts/v1.168/core-artifact/pipeline.py")
-source = p.read_text()
-tree = ast.parse(source)
-out = []
+src = p.read_text()
+tree = ast.parse(src)
 
 for node in ast.walk(tree):
-    if isinstance(node, ast.FunctionDef) and node.name in (
-        "preprocess", "predict_raw", "postprocess"
-    ):
-        out.append(f"\n===== {node.name} =====\n")
-        out.append(ast.get_source_segment(source, node) + "\n")
+    if isinstance(node, ast.FunctionDef) and node.name == "predict_raw":
+        lines = src.splitlines()
+        print("===== PREDICT_RAW: MODEL CALLS =====")
+        print("Function lines:", node.lineno, "-", node.end_lineno)
 
-target = Path("/tmp/cta_pipeline_inspection.txt")
-target.write_text("\n".join(out))
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            name = ast.unparse(call.func)
+            if any(x in name.lower() for x in
+                   ("model", "predict", "forward", "preprocess", "postprocess")):
+                print("\nCALL:", name, "| line:", call.lineno)
+                for n in range(max(node.lineno, call.lineno-2),
+                               min(node.end_lineno, call.end_lineno+2)+1):
+                    if n-call.lineno < 12:
+                        print(f"{n}: {lines[n-1]}")
 
-print("Saved full inspection:", target)
-print("Total lines:", len(target.read_text().splitlines()))
-print("\n===== FIRST 40 LINES =====")
-for i, line in enumerate(target.read_text().splitlines()[:40], 1):
-    print(f"{i}: {line}")
-
-print("\nOriginal project files unchanged.")
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

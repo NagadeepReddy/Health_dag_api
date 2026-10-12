@@ -1,68 +1,44 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
-import sys
-import runpy
+python - <<'PY'
+from pathlib import Path
+import ast
+import re
+
+p = Path("artifacts/v1.168-max/cta_max/sequence_postprocess_max.py")
+s = p.read_text()
+
+pattern = r'ops\.unsqueeze\(\s*ops\.mean\(x\s*\*\s*x,\s*axis=-1\),\s*axis=-1\s*\)'
+
+updated, count = re.subn(
+    pattern,
+    "ops.mean(x * x, axis=-1)",
+    s
+)
+
+assert count == 2, f"STOP: Expected 2 corrections, found {count}"
+
+ast.parse(updated)
+p.write_text(updated)
+
+print("BOTH NORMALIZATION SHAPES CORRECTED")
+print("SYNTAX OK")
+print("ORIGINAL TRANSFORMER AND DS CODE UNCHANGED")
+PY
+
+if [ $? -eq 0 ]; then
+  podman run --rm -i \
+    -v "$PWD:/workspace" -w /workspace \
+    --entrypoint python \
+    docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+    artifacts/v1.168-max/cta_max/run_transformer_sequence.py
+
+  python - <<'PY'
 import numpy as np
 
-sys.path.insert(0, "artifacts/v1.168-max")
-sys.path.insert(0, "artifacts/v1.168-max/cta_max")
+p = "artifacts/v1.168-max/cta_max/sequence_combined_output.npy"
+out = np.load(p)
 
-from max.dtype import DType
-from max.graph import DeviceRef, ops
-from cta_max.sequence_postprocess_max import SequencePostprocessMAX
-
-def traced_call(self, x):
-    base = "artifacts/v1.168-max/cta_max/sequence_weights/"
-
-    print("INPUT:", x.shape, flush=True)
-
-    g1 = ops.constant(
-        np.load(base + "out_norm1_g.npy").astype(np.float32),
-        dtype=DType.float32, device=DeviceRef.CPU()
-    )
-    g2 = ops.constant(
-        np.load(base + "out_norm2_g.npy").astype(np.float32),
-        dtype=DType.float32, device=DeviceRef.CPU()
-    )
-    print("G1:", g1.shape, "G2:", g2.shape, flush=True)
-
-    variance1 = ops.unsqueeze(
-        ops.mean(x * x, axis=-1), axis=-1
-    )
-    print("VARIANCE1:", variance1.shape, flush=True)
-
-    x = x * ops.rsqrt(variance1 + 1e-6)
-    print("AFTER RMS1:", x.shape, flush=True)
-
-    x = x * g1
-    print("AFTER G1:", x.shape, flush=True)
-
-    x = self.pooling(x)
-    print("AFTER POOLING:", x.shape, flush=True)
-
-    x = self.seq_dense(x)
-    print("AFTER DENSE:", x.shape, flush=True)
-
-    variance2 = ops.unsqueeze(
-        ops.mean(x * x, axis=-1), axis=-1
-    )
-    print("VARIANCE2:", variance2.shape, flush=True)
-
-    x = x * ops.rsqrt(variance2 + 1e-6)
-    print("AFTER RMS2:", x.shape, flush=True)
-
-    x = x * g2
-    print("AFTER G2:", x.shape, flush=True)
-
-    return x
-
-SequencePostprocessMAX.__call__ = traced_call
-
-runpy.run_path(
-    "artifacts/v1.168-max/cta_max/run_transformer_sequence.py",
-    run_name="__main__"
-)
+print("COMBINED OUTPUT SHAPE:", out.shape)
+print("FINITE:", bool(np.isfinite(out).all()))
+print("INTEGRATION PASS:", out.shape == (1, 256) and np.isfinite(out).all())
 PY
+fi

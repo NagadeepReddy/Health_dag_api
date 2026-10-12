@@ -2,70 +2,52 @@ python - <<'PY'
 import ast
 from pathlib import Path
 
+root = Path("artifacts/v1.168")
 base = Path("artifacts/v1.168-max/cta_max")
 
-files = {
-    "runner": base / "run_transformer_full_sequence.py",
-    "graph": base / "parallel_transformer_graph_full_sequence.py",
-    "features": base / "sequence_transformer_max.py",
-}
+original = root / "utils/dependency-utils/models.py"
+current = base / "grecbase_max.py"
 
-for name, path in files.items():
-    assert path.is_file(), f"STOP: missing {name}: {path}"
+def get_class(path, name):
+    source = path.read_text()
+    tree = ast.parse(source)
+    matches = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.ClassDef) and n.name == name
+    ]
+    assert len(matches) == 1, f"STOP: {name} not uniquely found"
+    return source, matches[0]
 
-def load(path):
-    s = path.read_text()
-    return s, ast.parse(s)
-
-runner_source, runner = load(files["runner"])
-graph_source, graph = load(files["graph"])
-feature_source, features = load(files["features"])
-
-print("===== RUNNER: ACTUAL GRAPH IMPORTS =====")
-for node in ast.walk(runner):
-    if isinstance(node, ast.ImportFrom):
-        if "graph" in (node.module or ""):
-            print(ast.get_source_segment(runner_source, node))
-
-print("\n===== RUNNER: GRAPH BUILDER CALLS =====")
-for node in ast.walk(runner):
-    if isinstance(node, ast.Call):
-        fn = node.func
-        name = fn.id if isinstance(fn, ast.Name) else (
-            fn.attr if isinstance(fn, ast.Attribute) else ""
-        )
-        if "build_parallel_transformer_graph" in name:
-            print(ast.get_source_segment(runner_source, node))
-
-print("\n===== FEATURE MODULE RETURN =====")
-cls = next(
-    n for n in features.body
-    if isinstance(n, ast.ClassDef)
-    and n.name == "ParallelTransformerMAEPMAX"
-)
-method = next(
+source, cls = get_class(original, "GRecBase")
+forward = next(
     n for n in cls.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "__call__"
+    if isinstance(n, ast.FunctionDef) and n.name == "forward"
 )
-for node in ast.walk(method):
-    if isinstance(node, ast.Return):
-        print(ast.get_source_segment(feature_source, node))
 
-print("\n===== FULL GRAPH: FEATURE ASSEMBLY =====")
-builder = next(
-    n for n in graph.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "build_parallel_transformer_graph"
-)
-for node in ast.walk(builder):
-    if isinstance(node, (ast.Assign, ast.AnnAssign)):
-        segment = ast.get_source_segment(graph_source, node)
-        if any(x in segment for x in (
-            "features(", "block0(", "block1(", "postprocess("
-        )):
-            print(segment)
+print("===== ORIGINAL GRecBase EXECUTION ORDER =====")
+for node in forward.body:
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+        continue
+    print(ast.unparse(node))
 
-print("\nINTEGRATION CONNECTION CHECK COMPLETE")
-print("NO FILES MODIFIED")
+source, cls = get_class(current, "GRecBaseMAX")
+print("\n===== CURRENT MAX FORWARD =====")
+for node in cls.body:
+    if isinstance(node, ast.FunctionDef) and node.name == "__call__":
+        print(ast.get_source_segment(source, node))
+
+print("\n===== EXISTING INTEGRATION COMPONENTS =====")
+for filename in (
+    "parallel_transformer_graph_full_sequence.py",
+    "nlp_bert_in_graph.py",
+    "main_context_max.py",
+    "sibling_context_max.py",
+    "grecbase_aux_features_max.py",
+    "att_pooling_max.py",
+    "grecbase_get_path_max.py",
+):
+    p = base / filename
+    print(filename, "READY" if p.is_file() else "MISSING")
+
+print("\nNO FILES MODIFIED")
 PY

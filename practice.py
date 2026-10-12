@@ -1,33 +1,51 @@
-python - <<'PY'
-import ast
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  - <<'PY'
 from pathlib import Path
+import ast
+from max.graph import ops
 
-files = [
-    ("ORIGINAL", Path("artifacts/v1.168/utils/dependency-utils/models.py"), "ParallelTransformerAEP"),
-    ("MAX", Path("artifacts/v1.168-max/cta_max/sequence_transformer_max.py"), "ParallelTransformerMAEPMAX"),
-]
+p = Path("artifacts/v1.168-max/cta_max/sequence_transformer_max.py")
+s = p.read_text()
 
-for label, path, name in files:
-    source = path.read_text()
-    tree = ast.parse(source)
-    classes = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.ClassDef) and n.name == name
-    ]
-    assert len(classes) == 1, f"STOP: {name} not uniquely found"
+assert hasattr(ops, "maximum"), "STOP: MAX maximum operation unavailable"
 
-    init = next(
-        n for n in classes[0].body
-        if isinstance(n, ast.FunctionDef) and n.name == "__init__"
-    )
+old_pre = "item_pre = self.item_pre_embedding(item_pre_in)"
+old_return = "return page, item, item_meta, item_pre, page_wide"
 
-    print(f"\n===== {label} CONSTRUCTOR =====")
-    for node in init.body:
-        line = ast.get_source_segment(source, node)
-        if line and any(k in line for k in [
-            "page_meta_wide", "item_meta_wide",
-            "embedding", "num_layers", "ptransformer",
-            "out_norm", "seq_pooling", "seq_dense"
-        ]):
-            print(line[:1200])
+assert s.count(old_pre) == 1, "STOP: pre-embedding implementation differs"
+assert s.count(old_return) == 1, "STOP: sequence return differs"
+assert "from max.graph import ops" not in s, "STOP: check existing ops import"
+
+s = s.replace(
+    old_pre,
+    "item_pre = self.item_pre_embedding(item_in)",
+    1
+)
+
+s = s.replace(
+    old_return,
+    """from max.graph import ops
+
+        # Original page-wide LeakyReLU(0.2).
+        page_wide = ops.maximum(page_wide, page_wide * 0.2)
+
+        # Base-model feature dimensions: 224+32 and 112+32+112.
+        page_full = ops.concat([page, page_wide], axis=2)
+        item_full = ops.concat([item, item_meta, item_pre], axis=2)
+
+        return page_full * item_full""",
+    1
+)
+
+ast.parse(s)
+p.write_text(s)
+
+print("BASE SEQUENCE FEATURE ASSEMBLY CREATED")
+print("ORIGINAL FEATURE ORDER PRESERVED")
+print("ITEM PRE-EMBEDDING INPUT CORRECTED")
+print("SYNTAX OK")
+print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
 PY

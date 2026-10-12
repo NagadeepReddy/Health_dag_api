@@ -2,27 +2,26 @@ python - <<'PY'
 import ast
 from pathlib import Path
 
-base = Path("artifacts/v1.168-max/cta_max")
+p = Path(
+    "artifacts/v1.168-max/cta_max/"
+    "parallel_transformer_graph_full_sequence.py"
+)
 
-for p in sorted(base.glob("*.py")):
-    if not any(x in p.name for x in (
-        "sequence", "grecbase", "nlp_bert_in_graph",
-        "main_context_max", "sibling_context_max",
-        "att_pooling_max"
-    )):
-        continue
+assert p.is_file(), "STOP: full sequence graph missing"
 
-    tree = ast.parse(p.read_text())
-    print("\nFILE:", p.name)
+source = p.read_text()
+tree = ast.parse(source)
 
-    for n in tree.body:
-        if isinstance(n, ast.FunctionDef):
-            print("FUNCTION:", n.name, ast.unparse(n.args))
-        elif isinstance(n, ast.ClassDef):
-            for m in n.body:
-                if isinstance(m, ast.FunctionDef) and m.name == "__call__":
-                    print("CLASS CALL:", n.name, ast.unparse(m.args))
+matches = [
+    n for n in tree.body
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "build_parallel_transformer_graph"
+]
 
-print("\nINTEGRATION INTERFACES IDENTIFIED")
+assert len(matches) == 1, "STOP: graph builder differs"
+
+print("===== EXISTING FULL SEQUENCE GRAPH =====")
+print(ast.get_source_segment(source, matches[0]))
+print("===== END =====")
 print("NO FILES MODIFIED")
 PY

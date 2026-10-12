@@ -1,68 +1,29 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
+python - <<'PY'
+import ast
 from pathlib import Path
-import torch
-import numpy as np
-import json
 
-src = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
-dst = Path("artifacts/v1.168-max/cta_max/sibling_context_weights")
+base = Path("artifacts/v1.168-max/cta_max")
 
-assert src.is_file(), "STOP: checkpoint missing"
+for filename in (
+    "context_head_deep.py",
+    "context_head_wide.py",
+    "context_head_full.py",
+):
+    p = base / filename
+    source = p.read_text()
+    tree = ast.parse(source)
 
-state = torch.load(
-    src, map_location="cpu",
-    weights_only=True, mmap=True
-)
+    print(f"\n===== {filename}: FORWARD LOGIC =====")
 
-if "state_dict" in state:
-    state = state["state_dict"]
-elif "model_state_dict" in state:
-    state = state["model_state_dict"]
+    for cls in tree.body:
+        if isinstance(cls, ast.ClassDef):
+            for method in cls.body:
+                if (
+                    isinstance(method, ast.FunctionDef)
+                    and method.name == "__call__"
+                ):
+                    print("CLASS:", cls.name)
+                    print(ast.get_source_segment(source, method))
 
-prefix = "sibling_context_head."
-
-weights = {
-    k: v.detach().cpu().numpy()
-    for k, v in state.items()
-    if k.startswith(prefix) and isinstance(v, torch.Tensor)
-}
-
-assert len(weights) == 20, (
-    f"STOP: expected 20 sibling tensors, found {len(weights)}"
-)
-
-manifest = {}
-for name, arr in sorted(weights.items()):
-    assert np.isfinite(arr).all(), f"STOP: invalid {name}"
-    manifest[name] = {
-        "shape": list(arr.shape),
-        "dtype": str(arr.dtype),
-    }
-    path = dst / (name + ".npy")
-    if path.exists():
-        assert np.array_equal(np.load(path), arr), (
-            f"STOP: existing tensor differs: {name}"
-        )
-
-dst.mkdir(parents=True, exist_ok=True)
-
-for name, arr in sorted(weights.items()):
-    path = dst / (name + ".npy")
-    if not path.exists():
-        np.save(path, arr)
-
-mp = dst / "manifest.json"
-if mp.exists():
-    assert json.loads(mp.read_text()) == manifest, \
-        "STOP: existing manifest differs"
-else:
-    mp.write_text(json.dumps(manifest, indent=2))
-
-print("SIBLING CONTEXT WEIGHTS READY:", len(weights))
-print("SHAPES AND VALUES VERIFIED")
-print("ORIGINAL MODEL AND DS CODE UNCHANGED")
+print("\nREAD-ONLY — NO FILES MODIFIED")
 PY

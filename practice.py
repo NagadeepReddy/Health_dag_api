@@ -1,57 +1,54 @@
-python - <<'PY'
-import ast
-from pathlib import Path
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  - <<'PY'
+import torch
+from collections import defaultdict
 
-p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
-s = p.read_text()
-tree = ast.parse(s)
+path = "artifacts/v1.168/core-artifact/model_0_base.pt"
 
-cls = next(
-    n for n in ast.walk(tree)
-    if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
+data = torch.load(
+    path, map_location="cpu",
+    weights_only=True, mmap=True
 )
 
-init = next(
-    n for n in cls.body
-    if isinstance(n, ast.FunctionDef) and n.name == "__init__"
-)
+if "state_dict" in data:
+    data = data["state_dict"]
+elif "model_state_dict" in data:
+    data = data["model_state_dict"]
 
-targets = {
-    "nlp_encoder", "nlp_dense_0", "nlp_dense_1",
-    "nlp_act", "sequence_transformer",
-    "task_embedding", "jet_embedding", "ihq_embedding",
-    "sibling_context_head", "att_pooling", "mm_pooling",
-    "seq_dense", "moe_norm1", "moe_norm2",
-    "context_dim", "task_type_dim", "extract_deep_idx"
+groups = {
+    "NLP": ["nlp_encoder", "nlp_dense"],
+    "TASK": ["task_embedding"],
+    "JET": ["jet_embedding"],
+    "IHQ": ["ihq_embedding"],
+    "SIBLING": ["sibling_context_head"],
+    "ATTENTION": ["att_pooling"],
+    "NORMALIZATION": ["moe_norm"],
+    "DENSE": ["seq_dense"],
 }
 
-found = set()
+for group, patterns in groups.items():
+    matches = [
+        (k, tuple(v.shape))
+        for k, v in data.items()
+        if isinstance(v, torch.Tensor)
+        and any(
+            p in k.lower()
+            for p in patterns
+        )
+        and not k.startswith("sequence_transformer.")
+    ]
 
-print("===== ORIGINAL GRecBase MISSING-LAYER DEFINITIONS =====")
+    print(f"\n===== {group}: {len(matches)} WEIGHTS =====")
 
-for node in ast.walk(init):
-    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-        continue
+    for name, shape in matches[:12]:
+        print(name, shape)
 
-    assigned = (
-        node.targets if isinstance(node, ast.Assign)
-        else [node.target]
-    )
+    if len(matches) > 12:
+        print(f"... {len(matches)-12} additional weights")
 
-    for target in assigned:
-        if (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
-            and target.attr in targets
-        ):
-            name = target.attr
-            if name not in found:
-                found.add(name)
-                print("\n###", name)
-                print(ast.get_source_segment(s, node))
-
-print("\nNOT DIRECTLY ASSIGNED IN CONSTRUCTOR:")
-print(sorted(targets - found))
-print("\nREAD-ONLY — NO FILES MODIFIED")
+print("\nCHECKPOINT INVENTORY COMPLETE")
+print("NO FILES MODIFIED")
 PY

@@ -6,110 +6,53 @@ podman run --rm -i \
 import sys
 import ast
 from pathlib import Path
+import numpy as np
 
 root = Path("/workspace/artifacts/v1.168-max")
 base = root / "cta_max"
 target = base / "grecbase_fusion_all8_max.py"
 
 sys.path.insert(0, str(root))
-sys.path.insert(0, str(base))
 
-assert target.is_file(), "Eight-branch source missing"
+from max.driver import CPU, Tensor
+from max.engine import InferenceSession
+from max.graph import DeviceRef
+from max.graph.weights import WeightData
+
+assert target.is_file(), "Eight-branch file missing"
 
 tree = ast.parse(target.read_text())
 
-# 1. Identify the existing incorrect block import.
+# Fix the transformer import using its verified location.
 imports = [
-    node for node in tree.body
-    if isinstance(node, ast.ImportFrom)
+    n for n in tree.body
+    if isinstance(n, ast.ImportFrom)
     and any(
-        alias.name == "ParallelTransformerBlockMAX"
-        for alias in node.names
+        a.name == "ParallelTransformerBlockMAX"
+        for a in n.names
     )
 ]
+assert len(imports) == 1
+assert (base / "parallel_transformer_block_2layers.py").is_file()
 
-assert len(imports) == 1, (
-    "Cannot uniquely identify transformer block import"
-)
+imports[0].module = "cta_max.parallel_transformer_block_2layers"
 
-# 2. Find the actual class implementation.
-candidates = []
-
-for p in root.rglob("*.py"):
-    if p == target:
-        continue
-
-    text = p.read_text()
-
-    if "class ParallelTransformerBlockMAX" not in text:
-        continue
-
-    try:
-        parsed = ast.parse(text)
-    except SyntaxError:
-        continue
-
-    if any(
-        isinstance(node, ast.ClassDef)
-        and node.name == "ParallelTransformerBlockMAX"
-        for node in parsed.body
-    ):
-        candidates.append(p)
-
-# Prefer the implementation referenced by the
-# previously validated full-sequence graph.
-seq_file = base / "parallel_transformer_graph_full_sequence.py"
-seq_tree = ast.parse(seq_file.read_text())
-
-preferred = [
-    node.module for node in seq_tree.body
-    if isinstance(node, ast.ImportFrom)
-    and any(
-        alias.name == "ParallelTransformerBlockMAX"
-        for alias in node.names
-    )
-]
-
-if len(candidates) > 1 and len(preferred) == 1:
-    matching = [
-        p for p in candidates
-        if p.stem == preferred[0].split(".")[-1]
-    ]
-    if len(matching) == 1:
-        candidates = matching
-
-print("TRANSFORMER CLASS CANDIDATES:",
-      [str(p.relative_to(root)) for p in candidates])
-
-assert len(candidates) == 1, (
-    "Transformer class location is ambiguous; "
-    "no changes made"
-)
-
-module = ".".join(
-    candidates[0].relative_to(root).with_suffix("").parts
-)
-
-imports[0].module = module
-
-print("CORRECTED IMPORT MODULE:", module)
-
-# 3. Apply the previously confirmed sequence shapes.
-graph_calls = [
+# Locate graph input definitions.
+graphs = [
     n for n in ast.walk(tree)
     if isinstance(n, ast.Call)
     and isinstance(n.func, ast.Name)
     and n.func.id == "Graph"
 ]
-
-assert len(graph_calls) == 1
+assert len(graphs) == 1
 
 kw = next(
-    k for k in graph_calls[0].keywords
+    k for k in graphs[0].keywords
     if k.arg == "input_types"
 )
 
-groups = [
+# Correct sequence shapes using the validated sequence contract.
+seq_groups = [
     n for n in ast.walk(kw.value)
     if isinstance(n, ast.List)
     and len(n.elts) == 5
@@ -120,19 +63,9 @@ groups = [
         for x in n.elts
     )
 ]
+assert len(seq_groups) == 1
 
-assert len(groups) == 1, (
-    "Sequence input group ambiguous; no changes made"
-)
-
-seq_inputs = groups[0].elts
-
-old_shapes = [
-    ast.literal_eval(n.args[1])
-    for n in seq_inputs
-]
-
-correct_shapes = [
+seq_shapes = [
     [1, 4],
     [1, 4],
     [1, 4],
@@ -140,26 +73,34 @@ correct_shapes = [
     [1, 1, 4, 256],
 ]
 
-previous_shapes = [
-    [1, 4],
-    [1, 4, 1],
-    [1, 4, 1],
-    [1, 1, 4, 256],
-    [1, 1, 4, 256],
+for node, shape in zip(seq_groups[0].elts, seq_shapes):
+    node.args[1] = ast.parse(repr(shape), mode="eval").body
+
+# Correct sibling wide dimension: 18, not 127.
+sibling_groups = [
+    n for n in ast.walk(kw.value)
+    if isinstance(n, ast.ListComp)
+    and len(n.generators) == 2
+    and ast.unparse(n.generators[0].iter) == "range(3)"
+    and isinstance(n.generators[1].iter, ast.Tuple)
+    and len(n.generators[1].iter.elts) == 4
 ]
+assert len(sibling_groups) == 1
 
-assert old_shapes in (previous_shapes, correct_shapes), (
-    f"Unexpected sequence shapes: {old_shapes}"
-)
+sibling_types = sibling_groups[0].generators[1].iter.elts
 
-for node, shape in zip(seq_inputs, correct_shapes):
-    node.args[1] = ast.parse(
-        repr(shape), mode="eval"
-    ).body
+old_shape = ast.literal_eval(sibling_types[3].args[1])
+assert old_shape in ([1, 127], [1, 18]), old_shape
 
-print("SEQUENCE INPUT SHAPES:", correct_shapes)
+sibling_types[3].args[1] = ast.parse(
+    "[1, 18]", mode="eval"
+).body
 
-# 4. Validate corrected source without modifying it.
+print("SEQUENCE INPUT CONTRACT: CORRECTED")
+print("SIBLING WIDE INPUT: [1, 18]")
+print("TRANSFORMER IMPORT: CORRECTED")
+
+# Compile Python source in memory first.
 updated = ast.unparse(
     ast.fix_missing_locations(tree)
 ) + "\n"
@@ -171,18 +112,14 @@ namespace = {
     "__name__": "cta_max.all8_validation",
     "__package__": "cta_max",
 }
-
 exec(code, namespace)
 
-print("EIGHT-BRANCH IMPORTS: PASS")
-print("PYTHON SYNTAX: PASS")
+print("PYTHON SOURCE VALIDATION: PASS")
 
-# 5. Construct complete graph.
-from max.graph import DeviceRef
-
-builder = namespace["build_grecbase_fusion_graph_all8"]
-
-graph = builder(DeviceRef.CPU())
+# Construct all eight branches.
+graph = namespace[
+    "build_grecbase_fusion_graph_all8"
+](DeviceRef.CPU())
 
 print("EIGHT-BRANCH GRAPH CONSTRUCTION: PASS")
 
@@ -190,7 +127,62 @@ print("EIGHT-BRANCH GRAPH CONSTRUCTION: PASS")
 if target.read_text() != updated:
     target.write_text(updated)
 
-print("CORRECTED EIGHT-BRANCH GRAPH SAVED")
+print("CORRECTED MAX FILE SAVED")
+
+# Reuse proven attention weight registration.
+weights = {}
+
+for p in sorted(base.rglob("att_pooling.*.npy")):
+    arr = np.load(p).astype(np.float32)
+    assert p.stem not in weights
+    weights[p.stem] = WeightData.from_numpy(arr, p.stem)
+
+device = CPU()
+session = InferenceSession(devices=[device])
+
+model = session.load(graph, weights_registry=weights)
+
+print("EIGHT-BRANCH COMPILATION: PASS")
+
+def tensor(shape, dtype, fill=0):
+    arr = np.full(shape, fill, dtype=dtype)
+    return Tensor.from_numpy(arr).to(device)
+
+inputs = []
+
+# Task, IHQ and JET.
+inputs += [tensor((1,), np.int64) for _ in range(2)]
+inputs += [tensor((1, 1), np.int64) for _ in range(3)]
+
+# Main context.
+inputs += [tensor((1,), np.int64) for _ in range(17)]
+inputs.append(tensor((1, 127), np.float32))
+
+# NLP.
+inputs.append(tensor((1, 8), np.int64))
+inputs.append(tensor((1, 8), np.int64, fill=1))
+
+# Sequence.
+inputs += [tensor((1, 4), np.int64) for _ in range(3)]
+inputs.append(tensor((1, 4, 1), np.float32))
+inputs.append(tensor((1, 1, 4, 256), np.float32))
+
+# Three siblings.
+for _ in range(3):
+    inputs += [tensor((1,), np.int64) for _ in range(3)]
+    inputs.append(tensor((1, 18), np.float32))
+
+assert len(inputs) == 42, len(inputs)
+
+result = model.execute(*inputs)[0].to_numpy()
+
+print("OUTPUT SHAPE:", result.shape)
+print("FINITE:", bool(np.isfinite(result).all()))
+
+assert result.shape == (1, 10819), result.shape
+assert np.isfinite(result).all()
+
+print("ALL EIGHT BRANCHES EXECUTION: PASS")
 print("PREVIOUS SIX-BRANCH GRAPH UNCHANGED")
 print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
 PY

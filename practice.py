@@ -1,54 +1,64 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
-import torch
-from collections import defaultdict
+python - <<'PY'
+import ast
+from pathlib import Path
 
-path = "artifacts/v1.168/core-artifact/model_0_base.pt"
+p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
+tree = ast.parse(p.read_text())
 
-data = torch.load(
-    path, map_location="cpu",
-    weights_only=True, mmap=True
+cls = next(
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.ClassDef)
+    and n.name == "GRecBase"
 )
 
-if "state_dict" in data:
-    data = data["state_dict"]
-elif "model_state_dict" in data:
-    data = data["model_state_dict"]
+forward = next(
+    n for n in cls.body
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "forward"
+)
 
-groups = {
-    "NLP": ["nlp_encoder", "nlp_dense"],
-    "TASK": ["task_embedding"],
-    "JET": ["jet_embedding"],
-    "IHQ": ["ihq_embedding"],
-    "SIBLING": ["sibling_context_head"],
-    "ATTENTION": ["att_pooling"],
-    "NORMALIZATION": ["moe_norm"],
-    "DENSE": ["seq_dense"],
+targets = {
+    "nlp_encoder",
+    "nlp_dense_0",
+    "nlp_dense_1",
+    "sequence_transformer",
+    "context_head",
+    "sibling_context_head",
+    "att_pooling",
 }
 
-for group, patterns in groups.items():
-    matches = [
-        (k, tuple(v.shape))
-        for k, v in data.items()
-        if isinstance(v, torch.Tensor)
-        and any(
-            p in k.lower()
-            for p in patterns
-        )
-        and not k.startswith("sequence_transformer.")
-    ]
+class Trace(ast.NodeVisitor):
+    def __init__(self):
+        self.conditions = []
 
-    print(f"\n===== {group}: {len(matches)} WEIGHTS =====")
+    def visit_If(self, node):
+        condition = ast.unparse(node.test)
+        self.conditions.append(condition)
+        for child in node.body:
+            self.visit(child)
+        self.conditions.pop()
 
-    for name, shape in matches[:12]:
-        print(name, shape)
+        self.conditions.append("ELSE of: " + condition)
+        for child in node.orelse:
+            self.visit(child)
+        self.conditions.pop()
 
-    if len(matches) > 12:
-        print(f"... {len(matches)-12} additional weights")
+    def visit_Call(self, node):
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            and node.func.attr in targets
+        ):
+            print("\nCALL:", node.func.attr)
+            print("LINE:", node.lineno)
+            print("CONDITIONS:", self.conditions or ["UNCONDITIONAL"])
+            print("ARGUMENTS:", [
+                ast.unparse(a) for a in node.args
+            ])
+        self.generic_visit(node)
 
-print("\nCHECKPOINT INVENTORY COMPLETE")
-print("NO FILES MODIFIED")
+print("===== ACTUAL GRecBase EXECUTION BRANCHES =====")
+Trace().visit(forward)
+print("\nREAD-ONLY — NO FILES MODIFIED")
 PY

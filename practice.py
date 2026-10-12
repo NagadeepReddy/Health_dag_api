@@ -1,55 +1,55 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
-import sys
-import numpy as np
-import torch
+python - <<'PY'
 from pathlib import Path
+import ast
 
-base = Path("artifacts/v1.168-max/cta_max")
-sys.path.insert(0, "artifacts/v1.168/utils/dependency-utils")
-from models import ParallelTransformerBlock
+b = Path("artifacts/v1.168-max/cta_max")
 
-ckpt = torch.load(
-    "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu",
-    weights_only=False
+combined = b / "context_head_combined.py"
+full = b / "context_head_full.py"
+
+assert combined.is_file() and full.is_file()
+
+s1 = combined.read_text()
+s2 = full.read_text()
+
+old1 = "return ops.concat([wide_out, deep_out], axis=1)"
+new1 = "return ops.concat([deep_out, wide_out], axis=1)"
+
+old2 = "return self.combine(deep_out, wide_out)"
+new2 = "return ops.concat([deep_out, wide_out], axis=1)"
+
+assert s1.count(old1) == 1, "STOP: combined code differs"
+assert s2.count(old2) == 1, "STOP: full code differs"
+
+s1 = s1.replace(old1, new1, 1)
+s2 = s2.replace(old2, new2, 1)
+
+tree = ast.parse(s2)
+has_ops = any(
+    isinstance(n, ast.ImportFrom)
+    and n.module == "max.graph"
+    and any(a.name == "ops" for a in n.names)
+    for n in tree.body
 )
 
-blocks = []
-for i in (0, 1):
-    block = ParallelTransformerBlock(
-        dim=256,
-        dim_head=256,
-        heads=2,
-        ff_mult=4
-    )
-    prefix = f"sequence_transformer.ptransformer.{i}.fn."
-    state = {
-        k[len(prefix):]: v
-        for k, v in ckpt.items()
-        if k.startswith(prefix)
-    }
-    block.load_state_dict(state, strict=True)
-    block.eval()
-    blocks.append(block)
+if not has_ops:
+    future = [
+        n.end_lineno for n in tree.body
+        if isinstance(n, ast.ImportFrom)
+        and n.module == "__future__"
+    ]
+    lines = s2.splitlines()
+    lines.insert(max(future, default=0), "from max.graph import ops")
+    s2 = "\n".join(lines) + "\n"
 
-x = torch.from_numpy(
-    np.load(base / "transformer_input.npy")
-).float()
+ast.parse(s1)
+ast.parse(s2)
 
-vl = torch.tensor([4], dtype=torch.long)
+combined.write_text(s1)
+full.write_text(s2)
 
-with torch.no_grad():
-    x1 = x + blocks[0](x, vl=vl)
-    pt_out = (x1 + blocks[1](x1, vl=vl)).numpy()
-
-max_out = np.load(base / "transformer_max_output_2layers.npy")
-
-print("PT SHAPE :", pt_out.shape)
-print("MAX SHAPE:", max_out.shape)
-print("MAX DIFF :", np.max(np.abs(pt_out - max_out)))
-print("MATCH    :", np.allclose(pt_out, max_out, rtol=1e-4, atol=1e-5))
+print("CONTEXTHEAD CONCAT ORDER CORRECTED")
+print("UNDEFINED COMBINE CALL REMOVED")
+print("SYNTAX OK")
+print("TRANSFORMER AND DS CODE UNCHANGED")
 PY

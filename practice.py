@@ -1,132 +1,56 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys, ast
+python - <<'PY'
+import ast
 from pathlib import Path
-import numpy as np
-
-sys.path.insert(0, "/workspace/artifacts/v1.168-max")
-
-from max.driver import CPU, Tensor
-from max.engine import InferenceSession
-from max.graph import DeviceRef
-from max.graph.weights import WeightData
 
 base = Path("artifacts/v1.168-max/cta_max")
-original = base / "grecbase_fusion_with_context_max.py"
-target = base / "grecbase_fusion_with_nlp_max.py"
 
-source = original.read_text()
+for filename in (
+    "parallel_transformer_graph_full_sequence.py",
+    "sibling_context_max.py",
+):
+    p = base / filename
+    src = p.read_text()
+    tree = ast.parse(src)
 
-def change(old, new):
-    global source
-    assert source.count(old) == 1, (
-        "Unexpected existing source; no files changed: " + old[:70]
-    )
-    source = source.replace(old, new)
+    print("\n===", filename, "===")
+    print("IMPORTS:")
+    for n in tree.body:
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            print(ast.unparse(n))
 
-change(
-    "from cta_max.main_context_max import main_context_forward",
-    "from cta_max.main_context_max import main_context_forward\n"
-    "from cta_max.nlp_bert_in_graph import nlp_bert_forward"
-)
+    if "parallel_transformer" in filename:
+        print("SEQUENCE CONSTRUCTION:")
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Assign):
+                names = [
+                    t.id for t in n.targets
+                    if isinstance(t, ast.Name)
+                ]
+                if any(x in names for x in (
+                    "features", "block0", "block1",
+                    "postprocess", "x", "x1", "x2"
+                )):
+                    print(ast.unparse(n)[:500])
+    else:
+        print("SIBLING CONSTANTS AND FORWARD:")
+        for n in tree.body:
+            if isinstance(n, ast.Assign):
+                print(ast.unparse(n)[:300])
+            elif isinstance(n, ast.FunctionDef) and n.name == "sibling_context_forward":
+                print("ARGUMENTS:", ast.unparse(n.args))
+                for child in ast.walk(n):
+                    if isinstance(child, ast.Assign):
+                        s = ast.unparse(child)
+                        if any(t in s for t in (
+                            "deep_ids", "wide_input",
+                            "embeddings =", "reshape"
+                        )):
+                            print(s[:350])
+                print("FINAL RETURN:",
+                      ast.unparse([
+                          n for n in ast.walk(n)
+                          if isinstance(n, ast.Return)
+                      ][0].value)[:300])
 
-change(
-    "def build_grecbase_fusion_graph_with_context(device):",
-    "def build_grecbase_fusion_graph_with_nlp(device):"
-)
-
-# Keep sequence and sibling external; compute both NLP branches.
-change("for _ in range(4)]", "for _ in range(2)]")
-
-change(
-    "[TensorType(DType.float32, [1, 127], device=device)]",
-    "[TensorType(DType.float32, [1, 127], device=device)]"
-    " + [TensorType(DType.int64, [1, 8], device=device)"
-    " for _ in range(2)]"
-)
-
-change(
-    "seq, search0, search1, sibling, task0, task1, ihq_ids, jet_name, jet_status, *context_inputs = graph.inputs",
-    """seq, sibling, task0, task1, ihq_ids, jet_name, jet_status, *remaining = graph.inputs
-        assert len(remaining) == 20
-        context_inputs = remaining[:18]
-        input_ids, attention_mask = remaining[18:]"""
-)
-
-change(
-    "assert len(context_inputs) == 18",
-    """assert len(context_inputs) == 18
-
-        search = nlp_bert_forward(
-            input_ids, attention_mask, device, 8
-        )
-
-        idx0 = ops.constant(
-            np.arange(256, dtype=np.int64),
-            dtype=DType.int64, device=device
-        )
-        idx1 = ops.constant(
-            np.arange(256, 512, dtype=np.int64),
-            dtype=DType.int64, device=device
-        )
-
-        search0 = ops.gather(search, idx0, axis=1)
-        search1 = ops.gather(search, idx1, axis=1)"""
-)
-
-ast.parse(source)
-
-if target.exists():
-    assert target.read_text() == source, (
-        "Existing NLP integration differs; no overwrite performed"
-    )
-else:
-    target.write_text(source)
-
-from cta_max.grecbase_fusion_with_nlp_max import (
-    build_grecbase_fusion_graph_with_nlp
-)
-
-weights = {}
-for p in sorted(base.rglob("att_pooling.*.npy")):
-    arr = np.load(p).astype(np.float32)
-    assert p.stem not in weights
-    weights[p.stem] = WeightData.from_numpy(arr, p.stem)
-
-device = CPU()
-graph = build_grecbase_fusion_graph_with_nlp(DeviceRef.CPU())
-session = InferenceSession(devices=[device])
-model = session.load(graph, weights_registry=weights)
-
-print("SIX-BRANCH COMPILATION: PASS")
-
-def tensor(shape, dtype):
-    return Tensor.from_numpy(np.zeros(shape, dtype=dtype)).to(device)
-
-inputs = [tensor((1, 256), np.float32) for _ in range(2)]
-inputs += [tensor((1,), np.int64) for _ in range(2)]
-inputs += [tensor((1, 1), np.int64) for _ in range(3)]
-inputs += [tensor((1,), np.int64) for _ in range(17)]
-inputs.append(tensor((1, 127), np.float32))
-inputs.append(tensor((1, 8), np.int64))
-inputs.append(
-    Tensor.from_numpy(
-        np.ones((1, 8), dtype=np.int64)
-    ).to(device)
-)
-
-result = model.execute(*inputs)[0].to_numpy()
-
-print("OUTPUT SHAPE:", result.shape)
-print("FINITE:", bool(np.isfinite(result).all()))
-
-assert result.shape == (1, 10819), result.shape
-assert np.isfinite(result).all()
-
-print("CONTEXT + TASK + IHQ + JET + NLP x2: PASS")
-print("PREVIOUS WORKING FILES UNCHANGED")
-print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

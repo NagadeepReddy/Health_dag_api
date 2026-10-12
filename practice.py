@@ -1,46 +1,35 @@
 python - <<'PY'
-import ast
 from pathlib import Path
+import numpy as np
 
 base = Path("artifacts/v1.168-max/cta_max")
 
-targets = {
-    "parallel_transformer_graph_full_sequence.py":
-        "build_parallel_transformer_graph",
-    "nlp_bert_in_graph.py": "nlp_bert_forward",
-    "main_context_max.py": "main_context_forward",
-    "sibling_context_max.py": "sibling_context_forward",
-    "grecbase_aux_features_max.py": "grecbase_aux_features",
-}
+targets = [
+    "seq_dense",
+    "nlp_dense_1",
+    "task_embedding",
+    "ihq_embedding",
+    "jet_embedding",
+    "sibling_context_head",
+]
 
-for filename, name in targets.items():
-    p = base / filename
-    print(f"\n===== {filename} =====")
+files = list(base.rglob("*.npy"))
 
-    if not p.exists():
-        print("MISSING FILE")
-        continue
+print("=== REAL GRECBASE BRANCH WEIGHTS ===")
 
-    source = p.read_text()
-    tree = ast.parse(source)
-    methods = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == name
+for target in targets:
+    matches = [
+        p for p in files
+        if target in p.name
     ]
+    print(f"\n{target}: {len(matches)} files")
 
-    if not methods:
-        print("FUNCTION NOT FOUND")
-        continue
+    for p in sorted(matches)[:5]:
+        arr = np.load(p, mmap_mode="r")
+        print(" ", p.name, tuple(arr.shape))
 
-    node = methods[0]
-    print("ARGS:", ast.unparse(node.args))
-
-    lines = source.splitlines()
-    print("FINAL IMPLEMENTATION LINES:")
-
-    start = max(node.lineno, node.end_lineno - 11)
-    for i in range(start, node.end_lineno + 1):
-        print(f"{i}: {lines[i-1]}")
-
+print("\n=== CURRENT FUSION CONTRACT ===")
+print("8 inputs: each (1, 256)")
+print("Final output: (1, 10819) — already validated")
 print("\nREAD ONLY — NO FILES MODIFIED")
 PY

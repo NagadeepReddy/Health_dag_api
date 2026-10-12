@@ -1,101 +1,12 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import ast
-import sys
+python - <<'PY'
 from pathlib import Path
+import ast
+import itertools
 import numpy as np
 
-root = Path("/workspace/artifacts/v1.168-max")
-base = root / "cta_max"
-sys.path.insert(0, str(root))
-
+base = Path("artifacts/v1.168-max/cta_max")
 source = base / "grecbase_fusion_parity_max.py"
-target = base / "grecbase_fusion_wiring_fixed_max.py"
 
-assert source.is_file()
-tree = ast.parse(source.read_text())
-
-builders = [
-    n for n in tree.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "build_grecbase_fusion_graph_parity"
-]
-assert len(builders) == 1
-fn = builders[0]
-
-# Find the eight branch tensors joined before moe_norm1.
-candidates = []
-for n in ast.walk(fn):
-    if not isinstance(n, ast.Assign):
-        continue
-    if not any(
-        isinstance(t, ast.Name) and t.id == "outs"
-        for t in n.targets
-    ):
-        continue
-
-    v = n.value
-    if not (
-        isinstance(v, ast.Call)
-        and isinstance(v.func, ast.Attribute)
-        and v.func.attr in ("concat", "stack")
-        and v.args
-        and isinstance(v.args[0], (ast.List, ast.Tuple))
-        and len(v.args[0].elts) == 8
-    ):
-        continue
-    candidates.append(v.args[0])
-
-if len(candidates) != 1:
-    print("Eight-branch concatenation not uniquely located.")
-    print("Matching candidates:", len(candidates))
-    print("NO FILES MODIFIED")
-    raise SystemExit(1)
-
-parts = candidates[0].elts
-
-# Existing: sequence, context, search0, search1,
-#           sibling, task, jet, ihq
-# Correct:  sequence, context, search0, search1,
-#           task, jet, ihq, sibling
-order = [0, 1, 2, 3, 5, 6, 7, 4]
-candidates[0].elts = [parts[i] for i in order]
-
-fn.name = "build_grecbase_fusion_graph_wiring_fixed"
-
-updated = ast.unparse(
-    ast.fix_missing_locations(tree)
-) + "\n"
-
-code = compile(updated, str(target), "exec")
-
-namespace = {
-    "__file__": str(target),
-    "__name__": "cta_max.wiring_validation",
-    "__package__": "cta_max",
-}
-exec(code, namespace)
-
-from max.graph import DeviceRef
-
-graph = namespace[
-    "build_grecbase_fusion_graph_wiring_fixed"
-](DeviceRef.CPU())
-
-print("CORRECTED GRAPH CONSTRUCTION: PASS")
-
-if target.exists():
-    assert target.read_text() == updated, (
-        "Target differs; refusing overwrite"
-    )
-else:
-    target.write_text(updated)
-
-print("CORRECTED GRAPH SAVED:", target)
-
-# Reuse already captured real-input branch values.
 pt = np.load(base / "real_sanity_pytorch_branches.npz")
 mx = np.load(base / "real_sanity_max_branches.npz")
 
@@ -104,34 +15,66 @@ names = [
     "task", "jet", "ihq", "sibling"
 ]
 
-print("\n=== CORRECTED BRANCH COMPARISON ===")
-print(f"{'BRANCH':<12} {'MEAN DIFF':>12} {'MAX DIFF':>12} {'MATCH':>7}")
+# Identify the best one-to-one branch assignment.
+cost = np.zeros((8, 8))
+for i, a in enumerate(names):
+    for j, b in enumerate(names):
+        x = pt[a].astype(np.float64)
+        y = mx[b].astype(np.float64)
+        cost[i, j] = np.mean(np.abs(x - y))
 
-corrected = {}
-for i, name in enumerate(names):
-    original_name = names[order[i]]
-    actual = mx[original_name]
-    expected = pt[name]
-    assert actual.shape == expected.shape == (1, 256)
+best = min(
+    itertools.permutations(range(8)),
+    key=lambda p: sum(cost[i, p[i]] for i in range(8))
+)
 
-    diff = np.abs(
-        actual.astype(np.float64)
-        - expected.astype(np.float64)
-    )
-    match = np.allclose(
-        actual, expected, rtol=1e-3, atol=1e-3
-    )
-
-    corrected[name] = actual
+print("=== BEST ONE-TO-ONE BRANCH MATCH ===")
+for i, j in enumerate(best):
     print(
-        f"{name:<12} {diff.mean():>12.6f} "
-        f"{diff.max():>12.6f} {str(bool(match)):>7}"
+        f"PyTorch {names[i]:<9} -> "
+        f"MAX {names[j]:<9} "
+        f"mean_diff={cost[i,j]:.6f}"
     )
 
-out = base / "real_sanity_max_branches_wiring_fixed.npz"
-np.savez(out, **corrected)
+print("\n=== ACTUAL MAX FUSION CODE ===")
+lines = source.read_text().splitlines()
+tree = ast.parse(source.read_text())
 
-print("\nCORRECTED BRANCH COMPARISON SAVED")
-print("ORIGINAL WORKING MAX GRAPH UNCHANGED")
-print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
+builders = [
+    n for n in tree.body
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "build_grecbase_fusion_graph_parity"
+]
+assert len(builders) == 1
+
+fn = builders[0]
+hits = set()
+
+for n in ast.walk(fn):
+    if isinstance(n, ast.Call):
+        expression = ast.unparse(n.func)
+        if (
+            expression.endswith(".concat")
+            or expression.endswith(".stack")
+            or (
+                expression == "norm"
+                and any(
+                    isinstance(a, ast.Constant)
+                    and a.value == "moe_norm1"
+                    for a in n.args
+                )
+            )
+        ):
+            hits.add(n.lineno)
+
+shown = set()
+for line in sorted(hits):
+    for i in range(max(fn.lineno, line-8),
+                   min(fn.end_lineno, line+5)+1):
+        if i not in shown:
+            print(f"{i}: {lines[i-1]}")
+            shown.add(i)
+    print("---")
+
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

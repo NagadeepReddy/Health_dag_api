@@ -3,53 +3,52 @@ podman run --rm -i \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
   - <<'PY'
+import torch
 from pathlib import Path
-import ast
-from max.graph import ops
 
-assert hasattr(ops, "relu"), "STOP: relu unavailable"
-assert hasattr(ops, "concat"), "STOP: concat unavailable"
+checkpoint = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
+assert checkpoint.is_file(), "STOP: checkpoint missing"
 
-p = Path("artifacts/v1.168-max/cta_max/sequence_transformer_max.py")
-s = p.read_text()
+data = torch.load(
+    checkpoint, map_location="cpu",
+    weights_only=True, mmap=True
+)
 
-old_pre = "item_pre = self.item_pre_embedding(item_pre_in)"
-old_return = "return page, item, item_meta, item_pre, page_wide"
+if isinstance(data, dict) and "state_dict" in data:
+    data = data["state_dict"]
+elif isinstance(data, dict) and "model_state_dict" in data:
+    data = data["model_state_dict"]
 
-assert s.count(old_pre) == 1, "STOP: pre-embedding differs"
-assert s.count(old_return) == 1, "STOP: return differs"
+assert isinstance(data, dict), "STOP: unexpected checkpoint structure"
 
-new_return = """from max.graph import ops
+targets = {
+    "page_embedding.weight": (15, 224),
+    "item_embedding.weight": (10727, 112),
+    "item_meta_embedding.weight": (523, 32),
+    "item_pre_embedding.weight": (10727, 112),
+    "page_meta_wide_dense.weight": (32, 1),
+    "page_meta_wide_dense.bias": (32,),
+}
 
-        # Exact LeakyReLU slope 0.2
-        page_wide = (
-            ops.relu(page_wide)
-            - 0.2 * ops.relu(-page_wide)
-        )
+print("===== SEQUENCE WEIGHT IDENTIFICATION =====")
 
-        # Original base feature order
-        page_full = ops.concat(
-            [page, page_wide], axis=2
-        )
-        item_full = ops.concat(
-            [item, item_meta, item_pre], axis=2
-        )
+for suffix, shape in targets.items():
+    matches = [
+        (k, v) for k, v in data.items()
+        if isinstance(v, torch.Tensor)
+        and (k == suffix or k.endswith("." + suffix))
+        and tuple(v.shape) == shape
+    ]
 
-        # Original element-wise combination
-        return page_full * item_full"""
+    print(f"\n{suffix} EXPECTED {shape}")
+    for key, value in matches:
+        print("MATCH:", key, tuple(value.shape))
 
-updated = s.replace(
-    old_pre,
-    "item_pre = self.item_pre_embedding(item_in)",
-    1
-).replace(old_return, new_return, 1)
+    if len(matches) != 1:
+        print("NEEDS RESOLUTION:", len(matches), "matches")
+    else:
+        print("UNIQUE MATCH: YES")
 
-ast.parse(updated)
-p.write_text(updated)
-
-print("BASE SEQUENCE ASSEMBLY UPDATED")
-print("LEAKY RELU 0.2 IMPLEMENTED")
-print("ORIGINAL FEATURE ORDER PRESERVED")
-print("SYNTAX PASS")
-print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
+print("\nREAD-ONLY CHECK COMPLETE")
+print("NO FILES MODIFIED")
 PY

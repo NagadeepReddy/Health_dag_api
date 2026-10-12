@@ -1,96 +1,63 @@
-python - <<'PY'
-from pathlib import Path
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  - <<'PY'
+import sys
 import ast
+import numpy as np
+import torch
+from pathlib import Path
 
-b = Path("artifacts/v1.168-max/cta_max")
-src0 = b / "run_transformer_max.py"
-src1 = b / "run_transformer_layer1.py"
-dst = b / "run_transformer_2layers.py"
+base = Path("artifacts/v1.168-max/cta_max")
+sys.path.insert(0, "artifacts/v1.168/utils/dependency-utils")
+from models import ParallelTransformerBlock
 
-assert src0.is_file() and src1.is_file()
-assert not dst.exists(), "STOP: combined runner already exists"
-
-def read_weights(path):
-    s = path.read_text()
-    tree = ast.parse(s)
-    nodes = [
-        n for n in tree.body
-        if isinstance(n, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "weight_files"
-                for t in n.targets)
-    ]
-    assert len(nodes) == 1, f"STOP: registry differs in {path.name}"
-    assert isinstance(nodes[0].value, ast.Dict)
-
-    result = {}
-    for k, v in zip(nodes[0].value.keys, nodes[0].value.values):
-        assert isinstance(k, ast.Constant) and isinstance(k.value, str)
-        result[k.value] = ast.get_source_segment(s, v)
-    return result
-
-w0 = read_weights(src0)
-w1 = read_weights(src1)
-
-assert len(w0) == 5 and len(w1) == 5
-assert all(".ptransformer.0." in k for k in w0)
-assert all(".ptransformer.1." in k for k in w1)
-assert not (w0.keys() & w1.keys())
-
-s = src1.read_text()
-
-old_import = "from parallel_transformer_graph_layer1 import build_parallel_transformer_graph"
-new_import = "from parallel_transformer_graph_2layers import build_parallel_transformer_graph"
-
-assert s.count(old_import) == 1, "STOP: graph import differs"
-s = s.replace(old_import, new_import, 1)
-
-tree = ast.parse(s)
-registry_nodes = [
-    n for n in tree.body
+# Reuse exact constructor arguments from proven PyTorch runner.
+source = ast.parse((base / "run_transformer_parity.py").read_text())
+constructors = [
+    n.value for n in source.body
     if isinstance(n, ast.Assign)
-    and any(isinstance(t, ast.Name) and t.id == "weight_files"
-            for t in n.targets)
+    and any(isinstance(t, ast.Name) and t.id == "pt" for t in n.targets)
+    and isinstance(n.value, ast.Call)
+    and isinstance(n.value.func, ast.Name)
+    and n.value.func.id == "ParallelTransformerBlock"
 ]
-assert len(registry_nodes) == 1
+assert len(constructors) == 1, "STOP: constructor differs"
+call = constructors[0]
+assert not call.args, "STOP: positional constructor arguments"
+kwargs = {k.arg: ast.literal_eval(k.value) for k in call.keywords}
 
-node = registry_nodes[0]
-weights = {**w0, **w1}
+checkpoint = torch.load(
+    "artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu",
+    weights_only=False
+)
 
-replacement = "weight_files = {\n" + "".join(
-    f"    {k!r}: {v},\n"
-    for k, v in weights.items()
-) + "}"
+blocks = []
+for i in (0, 1):
+    block = ParallelTransformerBlock(**kwargs)
+    prefix = f"sequence_transformer.ptransformer.{i}.fn."
+    state = {
+        k[len(prefix):]: v
+        for k, v in checkpoint.items()
+        if k.startswith(prefix)
+    }
+    block.load_state_dict(state, strict=True)
+    block.eval()
+    blocks.append(block)
 
-lines = s.splitlines()
-lines[node.lineno-1:node.end_lineno] = replacement.splitlines()
-s = "\n".join(lines) + "\n"
+x = torch.from_numpy(np.load(base / "transformer_input.npy")).float()
+v1 = torch.tensor([4], dtype=torch.long)
 
-tree = ast.parse(s)
+with torch.no_grad():
+    x1 = x + blocks[0](x, v1=v1)
+    pt_out = (x1 + blocks[1](x1, v1=v1)).numpy()
 
-outputs = [
-    n for n in tree.body
-    if isinstance(n, ast.Assign)
-    and any(isinstance(t, ast.Name) and t.id == "max_out"
-            for t in n.targets)
-]
+max_out = np.load(base / "transformer_max_output_2layers.npy")
 
-assert len(outputs) == 1, \
-    f"STOP: expected one max_out assignment, found {len(outputs)}"
-
-# Preserve execution through max_out.
-# Remove old single-layer saving and parity comparison.
-s = "\n".join(s.splitlines()[:outputs[0].end_lineno]) + "\n"
-
-s += '''
-np.save(BASE + "/transformer_max_output_2layers.npy", max_out)
-print("TWO-LAYER MAX SHAPE:", max_out.shape)
-print("FINITE:", bool(np.isfinite(max_out).all()))
-'''
-
-ast.parse(s)
-dst.write_text(s)
-
-print("TWO-LAYER RUNNER CREATED — SYNTAX OK")
-print("REGISTERED WEIGHTS:", len(weights))
-print("VERIFIED BLOCKS AND DS CODE UNCHANGED")
+print("PT SHAPE :", pt_out.shape)
+print("MAX SHAPE:", max_out.shape)
+print("MAX DIFF :", np.max(np.abs(pt_out - max_out)))
+print("MATCH    :", np.allclose(pt_out, max_out, rtol=1e-4, atol=1e-5))
 PY

@@ -1,94 +1,59 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
+python - <<'PY'
 from pathlib import Path
 import ast
-from max.graph import ops
 
-assert hasattr(ops, "unsqueeze"), "STOP: MAX unsqueeze unavailable"
+b = Path("artifacts/v1.168-max/cta_max")
+src = b / "parallel_transformer_graph_2layers.py"
+dst = b / "parallel_transformer_graph_sequence.py"
 
-p = Path("artifacts/v1.168-max/cta_max/sequence_postprocess_max.py")
-s = p.read_text()
-tree = ast.parse(s)
+assert src.is_file()
+assert (b / "sequence_postprocess_max.py").is_file()
+assert not dst.exists(), "STOP: sequence graph already exists"
 
-cls = next(n for n in tree.body
-           if isinstance(n, ast.ClassDef)
-           and n.name == "SequencePostprocessMAX")
+s = src.read_text()
 
-methods = {
-    n.name: n for n in cls.body
-    if isinstance(n, ast.FunctionDef)
-}
+old_import = (
+    "from parallel_transformer_block_2layers "
+    "import ParallelTransformerBlockMAX"
+)
 
-assert "__init__" in methods and "__call__" in methods
-assert s.count("self.out_norm1 = RMSNorm(") == 1
-assert s.count("self.out_norm2 = RMSNorm(") == 1
-assert s.count("self.pooling = MeanMaxPoolingMAX()") == 1
-assert s.count("self.seq_dense = Linear(") == 1
+assert s.count(old_import) == 1, "STOP: block import differs"
+assert s.count("graph.output(output)") == 1, "STOP: graph output differs"
 
-code = '''
-import numpy as np
+s = s.replace(
+    old_import,
+    old_import + "\nfrom cta_max.sequence_postprocess_max import SequencePostprocessMAX",
+    1
+)
 
-from max.dtype import DType
-from max.graph import DeviceRef, TensorValue, ops
-from max.nn import Linear
-from max.nn.layer import Module
+lines = s.splitlines()
 
-from .sequence_pooling_max import MeanMaxPoolingMAX
+matches = [
+    i for i, line in enumerate(lines)
+    if line.strip() == "graph = Graph("
+]
 
+assert len(matches) == 1, "STOP: graph construction differs"
 
-class SequencePostprocessMAX(Module):
-    def __init__(self, dtype: DType, device: DeviceRef):
-        super().__init__()
-        self.pooling = MeanMaxPoolingMAX()
-        self.seq_dense = Linear(
-            in_dim=512,
-            out_dim=256,
-            dtype=dtype,
-            device=device,
-            has_bias=True,
-            name="sequence_transformer.seq_dense",
-        )
+i = matches[0]
+indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
 
-    def __call__(self, x: TensorValue) -> TensorValue:
-        base = "artifacts/v1.168-max/cta_max/sequence_weights/"
+lines.insert(
+    i,
+    indent + "postprocess = SequencePostprocessMAX("
+    "dtype=DType.float32, device=device_ref)"
+)
 
-        g1 = ops.constant(
-            np.load(base + "out_norm1_g.npy").astype(np.float32),
-            dtype=DType.float32,
-            device=DeviceRef.CPU(),
-        )
-        g2 = ops.constant(
-            np.load(base + "out_norm2_g.npy").astype(np.float32),
-            dtype=DType.float32,
-            device=DeviceRef.CPU(),
-        )
+s = "\n".join(lines) + "\n"
+s = s.replace(
+    "graph.output(output)",
+    "graph.output(postprocess(output))",
+    1
+)
 
-        variance1 = ops.unsqueeze(
-            ops.mean(x * x, axis=-1), axis=-1
-        )
-        x = x * ops.rsqrt(variance1 + 1e-6) * g1
+ast.parse(s)
+dst.write_text(s)
 
-        x = self.pooling(x)
-        x = self.seq_dense(x)
-
-        variance2 = ops.unsqueeze(
-            ops.mean(x * x, axis=-1), axis=-1
-        )
-        return x * ops.rsqrt(variance2 + 1e-6) * g2
-'''
-
-ast.parse(code)
-
-backup = Path(str(p) + ".before_weight_binding.bak")
-assert not backup.exists(), "STOP: backup already exists"
-
-backup.write_text(s)
-p.write_text(code)
-
-print("SEQUENCE NORMALIZATION WEIGHTS WIRED — SYNTAX OK")
-print("DYNAMIC BATCH/SEQUENCE NORMALIZATION SUPPORTED")
-print("TRANSFORMER AND DS CODE UNCHANGED")
+print("COMBINED SEQUENCE GRAPH CREATED — SYNTAX OK")
+print("TWO-LAYER GRAPH AND DS CODE UNCHANGED")
 PY

@@ -3,66 +3,129 @@ podman run --rm -i \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
   - <<'PY'
-import torch
+import sys
 import numpy as np
+import torch
+import torch.nn.functional as F
 from pathlib import Path
 
-checkpoint = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
-dest = Path("artifacts/v1.168-max/cta_max/sequence_weights")
+from max.driver import CPU
+from max.dtype import DType
+from max.graph import DeviceRef, Graph, TensorType
+from max.graph.weights import WeightData
+from max.engine import InferenceSession
 
-assert checkpoint.is_file(), "STOP: checkpoint missing"
-assert dest.is_dir(), "STOP: existing sequence weights folder missing"
+sys.path.insert(0, "artifacts/v1.168-max")
 
-data = torch.load(
-    checkpoint,
-    map_location="cpu",
-    weights_only=True,
-    mmap=True
-)
+from cta_max.sequence_transformer_max import ParallelTransformerMAEPMAX
 
-if "state_dict" in data:
-    data = data["state_dict"]
-elif "model_state_dict" in data:
-    data = data["model_state_dict"]
+base = Path("artifacts/v1.168-max/cta_max/sequence_weights")
 
-targets = {
-    "page_embedding_weight.npy":
-        ("sequence_transformer.page_embedding.weight", (15, 224)),
-    "item_embedding_weight.npy":
-        ("sequence_transformer.item_embedding.weight", (10727, 112)),
-    "item_meta_embedding_weight.npy":
-        ("sequence_transformer.item_meta_embedding.weight", (523, 32)),
-    "item_pre_embedding_weight.npy":
-        ("sequence_transformer.item_pre_embedding.weight", (10727, 112)),
-    "page_meta_wide_dense_weight.npy":
-        ("sequence_transformer.page_meta_wide_dense.weight", (32, 1)),
-    "page_meta_wide_dense_bias.npy":
-        ("sequence_transformer.page_meta_wide_dense.bias", (32,))
+names = {
+    "page_embedding": "page_embedding_weight.npy",
+    "item_embedding": "item_embedding_weight.npy",
+    "item_meta_embedding": "item_meta_embedding_weight.npy",
+    "item_pre_embedding": "item_pre_embedding_weight.npy",
+    "page_meta_wide_dense": "page_meta_wide_dense_weight.npy",
+    "page_meta_wide_dense_bias": "page_meta_wide_dense_bias.npy",
 }
 
-prepared = {}
+arrays = {
+    key: np.load(base / filename).astype(np.float32)
+    for key, filename in names.items()
+}
 
-for filename, (key, shape) in targets.items():
-    assert key in data, f"STOP: missing {key}"
-    arr = data[key].detach().cpu().numpy().astype(np.float32)
-    assert arr.shape == shape, f"STOP: wrong shape for {key}"
-    assert np.isfinite(arr).all(), f"STOP: nonfinite values in {key}"
-    prepared[filename] = arr
+page = np.array([[1, 2, 3, 4]], dtype=np.int64)
+item = np.array([[10, 20, 30, 40]], dtype=np.int64)
+meta = np.array([[1, 2, 3, 4]], dtype=np.int64)
+wide = np.array([[[0.1], [0.2], [-0.3], [0.4]]],
+                dtype=np.float32)
 
-for filename, arr in prepared.items():
-    path = dest / filename
-    if path.exists():
-        existing = np.load(path)
-        assert np.array_equal(existing, arr), \
-            f"STOP: existing weight differs: {filename}"
+cpu = CPU()
+device = DeviceRef.from_device(cpu)
 
-for filename, arr in prepared.items():
-    path = dest / filename
-    if not path.exists():
-        np.save(path, arr)
-    print("READY:", filename, arr.shape)
+module = ParallelTransformerMAEPMAX(
+    dtype=DType.float32,
+    device=device
+)
 
-print("ALL 6 SEQUENCE INPUT WEIGHTS READY")
-print("EXISTING TRANSFORMER AND POSTPROCESS WEIGHTS PRESERVED")
-print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
+graph = Graph(
+    "cta_real_sequence_features",
+    input_types=[
+        TensorType(DType.int64, [1, 4], device=device),
+        TensorType(DType.int64, [1, 4], device=device),
+        TensorType(DType.int64, [1, 4], device=device),
+        TensorType(DType.int64, [1, 4], device=device),
+        TensorType(DType.float32, [1, 4, 1], device=device),
+    ],
+)
+
+with graph:
+    result = module(*graph.inputs)
+    graph.output(result)
+
+mapping = {
+    "sequence_transformer.page_embedding.weight":
+        arrays["page_embedding"],
+    "sequence_transformer.item_embedding.weight":
+        arrays["item_embedding"],
+    "sequence_transformer.item_meta_embedding.weight":
+        arrays["item_meta_embedding"],
+    "sequence_transformer.item_pre_embedding.weight":
+        arrays["item_pre_embedding"],
+    "sequence_transformer.page_meta_wide_dense.weight":
+        arrays["page_meta_wide_dense"],
+    "sequence_transformer.page_meta_wide_dense.bias":
+        arrays["page_meta_wide_dense_bias"],
+}
+
+registry = {
+    key: WeightData(
+        value,
+        name=key,
+        dtype=DType.float32,
+        shape=value.shape
+    )
+    for key, value in mapping.items()
+}
+
+session = InferenceSession(devices=[cpu])
+model = session.load(graph, weights_registry=registry)
+
+max_out = model.execute(page, item, meta, item, wide)[0].to_numpy()
+
+with torch.no_grad():
+    p = F.embedding(
+        torch.from_numpy(page),
+        torch.from_numpy(arrays["page_embedding"])
+    )
+    i = F.embedding(
+        torch.from_numpy(item),
+        torch.from_numpy(arrays["item_embedding"])
+    )
+    m = F.embedding(
+        torch.from_numpy(meta),
+        torch.from_numpy(arrays["item_meta_embedding"])
+    )
+    pre = F.embedding(
+        torch.from_numpy(item),
+        torch.from_numpy(arrays["item_pre_embedding"])
+    )
+    pw = F.linear(
+        torch.from_numpy(wide),
+        torch.from_numpy(arrays["page_meta_wide_dense"]),
+        torch.from_numpy(arrays["page_meta_wide_dense_bias"])
+    )
+    pw = F.leaky_relu(pw, negative_slope=0.2)
+    pt_out = torch.cat([p, pw], dim=2) * torch.cat(
+        [i, m, pre], dim=2
+    )
+    pt_out = pt_out.numpy()
+
+print("PYTORCH SHAPE:", pt_out.shape)
+print("MAX SHAPE:", max_out.shape)
+print("MAX DIFF:", np.max(np.abs(pt_out - max_out)))
+print("MATCH:", np.allclose(
+    pt_out, max_out, rtol=1e-4, atol=1e-5
+))
 PY

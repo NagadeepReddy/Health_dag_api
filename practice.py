@@ -3,54 +3,75 @@ podman run --rm -i \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
   - <<'PY'
-from pathlib import Path
-import ast
 import sys
+from pathlib import Path
+import numpy as np
 
 from max.driver import CPU
 from max.dtype import DType
+from max.engine import InferenceSession
 from max.graph import DeviceRef, Graph, TensorType
+from max.graph.weights import WeightData
 
 base = Path("artifacts/v1.168-max/cta_max")
-p = base / "att_pooling_max.py"
-s = p.read_text()
-
-changes = {
-    "q.reshape((q.shape[0], 2, q.shape[1], 256))":
-    "q.reshape((q.shape[0], 1, q.shape[1], 256))",
-
-    "out.reshape([out.shape[0], out.shape[2], 512])":
-    "out.reshape([out.shape[0], out.shape[2], 256])",
-}
-
-for old, new in changes.items():
-    assert s.count(old) == 1, f"STOP: code differs: {old}"
-    s = s.replace(old, new, 1)
-
-assert "self.heads = 1" in s
-assert "[256, 256, 256, 2048]" in s
-ast.parse(s)
-
-# Test modified code WITHOUT saving first.
 sys.path.insert(0, str(base))
 
-ns = {
-    "__name__": "att_pooling_preflight",
-    "__file__": str(p),
-}
+from att_pooling_max import AttPoolingBlockMAX
 
-exec(compile(s, str(p), "exec"), ns)
+wdir = base / "grecbase_integration_weights"
 
-device = DeviceRef.from_device(CPU())
+cpu = CPU()
+device = DeviceRef.from_device(cpu)
 
-block = ns["AttPoolingBlockMAX"](
+block = AttPoolingBlockMAX(
     dtype=DType.float32,
     device=device,
-    layer_idx=0,
+    layer_idx=0
+)
+
+assert block.heads == 1
+assert tuple(block.fused_dims) == (256, 256, 256, 2048)
+
+expected = {
+    "att_pooling.fused_attn_ff_proj.weight": (2816, 256),
+    "att_pooling.attn_out.weight": (256, 256),
+    "att_pooling.ff_out.1.weight": (256, 1024),
+}
+
+registry = {}
+
+for name, shape in expected.items():
+    path = wdir / (name + ".npy")
+    assert path.is_file(), f"STOP: missing {name}"
+
+    arr = np.load(path).astype(np.float32)
+    assert arr.shape == shape, f"STOP: wrong shape {name}"
+
+    registry[name] = WeightData(
+        arr,
+        name=name,
+        dtype=DType.float32,
+        shape=arr.shape
+    )
+
+inv = np.load(
+    wdir / "att_pooling.rotary_emb.inv_freq.npy"
+).astype(np.float32)
+
+assert inv.shape == (128,)
+
+angles = np.arange(8, dtype=np.float32)[:, None] * inv[None, :]
+pos = np.concatenate([angles, angles], axis=-1)
+pos = pos[None, None, :, :].astype(np.float32)
+
+x = (
+    np.random.default_rng(42)
+    .standard_normal((1, 8, 256))
+    .astype(np.float32) * 0.01
 )
 
 graph = Graph(
-    "cta_attention_shape_preflight",
+    "cta_attention_execution_verified",
     input_types=[
         TensorType(DType.float32, [1, 8, 256], device=device),
         TensorType(DType.float32, [1, 1, 8, 256], device=device),
@@ -61,18 +82,21 @@ with graph:
     output = block(*graph.inputs)
     graph.output(output)
 
-print("GRAPH OUTPUT:", output.shape, flush=True)
+print("GRAPH CONSTRUCTION: PASS", flush=True)
 
-assert all(
-    int(dim) == expected
-    for dim, expected in zip(output.shape, (1, 8, 256))
-), "STOP: unexpected output dimensions"
-assert len(output.shape) == 3
+session = InferenceSession(devices=[cpu])
+model = session.load(graph, weights_registry=registry)
 
-p.write_text(s)
+print("ATTENTION COMPILATION: PASS", flush=True)
 
-print("Q HEAD CORRECTED: 1")
-print("ATTENTION OUTPUT DIMENSION: 256")
-print("ATTENTION GRAPH CONSTRUCTION: PASS")
-print("ORIGINAL TRANSFORMER AND DS CODE UNCHANGED")
+result = model.execute(x, pos)[0].to_numpy()
+
+print("OUTPUT SHAPE:", result.shape)
+print("FINITE:", bool(np.isfinite(result).all()))
+print(
+    "ATTENTION EXECUTION PASS:",
+    result.shape == (1, 8, 256)
+    and bool(np.isfinite(result).all())
+)
+print("NO FILES MODIFIED")
 PY

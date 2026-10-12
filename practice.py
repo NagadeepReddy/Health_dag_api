@@ -1,53 +1,46 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys
+python - <<'PY'
+import ast
 from pathlib import Path
-import numpy as np
-
-sys.path.insert(0, "/workspace/artifacts/v1.168-max")
-
-from max.driver import CPU, Tensor
-from max.engine import InferenceSession
-from max.graph import DeviceRef
-from max.graph.weights import WeightData
-from cta_max.grecbase_fusion_graph_max import build_grecbase_fusion_graph
 
 base = Path("artifacts/v1.168-max/cta_max")
 
-weights = {}
-for p in sorted(base.rglob("att_pooling.*.npy")):
-    name = p.stem
-    assert name not in weights, f"Duplicate: {name}"
-    arr = np.load(p).astype(np.float32)
-    weights[name] = WeightData.from_numpy(arr, name)
+targets = {
+    "parallel_transformer_graph_full_sequence.py":
+        "build_parallel_transformer_graph",
+    "nlp_bert_in_graph.py": "nlp_bert_forward",
+    "main_context_max.py": "main_context_forward",
+    "sibling_context_max.py": "sibling_context_forward",
+    "grecbase_aux_features_max.py": "grecbase_aux_features",
+}
 
-assert "att_pooling.fused_attn_ff_proj.weight" in weights
+for filename, name in targets.items():
+    p = base / filename
+    print(f"\n===== {filename} =====")
 
-device = CPU()
-graph = build_grecbase_fusion_graph(DeviceRef.CPU())
-session = InferenceSession(devices=[device])
+    if not p.exists():
+        print("MISSING FILE")
+        continue
 
-model = session.load(graph, weights_registry=weights)
-print("FUSION COMPILATION: PASS")
+    source = p.read_text()
+    tree = ast.parse(source)
+    methods = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == name
+    ]
 
-inputs = [
-    Tensor.from_numpy(
-        np.random.default_rng(i).standard_normal((1, 256)).astype(np.float32)
-    ).to(device)
-    for i in range(8)
-]
+    if not methods:
+        print("FUNCTION NOT FOUND")
+        continue
 
-result = model.execute(*inputs)[0].to_numpy()
+    node = methods[0]
+    print("ARGS:", ast.unparse(node.args))
 
-print("OUTPUT SHAPE:", result.shape)
-print("FINITE:", bool(np.isfinite(result).all()))
+    lines = source.splitlines()
+    print("FINAL IMPLEMENTATION LINES:")
 
-assert result.shape == (1, 10819), result.shape
-assert np.isfinite(result).all()
+    start = max(node.lineno, node.end_lineno - 11)
+    for i in range(start, node.end_lineno + 1):
+        print(f"{i}: {lines[i-1]}")
 
-print("UPDATED FUSION RUNTIME: PASS")
-print("ORIGINAL DS CODE UNCHANGED")
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

@@ -1,28 +1,33 @@
 python - <<'PY'
-import ast
 from pathlib import Path
+import numpy as np
 
-files = [
-    Path("artifacts/v1.168/utils/dependency-utils/models.py"),
-    Path("artifacts/v1.168-max/cta_max/grecbase_get_path_max.py"),
-]
+base = Path("artifacts/v1.168-max/cta_max")
 
-for p in files:
-    print(f"\n===== {p.name} =====")
-    src = p.read_text()
-    lines = src.splitlines()
-    tree = ast.parse(src)
+print("===== EXPORTED GET_PATH WEIGHTS =====")
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and (
-            node.name == "get_path" or
-            node.name == "grecbase_get_path_max"
-        ):
-            print("ARGUMENTS:", ast.unparse(node.args))
-            for n in range(node.lineno, min(node.end_lineno, node.lineno + 44) + 1):
-                print(f"{n}: {lines[n-1]}")
-            if node.end_lineno > node.lineno + 44:
-                print("... remaining lines omitted")
+found = 0
+for p in sorted(base.rglob("*.npy")):
+    if "remove_tasks" in p.name:
+        print(p.name, np.load(p, mmap_mode="r").shape)
+        found += 1
+
+print("TOTAL:", found)
+
+print("\n===== ORIGINAL LAYER DECLARATIONS =====")
+p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
+lines = p.read_text().splitlines()
+
+for i, line in enumerate(lines, 1):
+    if any(
+        f"self.{name} =" in line
+        for name in (
+            "remove_tasks_dense1",
+            "remove_tasks_act1",
+            "remove_tasks_dense2",
+        )
+    ):
+        print(f"{i}: {line.strip()}")
 
 print("\nREAD ONLY — NO FILES MODIFIED")
 PY

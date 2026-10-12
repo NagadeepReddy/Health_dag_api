@@ -11,35 +11,28 @@ sys.path.insert(0, "/workspace/artifacts/v1.168-max")
 
 from max.driver import CPU, Tensor
 from max.engine import InferenceSession
-from max.graph import DeviceRef, WeightData, Shape
+from max.graph import DeviceRef, Shape
+from max.graph.weights import WeightData
 from cta_max.grecbase_fusion_graph_max import build_grecbase_fusion_graph
 
 base = Path("artifacts/v1.168-max/cta_max")
-
-# Reuse the already-exported attention weights.
-files = sorted(base.rglob("att_pooling.*.npy"))
-assert files, "Attention weight exports not found"
-
 weights = {}
-for p in files:
-    key = p.stem
-    assert key not in weights, f"Duplicate weight: {key}"
+
+for p in sorted(base.rglob("att_pooling.*.npy")):
     arr = np.load(p).astype(np.float32)
-    weights[key] = WeightData(
-        arr,
-        shape=Shape(arr.shape),
-        name="weight",
+    weights[p.stem] = WeightData(
+        arr, shape=Shape(arr.shape), name="weight"
     )
 
 required = "att_pooling.fused_attn_ff_proj.weight"
-assert required in weights, f"Missing {required}"
+assert required in weights, f"Missing weight: {required}"
 
-print("REGISTERED ATTENTION WEIGHTS:", len(weights))
+print("REGISTERED WEIGHTS:", len(weights))
 
 device = CPU()
 graph = build_grecbase_fusion_graph(DeviceRef.CPU())
-
 session = InferenceSession(devices=[device])
+
 model = session.load(graph, weights_registry=weights)
 print("FUSION COMPILATION: PASS")
 

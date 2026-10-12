@@ -6,79 +6,67 @@ podman run --rm -i \
 import sys
 import numpy as np
 import torch
-import torch.nn.functional as F
 from pathlib import Path
 
-root = Path("artifacts/v1.168")
-sys.path.insert(0, str(root / "utils/dependency-utils"))
-from models import ParallelTransformerBlock
+from max.driver import CPU
+from max.dtype import DType
+from max.graph import DeviceRef, Graph, TensorType
+from max.engine import InferenceSession
 
-pt = ParallelTransformerBlock(
+sys.path.insert(0, "artifacts/v1.168/utils/dependency-utils")
+import models
+
+sys.path.insert(0, "artifacts/v1.168-max/cta_max")
+import att_pooling_max
+
+assert hasattr(models, "apply_rotary_pos_emb"), \
+    "STOP: original rotary function unavailable"
+assert hasattr(att_pooling_max, "apply_rotary_pos_emb_max"), \
+    "STOP: MAX rotary function unavailable"
+
+pt = models.ParallelTransformerBlock(
     dim=256, dim_head=256, heads=1, ff_mult=4
 ).eval()
 
-state = torch.load(
-    root / "core-artifact/model_0_base.pt",
-    map_location="cpu",
-    weights_only=True, mmap=True
-)
-if "state_dict" in state:
-    state = state["state_dict"]
-elif "model_state_dict" in state:
-    state = state["model_state_dict"]
+positions = pt.get_rotary_embedding(8, torch.device("cpu"))
 
-weights = {
-    k.removeprefix("att_pooling."): v
-    for k, v in state.items()
-    if k.startswith("att_pooling.")
-}
-pt.load_state_dict(weights, strict=True)
-
-x = torch.from_numpy(
-    np.random.default_rng(42)
-    .standard_normal((1, 8, 256))
-    .astype(np.float32) * 0.01
-)
+q = np.random.default_rng(42).standard_normal(
+    (1, 1, 8, 256)
+).astype(np.float32)
 
 with torch.inference_mode():
-    normalized = pt.norm1(x)
-    projected = pt.fused_attn_ff_proj(normalized)
-    q, k, v, ff = projected.split(
-        [256, 256, 256, 2048], dim=-1
+    pt_out = models.apply_rotary_pos_emb(
+        positions, torch.from_numpy(q)
+    ).numpy()
+
+pos = positions.detach().numpy()[None, None, :, :].astype(np.float32)
+
+cpu = CPU()
+device = DeviceRef.from_device(cpu)
+
+graph = Graph(
+    "cta_rotary_application_diagnostic",
+    input_types=[
+        TensorType(DType.float32, [1, 1, 8, 256], device=device),
+        TensorType(DType.float32, [1, 1, 8, 256], device=device),
+    ],
+)
+
+with graph:
+    result = att_pooling_max.apply_rotary_pos_emb_max(
+        graph.inputs[1], graph.inputs[0]
     )
+    graph.output(result)
 
-    ff = pt.norm2(ff)
-    first, second = ff.chunk(2, dim=-1)
+session = InferenceSession(devices=[cpu])
+model = session.load(graph)
+max_out = model.execute(q, pos)[0].to_numpy()
 
-    original = pt.ff_out[0](ff)
-    first_gated = F.silu(first) * second
-    second_gated = first * F.silu(second)
-
-    print("===== SWIGLU ORDER =====")
-    print("FIRST HALF GATED DIFF:",
-          (original - first_gated).abs().max().item())
-    print("SECOND HALF GATED DIFF:",
-          (original - second_gated).abs().max().item())
-
-    print("\n===== ROTARY POSITIONS =====")
-    reference_pos = pt.get_rotary_embedding(8, x.device)
-    freq = pt.rotary_emb.inv_freq
-    angles = torch.outer(
-        torch.arange(8, dtype=torch.float32), freq
-    )
-    max_pos = torch.cat([angles, angles], dim=-1)
-
-    print("PYTORCH ROTARY SHAPE:", tuple(reference_pos.shape))
-    print("MAX POSITION SHAPE:", tuple(max_pos.shape))
-    print("ROTARY MAX DIFF:",
-          (reference_pos - max_pos).abs().max().item())
-
-    print("\n===== PADDING MASK =====")
-    mask = pt.create_key_padding_mask(
-        seq_in=x, valid_length=None
-    )
-    print("MASK SHAPE:", tuple(mask.shape))
-    print("MASKED POSITIONS:", int(mask.sum().item()))
-
-print("\nDIAGNOSTIC COMPLETE — NO FILES MODIFIED")
+print("PYTORCH SHAPE:", pt_out.shape)
+print("MAX SHAPE:", max_out.shape)
+print("ROTARY MAX DIFF:", np.max(np.abs(pt_out - max_out)))
+print("ROTARY MATCH:", np.allclose(
+    pt_out, max_out, rtol=1e-4, atol=1e-5
+))
+print("NO FILES MODIFIED")
 PY

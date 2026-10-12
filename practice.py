@@ -4,29 +4,42 @@ podman run --rm -i \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
   - <<'PY'
 from pathlib import Path
-import ast
-from max.graph import ops
+import numpy as np
+import torch
 
-assert all(hasattr(ops, n) for n in ("mean", "max", "concat")), \
-    "STOP: required MAX operation unavailable"
+base = Path("artifacts/v1.168-max/cta_max/sequence_weights")
+ckpt = torch.load(
+    "artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu",
+    weights_only=True
+)
 
-p = Path("artifacts/v1.168-max/cta_max/sequence_pooling_max.py")
-assert not p.exists(), "STOP: file already exists"
+required = {
+    "seq_dense.weight": (256, 512),
+    "seq_dense.bias": (256,),
+    "out_norm1.g": (256,),
+    "out_norm2.g": (256,),
+}
 
-code = '''
-from max.graph import TensorValue, ops
-from max.nn.layer import Module
+prepared = []
+for suffix, shape in required.items():
+    key = "sequence_transformer." + suffix
+    assert key in ckpt, f"STOP: missing {key}"
+    arr = ckpt[key].detach().cpu().numpy()
+    assert arr.shape == shape, f"STOP: shape differs for {key}"
 
-class MeanMaxPoolingMAX(Module):
-    def __call__(self, x: TensorValue) -> TensorValue:
-        mean_out = ops.mean(x, axis=1)
-        max_out = ops.max(x, axis=1)
-        return ops.concat([mean_out, max_out], axis=1)
-'''
+    path = base / (suffix.replace(".", "_") + ".npy")
+    if path.exists():
+        assert np.array_equal(np.load(path), arr), f"STOP: existing file differs: {path}"
+        print("ALREADY VERIFIED:", path.name)
+    else:
+        prepared.append((path, arr))
 
-ast.parse(code)
-p.write_text(code)
+base.mkdir(parents=True, exist_ok=True)
+for path, arr in prepared:
+    np.save(path, arr)
+    print("SAVED:", path.name)
 
-print("MAX MEAN-MAX POOLING CREATED — SYNTAX OK")
-print("ORIGINAL MODEL AND VERIFIED TRANSFORMER UNCHANGED")
+print("SEQUENCE POSTPROCESS WEIGHTS READY")
+print("VERIFIED TRANSFORMER AND DS CODE UNCHANGED")
 PY

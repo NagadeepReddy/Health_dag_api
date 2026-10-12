@@ -3,39 +3,36 @@ podman run --rm -i \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
   - <<'PY'
-import ast
-import sys
 from pathlib import Path
-
+import ast, sys
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from max.driver import CPU
 from max.dtype import DType
+from max.graph import DeviceRef, Graph, TensorType
 from max.engine import InferenceSession
-from max.graph import DeviceRef, Graph, TensorType, ops
 
 base = Path("artifacts/v1.168-max/cta_max")
-checkpoint = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
-dest = base / "get_path_weights"
-module_file = base / "grecbase_get_path_max.py"
+dst = base / "grecbase_aux_features_max.py"
+wdir = base / "grecbase_aux_weights"
 
-assert checkpoint.is_file(), "STOP: checkpoint missing"
-assert not module_file.exists(), "STOP: MAX get_path already exists"
-assert hasattr(ops, "sigmoid"), "STOP: MAX sigmoid unavailable"
+assert not dst.exists(), "STOP: auxiliary module already exists"
 
 expected = {
-    "remove_tasks_dense1.weight": (2048, 2048),
-    "remove_tasks_dense1.bias": (2048,),
-    "remove_tasks_act1.w1.weight": (1366, 2048),
-    "remove_tasks_act1.w2.weight": (2048, 1366),
-    "remove_tasks_act1.w3.weight": (1366, 2048),
+    "task_embedding.0.weight": (2, 128),
+    "task_embedding.1.weight": (5, 128),
+    "ihq_embedding.weight": (596, 128),
+    "jet_embedding.0.weight": (16, 64),
+    "jet_embedding.1.weight": (451, 64),
 }
 
 state = torch.load(
-    checkpoint, map_location="cpu",
-    weights_only=True, mmap=True
+    "artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu",
+    weights_only=True,
+    mmap=True,
 )
 
 if "state_dict" in state:
@@ -47,9 +44,13 @@ arrays = {}
 for name, shape in expected.items():
     assert name in state, f"STOP: missing {name}"
     arr = state[name].detach().cpu().numpy().astype(np.float32)
-    assert arr.shape == shape, f"STOP: shape mismatch: {name}"
-    assert np.isfinite(arr).all(), f"STOP: nonfinite weight: {name}"
+    assert arr.shape == shape, f"STOP: shape mismatch {name}"
+    assert np.isfinite(arr).all()
     arrays[name] = arr
+    if (wdir / (name + ".npy")).exists():
+        assert np.array_equal(
+            np.load(wdir / (name + ".npy")), arr
+        ), f"STOP: existing weight differs: {name}"
 
 code = '''
 from pathlib import Path
@@ -57,94 +58,115 @@ import numpy as np
 from max.dtype import DType
 from max.graph import ops
 
-WEIGHTS = Path(__file__).parent / "get_path_weights"
+WDIR = Path(__file__).parent / "grecbase_aux_weights"
 
-def grecbase_get_path_max(x, device):
-    def weight(name):
-        arr = np.load(WEIGHTS / (name + ".npy")).astype(np.float32)
-        return ops.constant(
-            arr, dtype=DType.float32, device=device
+def grecbase_aux_features(
+    task0, task1, ihq_ids, jet_name, jet_status, device
+):
+    def embed(ids, name):
+        arr = np.load(WDIR / (name + ".npy")).astype(np.float32)
+        w = ops.constant(arr, dtype=DType.float32, device=device)
+        return ops.gather(w, ids, axis=0)
+
+    def pool(x, dim):
+        mean = ops.mean(x, axis=1)
+        maximum = ops.max(x, axis=1)
+        return ops.reshape(
+            ops.concat([mean, maximum], axis=1),
+            [1, 2 * dim]
         )
 
-    def linear(v, prefix, bias=False):
-        result = ops.matmul(
-            v, ops.permute(weight(prefix + ".weight"), [1, 0])
-        )
-        if bias:
-            result = result + weight(prefix + ".bias")
-        return result
+    task = ops.concat([
+        embed(task0, "task_embedding.0.weight"),
+        embed(task1, "task_embedding.1.weight")
+    ], axis=2)
+    task = ops.reshape(task, [1, 256])
 
-    x = linear(x, "remove_tasks_dense1", bias=True)
+    ihq = pool(embed(ihq_ids, "ihq_embedding.weight"), 128)
 
-    a = linear(x, "remove_tasks_act1.w1")
-    b = linear(x, "remove_tasks_act1.w3")
+    jet0 = pool(embed(jet_name, "jet_embedding.0.weight"), 64)
+    jet1 = pool(embed(jet_status, "jet_embedding.1.weight"), 64)
 
-    activated = a * ops.sigmoid(a)
-    return linear(activated * b, "remove_tasks_act1.w2")
+    jet = pool(
+        ops.concat([
+            ops.reshape(jet0, [1, 1, 128]),
+            ops.reshape(jet1, [1, 1, 128])
+        ], axis=1),
+        128
+    )
+
+    return ops.concat([task, ihq, jet], axis=1)
 '''
 
 ast.parse(code)
 
-# Check existing weights before writing anything.
+wdir.mkdir(parents=True, exist_ok=True)
 for name, arr in arrays.items():
-    path = dest / (name + ".npy")
-    if path.exists():
-        assert np.array_equal(np.load(path), arr), \
-            f"STOP: existing weight differs: {name}"
+    p = wdir / (name + ".npy")
+    if not p.exists():
+        np.save(p, arr)
 
-dest.mkdir(parents=True, exist_ok=True)
-
-for name, arr in arrays.items():
-    path = dest / (name + ".npy")
-    if not path.exists():
-        np.save(path, arr)
-
-module_file.write_text(code)
-print("GET_PATH MAX COMPONENT CREATED")
+dst.write_text(code)
 
 sys.path.insert(0, str(base))
-from grecbase_get_path_max import grecbase_get_path_max
+from grecbase_aux_features_max import grecbase_aux_features
 
 cpu = CPU()
 device = DeviceRef.from_device(cpu)
 
-graph = Graph(
-    "cta_grecbase_get_path",
-    input_types=[
-        TensorType(DType.float32, [1, 2048], device=device)
-    ],
-)
+types = [
+    TensorType(DType.int64, [1], device=device),
+    TensorType(DType.int64, [1], device=device),
+    TensorType(DType.int64, [1, 4], device=device),
+    TensorType(DType.int64, [1, 4], device=device),
+    TensorType(DType.int64, [1, 4], device=device),
+]
+
+graph = Graph("cta_grecbase_aux_features", input_types=types)
 
 with graph:
-    result = grecbase_get_path_max(graph.inputs[0], device)
+    result = grecbase_aux_features(*graph.inputs, device)
     graph.output(result)
+
+inputs = [
+    np.array([1], dtype=np.int64),
+    np.array([2], dtype=np.int64),
+    np.array([[1, 2, 3, 4]], dtype=np.int64),
+    np.array([[1, 2, 3, 4]], dtype=np.int64),
+    np.array([[2, 3, 4, 5]], dtype=np.int64),
+]
 
 session = InferenceSession(devices=[cpu])
 model = session.load(graph)
+max_out = model.execute(*inputs)[0].to_numpy()
 
-x = (
-    np.random.default_rng(7)
-    .standard_normal((1, 2048))
-    .astype(np.float32) * 0.01
-)
-
-max_out = model.execute(x)[0].to_numpy()
-
-def t(name):
+def tw(name):
     return torch.from_numpy(arrays[name])
 
-with torch.no_grad():
-    y = F.linear(
-        torch.from_numpy(x),
-        t("remove_tasks_dense1.weight"),
-        t("remove_tasks_dense1.bias"),
+def pt_pool(x):
+    return torch.cat(
+        [x.mean(dim=1), x.max(dim=1).values],
+        dim=1
     )
-    a = F.linear(y, t("remove_tasks_act1.w1.weight"))
-    b = F.linear(y, t("remove_tasks_act1.w3.weight"))
-    pt_out = F.linear(
-        F.silu(a) * b,
-        t("remove_tasks_act1.w2.weight"),
-    ).numpy()
+
+with torch.no_grad():
+    t0 = F.embedding(torch.from_numpy(inputs[0]), tw("task_embedding.0.weight"))
+    t1 = F.embedding(torch.from_numpy(inputs[1]), tw("task_embedding.1.weight"))
+    task = torch.cat([t0, t1], dim=1)
+
+    ihq = pt_pool(
+        F.embedding(torch.from_numpy(inputs[2]), tw("ihq_embedding.weight"))
+    )
+
+    j0 = pt_pool(
+        F.embedding(torch.from_numpy(inputs[3]), tw("jet_embedding.0.weight"))
+    )
+    j1 = pt_pool(
+        F.embedding(torch.from_numpy(inputs[4]), tw("jet_embedding.1.weight"))
+    )
+    jet = pt_pool(torch.stack([j0, j1], dim=1))
+
+    pt_out = torch.cat([task, ihq, jet], dim=1).numpy()
 
 print("PYTORCH SHAPE:", pt_out.shape)
 print("MAX SHAPE:", max_out.shape)
@@ -152,5 +174,5 @@ print("MAX DIFF:", np.max(np.abs(pt_out - max_out)))
 print("MATCH:", np.allclose(
     pt_out, max_out, rtol=1e-4, atol=1e-5
 ))
-print("ORIGINAL MODEL AND DS CODE UNCHANGED")
+print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
 PY

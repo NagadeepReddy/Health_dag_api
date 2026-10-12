@@ -4,29 +4,39 @@ from pathlib import Path
 
 base = Path("artifacts/v1.168-max/cta_max")
 
-for filename, function in (
-    ("grecbase_max.py", "__call__"),
-    ("grecbase_fusion_graph_max.py", "build_grecbase_fusion_graph"),
-):
-    p = base / filename
-    lines = p.read_text().splitlines()
+files = [
+    "parallel_transformer_graph_full_sequence.py",
+    "nlp_bert_in_graph.py",
+    "main_context_max.py",
+    "sibling_context_max.py",
+    "grecbase_aux_features_max.py",
+    "grecbase_get_path_max.py",
+]
+
+for name in files:
+    p = base / name
+    print(f"\n===== {name} =====")
+
+    if not p.exists():
+        print("NOT FOUND")
+        continue
+
     tree = ast.parse(p.read_text())
 
-    print(f"\n===== {filename}: {function} =====")
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            print("FUNCTION:", node.name, ast.unparse(node.args)[:160])
 
-    found = False
+        elif isinstance(node, ast.ClassDef):
+            print("CLASS:", node.name)
+            for method in node.body:
+                if isinstance(method, ast.FunctionDef) and method.name == "__call__":
+                    print("  CALL:", ast.unparse(method.args)[:160])
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == function:
-            found = True
-            end = min(node.end_lineno, node.lineno + 89)
-            for n in range(node.lineno, end + 1):
-                print(f"{n}: {lines[n-1]}")
-            if end < node.end_lineno:
-                print(f"... {node.end_lineno-end} additional lines omitted")
-            break
-
-    if not found:
-        print("FUNCTION NOT FOUND")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "Graph":
+                print("  GRAPH:", ast.unparse(node)[:220])
 
 print("\nREAD ONLY — NO FILES MODIFIED")
 PY

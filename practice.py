@@ -3,76 +3,85 @@ from pathlib import Path
 import ast
 
 base = Path("artifacts/v1.168-max/cta_max")
-dst = base / "parallel_transformer_graph_full_sequence.py"
+src = base / "run_transformer_sequence.py"
+dst = base / "run_transformer_full_sequence.py"
 
-assert not dst.exists(), "STOP: graph already exists"
+assert src.is_file(), "STOP: working runner missing"
+assert (base / "parallel_transformer_graph_full_sequence.py").is_file()
+assert not dst.exists(), "STOP: full runner already exists"
 
-for name in (
-    "sequence_transformer_max.py",
-    "parallel_transformer_block_2layers.py",
-    "sequence_postprocess_max.py",
-):
-    assert (base / name).is_file(), f"STOP: missing {name}"
+s = src.read_text()
 
-code = '''
-from max.dtype import DType
-from max.graph import DeviceRef, Graph, TensorType
+old_import = (
+    "from parallel_transformer_graph_sequence "
+    "import build_parallel_transformer_graph"
+)
+new_import = (
+    "from parallel_transformer_graph_full_sequence "
+    "import build_parallel_transformer_graph"
+)
 
-from parallel_transformer_block_2layers import ParallelTransformerBlockMAX
-from cta_max.sequence_transformer_max import ParallelTransformerMAEPMAX
-from cta_max.sequence_postprocess_max import SequencePostprocessMAX
+assert s.count(old_import) == 1, "STOP: graph import differs"
+assert s.count("weights = {}") == 1, "STOP: weight registry differs"
+assert s.count("model.execute(x, pos)") == 1, "STOP: execution differs"
+assert s.count("sequence_combined_output.npy") == 1, "STOP: output differs"
 
+s = s.replace(old_import, new_import, 1)
 
-def build_parallel_transformer_graph(device_ref, weights_registry):
-    features = ParallelTransformerMAEPMAX(
-        dtype=DType.float32, device=device_ref
-    )
-    block0 = ParallelTransformerBlockMAX(
-        dtype=DType.float32, device=device_ref, layer_idx=0
-    )
-    block1 = ParallelTransformerBlockMAX(
-        dtype=DType.float32, device=device_ref, layer_idx=1
-    )
-    postprocess = SequencePostprocessMAX(
-        dtype=DType.float32, device=device_ref
-    )
-
-    int_type = TensorType(
-        DType.int64, shape=[1, 4], device=device_ref
-    )
-    wide_type = TensorType(
-        DType.float32, shape=[1, 4, 1], device=device_ref
-    )
-    pos_type = TensorType(
-        DType.float32, shape=[1, 1, 4, 256], device=device_ref
-    )
-
-    graph = Graph(
-        "cta_full_sequence_real_features_v1",
-        input_types=[
-            int_type, int_type, int_type,
-            wide_type, pos_type,
-        ],
-    )
-
-    with graph:
-        page, item, item_meta, page_wide, pos = graph.inputs
-
-        x = features(
-            page, item, item_meta, item, page_wide
-        )
-        x1 = x + block0(x, pos)
-        x2 = x1 + block1(x1, pos)
-
-        graph.output(postprocess(x2))
-
-    return graph
+extra_weights = '''
+weight_files.update({
+    "sequence_transformer.page_embedding":
+        "artifacts/v1.168-max/cta_max/sequence_weights/page_embedding_weight.npy",
+    "sequence_transformer.item_embedding":
+        "artifacts/v1.168-max/cta_max/sequence_weights/item_embedding_weight.npy",
+    "sequence_transformer.item_meta_embedding":
+        "artifacts/v1.168-max/cta_max/sequence_weights/item_meta_embedding_weight.npy",
+    "sequence_transformer.item_pre_embedding":
+        "artifacts/v1.168-max/cta_max/sequence_weights/item_pre_embedding_weight.npy",
+    "sequence_transformer.page_meta_wide_dense.weight":
+        "artifacts/v1.168-max/cta_max/sequence_weights/page_meta_wide_dense_weight.npy",
+    "sequence_transformer.page_meta_wide_dense.bias":
+        "artifacts/v1.168-max/cta_max/sequence_weights/page_meta_wide_dense_bias.npy",
+})
+weights = {}
 '''
 
-ast.parse(code)
-dst.write_text(code)
+s = s.replace("weights = {}", extra_weights, 1)
 
-print("FULL SEQUENCE GRAPH CREATED — SYNTAX OK")
-print("REAL EMBEDDINGS + 2 TRANSFORMER BLOCKS + POSTPROCESS")
-print("PREVIOUSLY VERIFIED FILES UNCHANGED")
+inputs = '''
+page = np.array([[1, 2, 3, 4]], dtype=np.int64)
+item = np.array([[10, 20, 30, 40]], dtype=np.int64)
+meta = np.array([[1, 2, 3, 4]], dtype=np.int64)
+wide = np.array(
+    [[[0.1], [0.2], [-0.3], [0.4]]],
+    dtype=np.float32
+)
+
+assert pos.shape == (1, 1, 4, 256), (
+    f"STOP: rotary position shape {pos.shape}"
+)
+
+out = model.execute(page, item, meta, wide, pos)[0]
+'''
+
+s = s.replace("out = model.execute(x, pos)[0]", inputs, 1)
+s = s.replace(
+    "sequence_combined_output.npy",
+    "sequence_real_full_output.npy",
+    1
+)
+
+ast.parse(s)
+dst.write_text(s)
+
+print("FULL SEQUENCE RUNNER CREATED")
+print("ORIGINAL RUNNERS AND DS CODE UNCHANGED")
 PY
+
+if [ $? -eq 0 ]; then
+  podman run --rm -i \
+    -v "$PWD:/workspace" -w /workspace \
+    --entrypoint python \
+    docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+    artifacts/v1.168-max/cta_max/run_transformer_full_sequence.py
+fi

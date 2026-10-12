@@ -1,9 +1,10 @@
 python - <<'PY'
 import ast
+import json
 from pathlib import Path
 
-p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
-source = p.read_text()
+root = Path("artifacts/v1.168")
+source = (root / "utils/dependency-utils/models.py").read_text()
 tree = ast.parse(source)
 
 cls = next(
@@ -11,35 +12,43 @@ cls = next(
     if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
 )
 
-for method_name in ("__init__", "forward"):
-    method = next(
-        n for n in cls.body
-        if isinstance(n, ast.FunctionDef) and n.name == method_name
-    )
+init = next(
+    n for n in cls.body
+    if isinstance(n, ast.FunctionDef) and n.name == "__init__"
+)
 
-    print(f"\n===== {method_name} NLP DETAILS =====")
+print("===== NLP CONSTRUCTOR PARAMETERS =====")
+for arg in init.args.args:
+    if "nlp" in arg.arg.lower():
+        print(arg.arg)
 
-    for node in ast.walk(method):
-        segment = ast.get_source_segment(source, node)
+print("\n===== NLP CONFIGURATION FILES =====")
+configs = sorted(root.rglob("config.json"))
 
-        if isinstance(node, ast.Call):
-            fn = ast.unparse(node.func)
-            if "nlp_encoder" in fn or "AutoModel.from_config" in fn:
-                print("CALL:", segment)
+for p in configs:
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        continue
 
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = (
-                node.targets if isinstance(node, ast.Assign)
-                else [node.target]
-            )
-            names = [ast.unparse(t) for t in targets]
-            if any(
-                "config" in n.lower() or
-                "search_out" in n or
-                "nlp_dim" in n
-                for n in names
-            ):
-                print("ASSIGN:", segment[:500])
+    if not isinstance(data, dict):
+        continue
+
+    if any(k in data for k in (
+        "model_type", "hidden_size", "num_hidden_layers"
+    )):
+        print("PATH:", p)
+        for key in (
+            "model_type",
+            "architectures",
+            "hidden_size",
+            "num_hidden_layers",
+            "num_attention_heads",
+            "intermediate_size",
+            "max_position_embeddings"
+        ):
+            if key in data:
+                print(f"  {key}: {data[key]}")
 
 print("\nREAD-ONLY — NO FILES MODIFIED")
 PY

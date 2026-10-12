@@ -11,23 +11,20 @@ sys.path.insert(0, "/workspace/artifacts/v1.168-max")
 
 from max.driver import CPU, Tensor
 from max.engine import InferenceSession
-from max.graph import DeviceRef, Shape
+from max.graph import DeviceRef
 from max.graph.weights import WeightData
 from cta_max.grecbase_fusion_graph_max import build_grecbase_fusion_graph
 
 base = Path("artifacts/v1.168-max/cta_max")
+
 weights = {}
-
 for p in sorted(base.rglob("att_pooling.*.npy")):
+    name = p.stem
+    assert name not in weights, f"Duplicate: {name}"
     arr = np.load(p).astype(np.float32)
-    weights[p.stem] = WeightData(
-        arr, shape=Shape(arr.shape), name="weight"
-    )
+    weights[name] = WeightData.from_numpy(arr, name)
 
-required = "att_pooling.fused_attn_ff_proj.weight"
-assert required in weights, f"Missing weight: {required}"
-
-print("REGISTERED WEIGHTS:", len(weights))
+assert "att_pooling.fused_attn_ff_proj.weight" in weights
 
 device = CPU()
 graph = build_grecbase_fusion_graph(DeviceRef.CPU())

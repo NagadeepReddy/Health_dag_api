@@ -1,45 +1,52 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
+python - <<'PY'
 from pathlib import Path
-import numpy as np
-import torch
+import ast
 
-base = Path("artifacts/v1.168-max/cta_max/sequence_weights")
-ckpt = torch.load(
-    "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu",
-    weights_only=True
-)
+base = Path("artifacts/v1.168-max/cta_max")
+dst = base / "sequence_postprocess_max.py"
 
-required = {
-    "seq_dense.weight": (256, 512),
-    "seq_dense.bias": (256,),
-    "out_norm1.g": (256,),
-    "out_norm2.g": (256,),
-}
+assert not dst.exists(), "STOP: file already exists"
+assert (base / "sequence_pooling_max.py").is_file()
 
-prepared = []
-for suffix, shape in required.items():
-    key = "sequence_transformer." + suffix
-    assert key in ckpt, f"STOP: missing {key}"
-    arr = ckpt[key].detach().cpu().numpy()
-    assert arr.shape == shape, f"STOP: shape differs for {key}"
+code = '''
+from max.dtype import DType
+from max.graph import DeviceRef, TensorValue
+from max.nn import Linear, RMSNorm
+from max.nn.layer import Module
 
-    path = base / (suffix.replace(".", "_") + ".npy")
-    if path.exists():
-        assert np.array_equal(np.load(path), arr), f"STOP: existing file differs: {path}"
-        print("ALREADY VERIFIED:", path.name)
-    else:
-        prepared.append((path, arr))
+from .sequence_pooling_max import MeanMaxPoolingMAX
 
-base.mkdir(parents=True, exist_ok=True)
-for path, arr in prepared:
-    np.save(path, arr)
-    print("SAVED:", path.name)
 
-print("SEQUENCE POSTPROCESS WEIGHTS READY")
-print("VERIFIED TRANSFORMER AND DS CODE UNCHANGED")
+class SequencePostprocessMAX(Module):
+    def __init__(self, dtype: DType, device: DeviceRef):
+        super().__init__()
+
+        self.out_norm1 = RMSNorm(
+            dim=256, dtype=dtype, eps=1e-6
+        )
+        self.pooling = MeanMaxPoolingMAX()
+        self.seq_dense = Linear(
+            in_dim=512,
+            out_dim=256,
+            dtype=dtype,
+            device=device,
+            has_bias=True,
+            name="sequence_transformer.seq_dense",
+        )
+        self.out_norm2 = RMSNorm(
+            dim=256, dtype=dtype, eps=1e-6
+        )
+
+    def __call__(self, x: TensorValue) -> TensorValue:
+        x = self.out_norm1(x)
+        x = self.pooling(x)
+        x = self.seq_dense(x)
+        return self.out_norm2(x)
+'''
+
+ast.parse(code)
+dst.write_text(code)
+
+print("SEQUENCE POSTPROCESS COMPONENT CREATED — SYNTAX OK")
+print("ORIGINAL TRANSFORMER AND DS CODE UNCHANGED")
 PY

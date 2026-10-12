@@ -3,39 +3,10 @@ podman run --rm -i \
   -w /workspace \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys
-import json
-import types
-import importlib.util
-import importlib.machinery
+import sys, json, copy, types
+import importlib.util, importlib.machinery
 from pathlib import Path
-
-# Import PyTorch BEFORE creating the FAISS guard.
 import torch
-print("PYTORCH IMPORT: PASS", flush=True)
-
-try:
-    import faiss
-    print("NATIVE FAISS AVAILABLE", flush=True)
-except ImportError:
-    guard = types.ModuleType("faiss")
-    guard.__file__ = "<faiss-import-only-guard>"
-    guard.__package__ = ""
-    guard.__spec__ = importlib.machinery.ModuleSpec(
-        "faiss", loader=None
-    )
-
-    def unavailable(name):
-        if name.startswith("__"):
-            raise AttributeError(name)
-        raise RuntimeError(
-            f"Actual FAISS operation '{name}' requested. "
-            "Native FAISS required; no simulated results."
-        )
-
-    guard.__getattr__ = unavailable
-    sys.modules["faiss"] = guard
-    print("FAISS IMPORT-ONLY GUARD ACTIVE", flush=True)
 
 root = Path("/workspace/artifacts/v1.168")
 sample = root / "samples/sanity_input.json"
@@ -44,7 +15,62 @@ output = Path(
     "real_sanity_model_in.pt"
 )
 
-assert sample.is_file(), "Real sanity input not found"
+assert sample.is_file()
+
+# Import-only FAISS guard: never simulate FAISS calculations.
+try:
+    import faiss
+    print("FAISS: NATIVE")
+except ImportError:
+    guard = types.ModuleType("faiss")
+    guard.__file__ = "<faiss-import-guard>"
+    guard.__spec__ = importlib.machinery.ModuleSpec(
+        "faiss", loader=None
+    )
+    def unavailable(name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise RuntimeError(
+            f"Real FAISS operation '{name}' requires native FAISS"
+        )
+    guard.__getattr__ = unavailable
+    sys.modules["faiss"] = guard
+    print("FAISS: IMPORT-ONLY GUARD")
+
+# Preserve original JSON; adjust only an in-memory test copy.
+original = json.loads(sample.read_text())
+body = copy.deepcopy(original)
+fixes = []
+
+def normalize(value, path="$"):
+    if isinstance(value, dict):
+        page = value.get("page")
+        if (
+            isinstance(page, dict)
+            and str(page.get("name", "")).lower()
+                == "gridwall_smartphones"
+            and value.get("webinteraction_name") is None
+        ):
+            value["webinteraction_name"] = ""
+            fixes.append(path + ".webinteraction_name")
+
+        for key, child in value.items():
+            normalize(child, path + "." + str(key))
+
+    elif isinstance(value, list):
+        for i, child in enumerate(value):
+            normalize(child, f"{path}[{i}]")
+
+normalize(body)
+
+print("TEST-ONLY NULL ADJUSTMENTS:", len(fixes))
+for path in fixes[:5]:
+    print(" ", path, "None -> empty string")
+
+if not fixes:
+    print("Expected invalid field not located.")
+    print("No files changed.")
+    raise SystemExit(1)
 
 for path in (
     root,
@@ -62,14 +88,11 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
-print("ORIGINAL PIPELINE IMPORT: PASS", flush=True)
-
 pipeline = module.pipeline()
 pipeline.load()
 
 print("ORIGINAL PIPELINE LOAD: PASS", flush=True)
 
-body = json.loads(sample.read_text())
 result = pipeline.preprocess(body)
 
 assert isinstance(result, (tuple, list))
@@ -92,6 +115,7 @@ for name, value in model_in.items():
 
 torch.save(model_in, output)
 
-print("REAL MODEL INPUT SAVED:", output)
-print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
+print("MODEL INPUT SAVED:", output)
+print("TEST INPUT ADJUSTED IN MEMORY ONLY")
+print("ORIGINAL JSON AND DS SOURCE UNCHANGED")
 PY

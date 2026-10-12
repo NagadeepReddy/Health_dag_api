@@ -5,32 +5,61 @@ podman run --rm -i \
   - <<'PY'
 import sys
 import runpy
+import numpy as np
 
 sys.path.insert(0, "artifacts/v1.168-max")
 sys.path.insert(0, "artifacts/v1.168-max/cta_max")
 
+from max.dtype import DType
+from max.graph import DeviceRef, ops
 from cta_max.sequence_postprocess_max import SequencePostprocessMAX
-from max.graph import Graph
-
-original_call = SequencePostprocessMAX.__call__
-original_output = Graph.output
 
 def traced_call(self, x):
-    print("POSTPROCESS INPUT:", x.shape, flush=True)
-    result = original_call(self, x)
-    print("POSTPROCESS OUTPUT:", result.shape, flush=True)
-    return result
+    base = "artifacts/v1.168-max/cta_max/sequence_weights/"
 
-def traced_output(self, *values):
-    print(
-        "GRAPH DECLARED OUTPUTS:",
-        [str(v.shape) for v in values],
-        flush=True
+    print("INPUT:", x.shape, flush=True)
+
+    g1 = ops.constant(
+        np.load(base + "out_norm1_g.npy").astype(np.float32),
+        dtype=DType.float32, device=DeviceRef.CPU()
     )
-    return original_output(self, *values)
+    g2 = ops.constant(
+        np.load(base + "out_norm2_g.npy").astype(np.float32),
+        dtype=DType.float32, device=DeviceRef.CPU()
+    )
+    print("G1:", g1.shape, "G2:", g2.shape, flush=True)
+
+    variance1 = ops.unsqueeze(
+        ops.mean(x * x, axis=-1), axis=-1
+    )
+    print("VARIANCE1:", variance1.shape, flush=True)
+
+    x = x * ops.rsqrt(variance1 + 1e-6)
+    print("AFTER RMS1:", x.shape, flush=True)
+
+    x = x * g1
+    print("AFTER G1:", x.shape, flush=True)
+
+    x = self.pooling(x)
+    print("AFTER POOLING:", x.shape, flush=True)
+
+    x = self.seq_dense(x)
+    print("AFTER DENSE:", x.shape, flush=True)
+
+    variance2 = ops.unsqueeze(
+        ops.mean(x * x, axis=-1), axis=-1
+    )
+    print("VARIANCE2:", variance2.shape, flush=True)
+
+    x = x * ops.rsqrt(variance2 + 1e-6)
+    print("AFTER RMS2:", x.shape, flush=True)
+
+    x = x * g2
+    print("AFTER G2:", x.shape, flush=True)
+
+    return x
 
 SequencePostprocessMAX.__call__ = traced_call
-Graph.output = traced_output
 
 runpy.run_path(
     "artifacts/v1.168-max/cta_max/run_transformer_sequence.py",

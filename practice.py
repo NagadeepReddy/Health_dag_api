@@ -2,37 +2,42 @@ python - <<'PY'
 from pathlib import Path
 import ast
 
-base = Path("artifacts/v1.168-max/cta_max")
+p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_layer1_ff.py")
+s = p.read_text()
+tree = ast.parse(s)
+lines = s.splitlines()
 
-changes = [
-    (
-        base / "models_raw_attn_diagnostic.py",
-        "return self.ff_out(ff)",
-        "return ff  # diagnostic: after norm2",
-    ),
-    (
-        base / "parallel_transformer_block_layer1_ff.py",
-        "return self.ff_out(swiglu)",
-        "return ff * ops.rsqrt(variance2 + 1e-6) * norm2_g  # diagnostic: after norm2",
-    ),
+returns = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.Return)
+    and "diagnostic: after norm2" in lines[n.lineno - 1]
+]
+assert len(returns) == 1, f"STOP: diagnostic returns found={len(returns)}"
+
+r = returns[0]
+expr = ast.unparse(r.value)
+
+norm_assignments = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.Assign)
+    and any(isinstance(t, ast.Name) and t.id == "ff" for t in n.targets)
+    and "ops.rsqrt" in ast.unparse(n.value)
+    and "norm2_g" in ast.unparse(n.value)
+    and n.lineno < r.lineno
 ]
 
-prepared = []
+print("ACTUAL RETURN:", expr)
+print("PRIOR FF NORMALIZATION:", len(norm_assignments))
 
-for path, old, new in changes:
-    original = path.read_text()
-    assert original.count(old) == 1, f"STOP: {path.name}: return differs"
-    updated = original.replace(old, new, 1)
+if expr == "ff":
+    print("ALREADY CORRECT — NO CHANGE")
+elif len(norm_assignments) == 1 and "ops.rsqrt" in expr and "norm2_g" in expr:
+    indent = lines[r.lineno - 1][:len(lines[r.lineno - 1]) - len(lines[r.lineno - 1].lstrip())]
+    lines[r.lineno - 1] = indent + "return ff  # diagnostic: after norm2"
+    updated = "\n".join(lines) + "\n"
     ast.parse(updated)
-    backup = Path(str(path) + ".pre_layer1_norm2.bak")
-    assert not backup.exists(), f"STOP: backup already exists: {backup}"
-    prepared.append((path, backup, original, updated))
-
-for path, backup, original, updated in prepared:
-    backup.write_text(original)
-    path.write_text(updated)
-    print("UPDATED:", path.name)
-
-print("BLOCK-1 POST-NORM2 DIAGNOSTICS READY")
-print("REAL MAX BLOCK AND DS CODE UNCHANGED")
+    p.write_text(updated)
+    print("DOUBLE NORMALIZATION FIXED")
+else:
+    print("STOP — DIFFERENT EXPRESSION; NO CHANGE")
 PY

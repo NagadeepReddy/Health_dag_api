@@ -11,57 +11,24 @@ p = Path("artifacts/v1.168-max/cta_max/att_pooling_max.py")
 source = p.read_text()
 tree = ast.parse(source)
 
-cls = next(
-    n for n in tree.body
-    if isinstance(n, ast.ClassDef)
-    and n.name == "AttPoolingBlockMAX"
-)
+found = {}
 
-forward = next(
-    n for n in cls.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "__call__"
-)
-
-lines = source.splitlines(keepends=True)
-offsets = [0]
-for line in lines:
-    offsets.append(offsets[-1] + len(line))
-
-fixes = {}
-
-for call in ast.walk(forward):
-    if not isinstance(call, ast.Call):
+for node in ast.walk(tree):
+    if not isinstance(node, ast.Call):
+        continue
+    if not isinstance(node.func, ast.Attribute):
+        continue
+    if node.func.attr != "reshape":
+        continue
+    if not isinstance(node.func.value, ast.Name):
         continue
 
-    if not isinstance(call.func, ast.Attribute):
-        continue
-
-    if call.func.attr != "reshape":
-        continue
-
-    # Match q.reshape(...), k.reshape(...), v.reshape(...)
-    if isinstance(call.func.value, ast.Name):
-        name = call.func.value.id
-        args = call.args
-
-    # Also support ops.reshape(q, ...)
-    elif (
-        isinstance(call.func.value, ast.Name)
-        and call.func.value.id == "ops"
-    ):
-        continue
-    else:
-        continue
-
+    name = node.func.value.id
     if name not in ("q", "k", "v"):
         continue
 
-    print("FOUND:", ast.unparse(call), flush=True)
-
-    if len(args) == 1 and isinstance(
-        args[0], (ast.Tuple, ast.List)
-    ):
+    args = node.args
+    if len(args) == 1 and isinstance(args[0], (ast.Tuple, ast.List)):
         dims = args[0].elts
     else:
         dims = args
@@ -69,35 +36,31 @@ for call in ast.walk(forward):
     if len(dims) != 4:
         continue
 
-    if not (
-        isinstance(dims[1], ast.Constant)
-        and dims[1].value == 2
-        and isinstance(dims[3], ast.Constant)
-        and dims[3].value == 256
+    if (
+        ast.unparse(dims[0]) == f"{name}.shape[0]"
+        and ast.unparse(dims[2]) == f"{name}.shape[1]"
+        and ast.unparse(dims[3]) == "256"
     ):
-        continue
+        assert name not in found, f"STOP: duplicate {name}"
+        found[name] = dims[1]
 
-    assert name not in fixes, \
-        f"STOP: duplicate {name} reshape"
+assert set(found) == {"q", "k", "v"}, \
+    f"STOP: unexpected reshapes: {sorted(found)}"
 
-    node = dims[1]
+assert ast.literal_eval(found["q"]) == 2
+assert ast.literal_eval(found["k"]) == 1
+assert ast.literal_eval(found["v"]) == 1
 
-    start = offsets[node.lineno - 1] + node.col_offset
-    end = offsets[node.end_lineno - 1] + node.end_col_offset
+# Only change Q. K and V are already correct.
+q = found["q"]
 
-    assert source[start:end] == "2"
-    fixes[name] = (start, end)
+lines = source.splitlines(keepends=True)
+start = sum(len(x) for x in lines[:q.lineno-1]) + q.col_offset
+end = sum(len(x) for x in lines[:q.end_lineno-1]) + q.end_col_offset
 
-print("MATCHED:", sorted(fixes), flush=True)
+assert source[start:end] == "2"
 
-assert set(fixes) == {"q", "k", "v"}, \
-    "STOP: not all Q/K/V reshapes identified; file unchanged"
-
-updated = source
-
-for start, end in sorted(fixes.values(), reverse=True):
-    updated = updated[:start] + "self.heads" + updated[end:]
-
+updated = source[:start] + "1" + source[end:]
 ast.parse(updated)
 
 assert "self.heads = 1" in updated
@@ -105,7 +68,8 @@ assert "[256, 256, 256, 2048]" in updated
 
 p.write_text(updated)
 
-print("Q/K/V RESHAPES CORRECTED")
+print("Q HEAD CORRECTED: 2 -> 1")
+print("K AND V PRESERVED: 1 HEAD")
 print("SYNTAX PASS", flush=True)
 
 sys.path.insert(0, str(p.parent))
@@ -124,7 +88,7 @@ block = AttPoolingBlockMAX(
 )
 
 graph = Graph(
-    "cta_attention_one_head_verified",
+    "cta_attention_one_head_corrected",
     input_types=[
         TensorType(DType.float32, [1, 8, 256], device=device),
         TensorType(DType.float32, [1, 1, 8, 256], device=device),

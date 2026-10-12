@@ -7,35 +7,44 @@ import sys
 import json
 import types
 import importlib.util
+import importlib.machinery
 from pathlib import Path
+
+# Import PyTorch BEFORE creating the FAISS guard.
+import torch
+print("PYTORCH IMPORT: PASS", flush=True)
+
+try:
+    import faiss
+    print("NATIVE FAISS AVAILABLE", flush=True)
+except ImportError:
+    guard = types.ModuleType("faiss")
+    guard.__file__ = "<faiss-import-only-guard>"
+    guard.__package__ = ""
+    guard.__spec__ = importlib.machinery.ModuleSpec(
+        "faiss", loader=None
+    )
+
+    def unavailable(name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise RuntimeError(
+            f"Actual FAISS operation '{name}' requested. "
+            "Native FAISS required; no simulated results."
+        )
+
+    guard.__getattr__ = unavailable
+    sys.modules["faiss"] = guard
+    print("FAISS IMPORT-ONLY GUARD ACTIVE", flush=True)
 
 root = Path("/workspace/artifacts/v1.168")
 sample = root / "samples/sanity_input.json"
 output = Path(
-    "/workspace/artifacts/v1.168-max/cta_max/real_sanity_model_in.pt"
+    "/workspace/artifacts/v1.168-max/cta_max/"
+    "real_sanity_model_in.pt"
 )
 
-assert sample.is_file()
-
-# Allow import for preprocessing only.
-# Any actual FAISS operation must fail explicitly.
-try:
-    import faiss
-    print("NATIVE FAISS AVAILABLE")
-except ImportError:
-    stub = types.ModuleType("faiss")
-
-    def unavailable(name):
-        raise RuntimeError(
-            f"Real FAISS operation '{name}' requested. "
-            "Native FAISS is required; no simulated results allowed."
-        )
-
-    stub.__getattr__ = unavailable
-    sys.modules["faiss"] = stub
-    print("FAISS IMPORT GUARD ACTIVE — PREPROCESSING ONLY")
-
-import torch
+assert sample.is_file(), "Real sanity input not found"
 
 for path in (
     root,
@@ -84,5 +93,5 @@ for name, value in model_in.items():
 torch.save(model_in, output)
 
 print("REAL MODEL INPUT SAVED:", output)
-print("ORIGINAL PYTORCH AND DS SOURCE UNCHANGED")
+print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
 PY

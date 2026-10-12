@@ -17,7 +17,7 @@ wdir = base / "sequence_weights"
 device = DeviceRef.CPU()
 
 x = np.load(base / "transformer_max_output_2layers.npy").astype(np.float32)
-assert x.shape == (1, 4, 256), f"STOP: input shape {x.shape}"
+assert x.shape == (1, 4, 256)
 
 def load(name):
     return np.load(wdir / (name + ".npy")).astype(np.float32)
@@ -55,7 +55,12 @@ with graph:
 
     mean = ops.mean(v, axis=1)
     maximum = ops.max(v, axis=1)
-    v = ops.concat([mean, maximum], axis=1)
+
+    # MAX concat gives [1, 2, 256]; flatten to [1, 512].
+    v = ops.reshape(
+        ops.concat([mean, maximum], axis=1),
+        [1, 512]
+    )
 
     v = dense(v)
     var2 = ops.reshape(ops.mean(v * v, axis=-1), [1, 1])

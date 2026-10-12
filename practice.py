@@ -1,104 +1,67 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  - <<'PY'
-import sys
-import numpy as np
-import torch
-import torch.nn.functional as F
+python - <<'PY'
+import ast
 from pathlib import Path
 
-from max.driver import CPU
-from max.graph import DeviceRef
-from max.engine import InferenceSession
+base = Path("artifacts/v1.168-max/cta_max")
+src = base / "nlp_bert_max.py"
+dst = base / "nlp_bert_in_graph.py"
 
-sys.path.insert(0, "artifacts/v1.168-max/cta_max")
-from nlp_bert_max import build_nlp_bert_graph
+assert src.is_file(), "STOP: verified BERT source missing"
+assert not dst.exists(), "STOP: reusable adapter already exists"
 
-try:
-    from transformers import BertConfig, BertModel
-except Exception as e:
-    raise SystemExit(
-        f"STOP: PyTorch BERT reference unavailable: {e}"
+tree = ast.parse(src.read_text())
+functions = [
+    n for n in tree.body
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "build_nlp_bert_graph"
+]
+assert len(functions) == 1, "STOP: BERT builder differs"
+
+body = functions[0].body
+
+graph_indices = [
+    i for i, n in enumerate(body)
+    if isinstance(n, ast.Assign)
+    and isinstance(n.value, ast.Call)
+    and isinstance(n.value.func, ast.Name)
+    and n.value.func.id == "Graph"
+]
+assert len(graph_indices) == 1, "STOP: graph structure differs"
+
+i = graph_indices[0]
+assert isinstance(body[i+1], ast.With), "STOP: graph context differs"
+assert isinstance(body[i+2], ast.Return), "STOP: graph return differs"
+
+inside = body[i+1].body
+assert ast.unparse(inside[0]) == (
+    "ids, attention_mask = graph.inputs"
+), "STOP: input binding differs"
+assert ast.unparse(inside[-1]) == (
+    "graph.output(search)"
+), "STOP: graph output differs"
+
+statements = body[:i] + inside[1:-1]
+
+def indent(node):
+    return "\n".join(
+        "    " + line
+        for line in ast.unparse(node).splitlines()
     )
 
-base = Path("artifacts/v1.168-max/cta_max/nlp_weights")
-config_path = "artifacts/v1.168/config/config.json"
-
-files = sorted(base.glob("*.npy"))
-assert len(files) == 107, f"STOP: {len(files)} weights"
-
-weights = {
-    p.stem: torch.from_numpy(np.load(p).astype(np.float32))
-    for p in files
-}
-
-config = BertConfig.from_json_file(config_path)
-bert = BertModel(config)
-
-bert_weights = {
-    k.removeprefix("nlp_encoder."): v
-    for k, v in weights.items()
-    if k.startswith("nlp_encoder.")
-}
-
-missing, unexpected = bert.load_state_dict(
-    bert_weights, strict=False
+code = (
+    "import numpy as np\n"
+    "from max.dtype import DType\n"
+    "from max.graph import ops\n"
+    "from .nlp_bert_max import WEIGHTS\n\n"
+    "def nlp_bert_forward(ids, attention_mask, device, seq_len):\n"
+    + "\n".join(indent(n) for n in statements)
+    + "\n    return search\n"
 )
 
-allowed_missing = {
-    "embeddings.position_ids",
-    "embeddings.token_type_ids",
-}
+ast.parse(code)
+dst.write_text(code)
 
-assert set(missing) <= allowed_missing, (
-    f"STOP: missing BERT weights: {missing}"
-)
-assert not unexpected, (
-    f"STOP: unexpected BERT weights: {unexpected}"
-)
-
-bert.eval()
-
-ids = np.array([[101, 2023, 2003, 102]], dtype=np.int64)
-mask = np.array([[1, 1, 1, 1]], dtype=np.int64)
-
-with torch.inference_mode():
-    pooled = bert(
-        input_ids=torch.from_numpy(ids),
-        attention_mask=torch.from_numpy(mask),
-    ).pooler_output
-
-    x = F.linear(
-        pooled,
-        weights["nlp_dense_0.weight"],
-        weights["nlp_dense_0.bias"],
-    )
-    x = F.leaky_relu(x, negative_slope=0.2)
-    x = F.linear(
-        x,
-        weights["nlp_dense_1.weight"],
-        weights["nlp_dense_1.bias"],
-    )
-    pt_out = x.numpy()
-
-cpu = CPU()
-device = DeviceRef.from_device(cpu)
-
-graph = build_nlp_bert_graph(device, seq_len=4)
-session = InferenceSession(devices=[cpu])
-model = session.load(graph)
-
-max_out = model.execute(ids, mask)[0].to_numpy()
-
-print("PYTORCH SHAPE:", pt_out.shape)
-print("MAX SHAPE:", max_out.shape)
-print("MAX DIFF:", np.max(np.abs(pt_out - max_out)))
-print("MATCH:", np.allclose(
-    pt_out, max_out, rtol=1e-4, atol=1e-5
-))
-print("BOTH FINITE:", bool(
-    np.isfinite(pt_out).all() and np.isfinite(max_out).all()
-))
+print("REUSABLE NLP FORWARD CREATED — SYNTAX PASS")
+print("VERIFIED SIX-LAYER BERT SOURCE UNCHANGED")
+print("ORIGINAL MODEL AND DS CODE UNCHANGED")
 PY

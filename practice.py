@@ -6,18 +6,19 @@ podman run --rm -i \
 import sys
 import numpy as np
 
-sys.path.insert(0, "artifacts/v1.168-max/cta_max")
+sys.path.insert(0, "/workspace/artifacts/v1.168-max")
 
 from max.driver import CPU, Tensor
 from max.engine import InferenceSession
 from max.graph import DeviceRef
-from grecbase_fusion_graph_max import build_grecbase_fusion_graph
+from cta_max.grecbase_fusion_graph_max import build_grecbase_fusion_graph
 
 device = CPU()
 graph = build_grecbase_fusion_graph(DeviceRef.CPU())
 
 session = InferenceSession(devices=[device])
 model = session.load(graph)
+
 print("UPDATED FUSION COMPILATION: PASS")
 
 inputs = [
@@ -31,9 +32,10 @@ result = model.execute(*inputs)[0].to_numpy()
 
 print("OUTPUT SHAPE:", result.shape)
 print("FINITE:", bool(np.isfinite(result).all()))
-assert result.shape == (1, 10819)
+
+assert result.shape == (1, 10819), result.shape
 assert np.isfinite(result).all()
 
-print("UPDATED GET_PATH RUNTIME: PASS")
+print("UPDATED FUSION RUNTIME: PASS")
 print("ORIGINAL DS CODE UNCHANGED")
 PY

@@ -3,221 +3,134 @@ podman run --rm -i \
   -w /workspace \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys
-import ast
+import sys, ast, types, importlib.util, importlib.machinery
 from pathlib import Path
 import numpy as np
 import torch
 
-root = Path("/workspace/artifacts/v1.168-max")
-base = root / "cta_max"
-sys.path.insert(0, str(root))
+root = Path("/workspace/artifacts/v1.168")
+base = Path("/workspace/artifacts/v1.168-max/cta_max")
 
-from max.driver import CPU, Tensor
-from max.engine import InferenceSession
-from max.graph import DeviceRef
-from max.graph.weights import WeightData
-from cta_max.grecbase_fusion_real_shapes_max import (
-    build_grecbase_fusion_graph_real_shapes
-)
-
-# Load real inputs from the successful DS preprocessing.
 saved = base / "real_sanity_model_in.pt"
-assert saved.is_file()
+max_file = base / "real_sanity_max_output.npy"
+assert saved.is_file() and max_file.is_file()
 
-data = torch.load(
+model_in = torch.load(
     saved, map_location="cpu", weights_only=True
 )
-assert isinstance(data, dict) and len(data) == 17
+max_out = np.load(max_file)
+assert isinstance(model_in, dict) and len(model_in) == 17
 
-print("REAL DS INPUT LOADED: PASS", flush=True)
-
-# Reuse the exact successful sequence weight registry.
-runner = base / "run_transformer_full_sequence.py"
-tree = ast.parse(runner.read_text())
-wbase = str(base / "sequence_weights")
-
-def resolve(node):
-    if isinstance(node, ast.Constant):
-        return node.value
-    if isinstance(node, ast.Name) and node.id == "WBASE":
-        return wbase
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return resolve(node.left) + resolve(node.right)
-    if isinstance(node, ast.Dict):
-        return {
-            resolve(k): resolve(v)
-            for k, v in zip(node.keys, node.values)
-        }
-    raise ValueError("Unexpected registry expression")
-
-weight_files = None
-for node in tree.body:
-    if isinstance(node, ast.Assign):
-        if any(
-            isinstance(t, ast.Name) and t.id == "weight_files"
-            for t in node.targets
-        ):
-            weight_files = resolve(node.value)
-    elif (
-        isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Attribute)
-        and isinstance(node.value.func.value, ast.Name)
-        and node.value.func.value.id == "weight_files"
-        and node.value.func.attr == "update"
-    ):
-        assert weight_files is not None
-        weight_files.update(resolve(node.value.args[0]))
-
-assert weight_files and len(weight_files) == 18
-
-weights = {}
-for name, path in weight_files.items():
-    arr = np.load(path).astype(np.float32)
-    weights[name] = WeightData.from_numpy(arr, name)
-
-for p in sorted(base.rglob("att_pooling.*.npy")):
-    assert p.stem not in weights
-    arr = np.load(p).astype(np.float32)
-    weights[p.stem] = WeightData.from_numpy(arr, p.stem)
-
-arr = np.load(
-    base / "sequence_weights/fn_norm1_g_layer1.npy"
-).astype(np.float32)
-weights["weight"] = WeightData.from_numpy(arr, "weight")
-
-assert len(weights) == 25
-print("EXISTING WEIGHT REGISTRY: PASS", flush=True)
-
-# Generate rotary positions with the existing MAX runner's
-# already-validated formula. PyTorch vl_in equivalence
-# remains a separate parity requirement.
-page = data["page_in"]
-seq_len = int(page.shape[1])
-assert seq_len == 50
-
-inv = np.load(
-    base / "sequence_weights/fn_rotary_emb_inv_freq.npy"
-).astype(np.float32)
-assert inv.shape == (128,), inv.shape
-
-seq = np.arange(seq_len, dtype=np.float32)
-freqs = np.einsum("i,j->ij", seq, inv)
-pos = np.concatenate([freqs, freqs], axis=-1)
-pos = pos[None, None, :, :].astype(np.float32)
-
-assert pos.shape == (1, 1, 50, 256)
-
-device = CPU()
-inputs = []
-
-def add(value, dtype, shape, label):
-    if isinstance(value, torch.Tensor):
-        arr = value.detach().cpu().numpy()
-    else:
-        arr = np.asarray(value)
-
-    arr = np.asarray(arr, dtype=dtype)
-    assert tuple(arr.shape) == tuple(shape), (
-        label, arr.shape, shape
+# Import-only FAISS guard, as used in successful preprocessing.
+try:
+    import faiss
+except ImportError:
+    guard = types.ModuleType("faiss")
+    guard.__file__ = "<faiss-import-only-guard>"
+    guard.__spec__ = importlib.machinery.ModuleSpec(
+        "faiss", loader=None
     )
+    def unavailable(name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        raise RuntimeError("Native FAISS required: " + name)
+    guard.__getattr__ = unavailable
+    sys.modules["faiss"] = guard
 
-    inputs.append(
-        Tensor.from_numpy(
-            np.ascontiguousarray(arr)
-        ).to(device)
-    )
+for p in (
+    root,
+    root / "core-artifact",
+    root / "utils",
+    root / "utils/dependency-utils",
+):
+    sys.path.insert(0, str(p))
 
-# Original model's task, IHQ and JET inputs.
-for i in range(2):
-    add(data["task_in"][i], np.int64, (1,),
-        f"task{i}")
-
-for key in ("ihq_in", "jet_name_in", "jet_status_in"):
-    add(data[key], np.int64, (1, 50), key)
-
-# Main context: 17 deep features and 127 wide features.
-assert len(data["deep_in"]) == 17
-for i, value in enumerate(data["deep_in"]):
-    add(value, np.int64, (1,), f"deep{i}")
-
-assert len(data["wide_in"]) == 127
-wide = np.stack(
-    [
-        v.detach().cpu().numpy()
-        for v in data["wide_in"]
-    ],
-    axis=1
+pipeline_file = root / "core-artifact/pipeline.py"
+spec = importlib.util.spec_from_file_location(
+    "original_cta_pipeline", pipeline_file
 )
-add(wide, np.float32, (1, 127), "wide")
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
 
-# NLP/BERT.
-add(data["input_ids"], np.int64, (1, 5), "input_ids")
-add(
-    data["attention_mask"], np.int64,
-    (1, 5), "attention_mask"
+pipeline = module.pipeline()
+pipeline.load()
+print("ORIGINAL PYTORCH MODEL LOADED: PASS", flush=True)
+
+# Extract the exact model argument mapping from the
+# original inference method instead of guessing.
+tree = ast.parse(pipeline_file.read_text())
+calls = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.Call)
+    and isinstance(n.func, ast.Attribute)
+    and isinstance(n.func.value, ast.Name)
+    and n.func.value.id == "self"
+    and n.func.attr == "model_base"
+]
+assert len(calls) == 1, (
+    f"Expected one original model_base call, found {len(calls)}"
 )
 
-# Sequence branch.
-for key in ("page_in", "item_in", "item_meta_in"):
-    add(data[key], np.int64, (1, 50), key)
+call = calls[0]
+assert not call.args, "Unexpected positional model arguments"
 
-assert len(data["page_meta_wide_in"]) == 1
-page_wide = (
-    data["page_meta_wide_in"][0]
-    .detach().cpu().numpy()
+kwargs = {}
+for kw in call.keywords:
+    assert kw.arg is not None
+    value = kw.value
+    assert (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and isinstance(value.func.value, ast.Name)
+        and value.func.value.id == "model_in"
+        and value.func.attr == "get"
+        and len(value.args) == 1
+    ), f"Unexpected original argument: {kw.arg}"
+
+    key = ast.literal_eval(value.args[0])
+    assert key in model_in, f"Missing original input: {key}"
+    kwargs[kw.arg] = model_in[key]
+
+print("ORIGINAL MODEL ARGUMENTS:", len(kwargs), flush=True)
+
+pipeline.model_base.eval()
+with torch.inference_mode():
+    reference = pipeline.model_base(**kwargs)
+
+assert isinstance(reference, torch.Tensor), (
+    f"Unexpected PyTorch output: {type(reference)}"
 )
-add(
-    page_wide[:, :, None],
-    np.float32, (1, 50, 1), "page_meta_wide"
+
+pt_out = reference.detach().cpu().numpy()
+np.save(base / "real_sanity_pytorch_output.npy", pt_out)
+
+print("PYTORCH OUTPUT SHAPE:", pt_out.shape)
+print("MAX OUTPUT SHAPE:", max_out.shape)
+print("PYTORCH FINITE:", bool(np.isfinite(pt_out).all()))
+print("MAX FINITE:", bool(np.isfinite(max_out).all()))
+
+assert pt_out.shape == max_out.shape, (
+    "Output-shape mismatch", pt_out.shape, max_out.shape
 )
-add(pos, np.float32, (1, 1, 50, 256), "rotary_pos")
 
-# Ten actual sibling entries, without truncation.
-sdeep = data["sibling_deep_in"]
-swide = data["sibling_wide_in"]
-
-assert tuple(sdeep.shape) == (1, 3, 10)
-assert tuple(swide.shape) == (1, 18, 10)
-
-for i in range(10):
-    for j in range(3):
-        add(
-            sdeep[:, j, i],
-            np.int64, (1,), f"sibling{i}_deep{j}"
-        )
-    add(
-        swide[:, :, i],
-        np.float32, (1, 18), f"sibling{i}_wide"
-    )
-
-assert len(inputs) == 70, len(inputs)
-print("REAL FEATURE MAPPING: PASS — 70 GRAPH INPUTS",
-      flush=True)
-
-# Execute the previously compiled real-size graph.
-graph = build_grecbase_fusion_graph_real_shapes(
-    DeviceRef.CPU()
+difference = np.abs(
+    pt_out.astype(np.float64) - max_out.astype(np.float64)
 )
-session = InferenceSession(devices=[device])
-model = session.load(graph, weights_registry=weights)
 
-print("REAL-SIZE MAX COMPILATION: PASS", flush=True)
+print("MEAN ABS DIFFERENCE:", float(difference.mean()))
+print("MAX ABS DIFFERENCE:", float(difference.max()))
+print("ALLCLOSE (1e-3):", bool(np.allclose(
+    pt_out, max_out, rtol=1e-3, atol=1e-3
+)))
 
-result = model.execute(*inputs)[0].to_numpy()
+pt_top = np.argsort(pt_out.reshape(-1))[-10:][::-1]
+max_top = np.argsort(max_out.reshape(-1))[-10:][::-1]
 
-print("REAL INPUT OUTPUT SHAPE:", result.shape)
-print("FINITE:", bool(np.isfinite(result).all()))
+print("PYTORCH TOP-10 INDICES:", pt_top.tolist())
+print("MAX TOP-10 INDICES:", max_top.tolist())
+print("TOP-10 OVERLAP:", len(set(pt_top) & set(max_top)), "/ 10")
 
-assert result.shape == (1, 10819), result.shape
-assert np.isfinite(result).all()
-
-output = base / "real_sanity_max_output.npy"
-np.save(output, result)
-
-print("REAL-INPUT MAX RUNTIME: PASS")
-print("OUTPUT SAVED:", output)
-print("ORIGINAL PYTORCH AND DS SOURCE UNCHANGED")
-print("NUMERICAL PARITY: NOT YET ESTABLISHED")
+print("PYTORCH REFERENCE OUTPUT SAVED")
+print("ORIGINAL DS AND PYTORCH SOURCE UNCHANGED")
 PY

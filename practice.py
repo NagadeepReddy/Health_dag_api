@@ -2,19 +2,27 @@ python - <<'PY'
 import ast
 from pathlib import Path
 
-base = Path("artifacts/v1.168-max/cta_max")
+p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
+source = p.read_text()
+tree = ast.parse(source)
 
-for filename in ["sequence_transformer_max.py", "grecbase_max.py"]:
-    p = base / filename
-    source = p.read_text()
-    tree = ast.parse(source)
+matches = [
+    node for node in ast.walk(tree)
+    if isinstance(node, ast.ClassDef)
+    and node.name == "ParallelTransformerAEP"
+]
 
-    print(f"\n===== {filename} =====")
+assert len(matches) == 1, "STOP: Original sequence class not uniquely found"
 
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            print("CLASS:", node.name)
-            for method in node.body:
-                if isinstance(method, ast.FunctionDef) and method.name == "__call__":
-                    print(ast.get_source_segment(source, method))
+methods = [
+    node for node in matches[0].body
+    if isinstance(node, ast.FunctionDef)
+    and node.name == "forward"
+]
+
+assert len(methods) == 1, "STOP: Original forward not found"
+
+print("===== ORIGINAL SEQUENCE FORWARD =====")
+print(ast.get_source_segment(source, methods[0]))
+print("===== END =====")
 PY

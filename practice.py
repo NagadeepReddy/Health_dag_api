@@ -1,67 +1,56 @@
-python - <<'PY'
-import ast
-from pathlib import Path
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  - <<'PY'
+import sys
+import numpy as np
 
-base = Path("artifacts/v1.168-max/cta_max")
-src = base / "nlp_bert_max.py"
-dst = base / "nlp_bert_in_graph.py"
+sys.path.insert(0, "artifacts/v1.168-max")
 
-assert src.is_file(), "STOP: verified BERT source missing"
-assert not dst.exists(), "STOP: reusable adapter already exists"
+from max.driver import CPU
+from max.dtype import DType
+from max.graph import DeviceRef, Graph, TensorType
+from max.engine import InferenceSession
+from cta_max.nlp_bert_in_graph import nlp_bert_forward
 
-tree = ast.parse(src.read_text())
-functions = [
-    n for n in tree.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "build_nlp_bert_graph"
-]
-assert len(functions) == 1, "STOP: BERT builder differs"
+cpu = CPU()
+device = DeviceRef.from_device(cpu)
 
-body = functions[0].body
-
-graph_indices = [
-    i for i, n in enumerate(body)
-    if isinstance(n, ast.Assign)
-    and isinstance(n.value, ast.Call)
-    and isinstance(n.value.func, ast.Name)
-    and n.value.func.id == "Graph"
-]
-assert len(graph_indices) == 1, "STOP: graph structure differs"
-
-i = graph_indices[0]
-assert isinstance(body[i+1], ast.With), "STOP: graph context differs"
-assert isinstance(body[i+2], ast.Return), "STOP: graph return differs"
-
-inside = body[i+1].body
-assert ast.unparse(inside[0]) == (
-    "ids, attention_mask = graph.inputs"
-), "STOP: input binding differs"
-assert ast.unparse(inside[-1]) == (
-    "graph.output(search)"
-), "STOP: graph output differs"
-
-statements = body[:i] + inside[1:-1]
-
-def indent(node):
-    return "\n".join(
-        "    " + line
-        for line in ast.unparse(node).splitlines()
-    )
-
-code = (
-    "import numpy as np\n"
-    "from max.dtype import DType\n"
-    "from max.graph import ops\n"
-    "from .nlp_bert_max import WEIGHTS\n\n"
-    "def nlp_bert_forward(ids, attention_mask, device, seq_len):\n"
-    + "\n".join(indent(n) for n in statements)
-    + "\n    return search\n"
+graph = Graph(
+    "cta_nlp_reusable_integration",
+    input_types=[
+        TensorType(DType.int64, [1, 4], device=device),
+        TensorType(DType.int64, [1, 4], device=device),
+    ],
 )
 
-ast.parse(code)
-dst.write_text(code)
+with graph:
+    output = nlp_bert_forward(
+        graph.inputs[0],
+        graph.inputs[1],
+        device,
+        4,
+    )
 
-print("REUSABLE NLP FORWARD CREATED — SYNTAX PASS")
-print("VERIFIED SIX-LAYER BERT SOURCE UNCHANGED")
-print("ORIGINAL MODEL AND DS CODE UNCHANGED")
+    print("ADAPTER GRAPH SHAPE:", output.shape)
+    graph.output(output)
+
+print("REUSABLE NLP GRAPH: PASS", flush=True)
+
+session = InferenceSession(devices=[cpu])
+model = session.load(graph)
+
+ids = np.array([[101, 2023, 2003, 102]], dtype=np.int64)
+mask = np.array([[1, 1, 1, 1]], dtype=np.int64)
+
+result = model.execute(ids, mask)[0].to_numpy()
+
+assert result.shape == (1, 512), result.shape
+assert np.isfinite(result).all()
+
+print("REUSABLE NLP EXECUTION: PASS")
+print("OUTPUT SHAPE:", result.shape)
+print("FINITE: True")
+print("NO FILES MODIFIED")
 PY

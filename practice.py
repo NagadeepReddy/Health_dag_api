@@ -1,9 +1,27 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-echo "=== ORIGINAL PYTORCH SEQUENCE ==="
-sed -n '1290,1322p' \
-  artifacts/v1.168/utils/dependency-utils/models.py
+python - <<'PY'
+import ast
+from pathlib import Path
 
-echo "=== ACTUAL MAX SEQUENCE ==="
-sed -n '15,44p' \
-  artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py
+root = Path("artifacts/v1.168-max/cta_max")
+found = False
+
+for p in root.rglob("*.py"):
+    source = p.read_text()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        continue
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "ParallelTransformerMeanMAX":
+            found = True
+            print("FILE:", p)
+            for method in node.body:
+                if isinstance(method, ast.FunctionDef) and method.name in ("__call__", "forward"):
+                    print(ast.get_source_segment(source, method))
+
+if not found:
+    print("STOP: Feature class not found; no changes made")
+PY

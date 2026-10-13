@@ -8,19 +8,39 @@ import numpy as np
 import torch
 
 root = Path("/workspace/artifacts/v1.168")
-mxroot = Path("/workspace/artifacts/v1.168-max")
-base = mxroot / "cta_max"
+base = Path("/workspace/artifacts/v1.168-max/cta_max")
 
-for p in (root, root/"core-artifact", root/"utils",
-          root/"utils/dependency-utils", mxroot):
-    sys.path.insert(0, str(p))
+data = torch.load(
+    base / "real_sanity_model_in.pt",
+    map_location="cpu",
+    weights_only=True
+)
 
+deep = data["sibling_deep_in"].numpy()
+wide = data["sibling_wide_in"].numpy()
+
+print("=== REAL SIBLING INPUT CHECK ===")
+print("DEEP SHAPE:", deep.shape)
+print("WIDE SHAPE:", wide.shape)
+print("DEEP UNIQUE SIBLINGS:",
+      len(np.unique(deep[0].T, axis=0)))
+print("WIDE UNIQUE SIBLINGS:",
+      len(np.unique(wide[0].T, axis=0)))
+print("DEEP FIRST:", deep[0, :, 0].tolist())
+print("WIDE FIRST MIN/MAX:",
+      int(wide[0, :, 0].min()),
+      int(wide[0, :, 0].max()))
+print("WIDE NONZERO:", int(np.count_nonzero(wide)))
+
+# Load the same original model that produced the reference.
 try:
     import faiss
 except ImportError:
     guard = types.ModuleType("faiss")
     guard.__file__ = "<import-only-guard>"
-    guard.__spec__ = importlib.machinery.ModuleSpec("faiss", None)
+    guard.__spec__ = importlib.machinery.ModuleSpec(
+        "faiss", loader=None
+    )
     def missing(name):
         if name.startswith("__"):
             raise AttributeError(name)
@@ -28,20 +48,15 @@ except ImportError:
     guard.__getattr__ = missing
     sys.modules["faiss"] = guard
 
-from max.driver import CPU, Tensor
-from max.engine import InferenceSession
-from max.graph import Graph, TensorType, DeviceRef
-from max.dtype import DType
-from cta_max.sibling_context_max import sibling_context_forward
+for p in (
+    root, root / "core-artifact",
+    root / "utils",
+    root / "utils/dependency-utils"
+):
+    sys.path.insert(0, str(p))
 
-data = torch.load(
-    base/"real_sanity_model_in.pt",
-    map_location="cpu", weights_only=True
-)
-
-# Original reference model — no preprocessing repeated.
 spec = importlib.util.spec_from_file_location(
-    "cta_pipeline", root/"core-artifact/pipeline.py"
+    "cta_pipeline", root / "core-artifact/pipeline.py"
 )
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
@@ -49,106 +64,59 @@ spec.loader.exec_module(module)
 
 pipeline = module.pipeline()
 pipeline.load()
-pipeline.model_base.eval()
 
-# One reusable MAX Sibling model for all ten real siblings.
-device = CPU()
-ref = DeviceRef.CPU()
+state = pipeline.model_base.state_dict()
+keys = {
+    k: v.detach().cpu().numpy()
+    for k, v in state.items()
+    if k.startswith("sibling_context_head.")
+}
 
-graph = Graph(
-    "cta_real_sibling_diagnostic",
-    input_types=[
-        TensorType(DType.int64, [1], device=ref)
-        for _ in range(3)
-    ] + [
-        TensorType(DType.float32, [1,18], device=ref)
-    ]
-)
+print("\n=== ORIGINAL VS EXPORTED SIBLING WEIGHTS ===")
+print("ORIGINAL TENSORS:", len(keys))
 
-with graph:
-    d0, d1, d2, wide = graph.inputs
-    result = sibling_context_forward(
-        [d0, d1, d2], wide, ref
-    )
-    graph.output(result)
+matched = 0
+different = []
+missing = []
+ambiguous = []
 
-model = InferenceSession(
-    devices=[device]
-).load(graph)
+for name, expected in sorted(keys.items()):
+    paths = list(base.rglob(name + ".npy"))
 
-print("SIBLING ISOLATED GRAPH: PASS", flush=True)
+    if len(paths) == 0:
+        missing.append(name)
+        continue
+    if len(paths) != 1:
+        ambiguous.append(name)
+        continue
 
-pt_vectors = []
-mx_vectors = []
+    actual = np.load(paths[0])
 
-for i in range(10):
-    deep = data["sibling_deep_in"][:,:,i]
-    wide = data["sibling_wide_in"][:,:,i]
+    if actual.shape != expected.shape:
+        different.append((name, "SHAPE MISMATCH"))
+        continue
 
-    with torch.inference_mode():
-        pt = pipeline.model_base.sibling_context_head(
-            deep_in=deep.transpose(0,1),
-            wide_in=wide.transpose(0,1)
-        )
+    diff = float(np.max(np.abs(
+        actual.astype(np.float64)
+        - expected.astype(np.float64)
+    )))
 
-    pt = pt.detach().cpu().numpy()
+    if diff <= 1e-6:
+        matched += 1
+    else:
+        different.append((name, diff))
 
-    tensors = [
-        Tensor.from_numpy(
-            np.ascontiguousarray(
-                deep[:,j].numpy().astype(np.int64)
-            )
-        ).to(device)
-        for j in range(3)
-    ]
-    tensors.append(
-        Tensor.from_numpy(
-            np.ascontiguousarray(
-                wide.numpy().astype(np.float32)
-            )
-        ).to(device)
-    )
+print("WEIGHTS MATCHED:", matched)
+print("WEIGHTS DIFFERENT:", len(different))
+print("WEIGHTS MISSING:", len(missing))
+print("AMBIGUOUS MATCHES:", len(ambiguous))
 
-    mx = model.execute(*tensors)[0].to_numpy()
+for name, detail in different[:10]:
+    print("DIFFERENT:", name, detail)
+for name in missing[:10]:
+    print("MISSING:", name)
+for name in ambiguous[:10]:
+    print("AMBIGUOUS:", name)
 
-    assert pt.shape == mx.shape == (1,128), (
-        i, pt.shape, mx.shape
-    )
-
-    pt_vectors.append(pt)
-    mx_vectors.append(mx)
-
-    delta = np.abs(pt.astype(np.float64)-mx.astype(np.float64))
-    print(
-        f"SIBLING {i}: mean={delta.mean():.7f} "
-        f"max={delta.max():.7f} "
-        f"match={np.allclose(pt,mx,rtol=1e-3,atol=1e-3)}"
-    )
-
-def pool(values):
-    stacked = np.stack(values,axis=1)
-    return np.concatenate(
-        [stacked.mean(axis=1),stacked.max(axis=1)],
-        axis=1
-    )
-
-pt_pool = pool(pt_vectors)
-mx_pool = pool(mx_vectors)
-
-delta = np.abs(
-    pt_pool.astype(np.float64)
-    - mx_pool.astype(np.float64)
-)
-
-print("\n=== ISOLATED SIBLING POOLING ===")
-print("SHAPE:", mx_pool.shape)
-print("MEAN DIFF:", float(delta.mean()))
-print("MAX DIFF:", float(delta.max()))
-print(
-    "MATCH:",
-    bool(np.allclose(
-        pt_pool,mx_pool,rtol=1e-3,atol=1e-3
-    ))
-)
-print("NO SOURCE FILES MODIFIED")
+print("\nREAD ONLY — NO SOURCE FILES MODIFIED")
 PY

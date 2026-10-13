@@ -1,75 +1,43 @@
-python - <<'PY'
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 from pathlib import Path
-import ast
-import re
-import shutil
+import torch
 
 base = Path("artifacts/v1.168-max/cta_max")
+data = torch.load(base / "real_sanity_model_in.pt",
+                  map_location="cpu", weights_only=True)
+
+print("=== REAL VALID SEQUENCE LENGTH ===")
+v = data.get("vl_in", data.get("v1_in"))
+print("valid_length:", v)
+print("sequence capacity: 50")
 
 files = [
+    Path("artifacts/v1.168/utils/dependency-utils/models.py"),
+    base / "parallel_transformer_block_2layers.py",
     base / "grecbase_fusion_order_correct_max.py",
-    base / "grecbase_fusion_order_correct_max_branch_diag.py",
 ]
-
-pattern = re.compile(
-    r'''(?m)^([ \t]*)seq_b\s*=\s*np\.load\(
-    WDIR\s*/\s*["']seq_dense\.bias\.npy["']
-    \)\.astype\(np\.float32\)[ \t]*$''',
-    re.VERBOSE,
-)
-
-marker = "CHECKPOINT_SEQ_DENSE_BIAS"
-prepared = []
+terms = ("valid_length", "vl_in", "padding_mask",
+         "masked_fill", "softmax", "causal_mask")
 
 for p in files:
-    if not p.is_file():
-        raise SystemExit(f"STOP: Missing existing file: {p}")
-
-    source = p.read_text()
-
-    if marker in source:
-        print("ALREADY CORRECTED:", p.name)
+    print("\n===", p.name, "===")
+    if not p.exists():
+        print("FILE NOT FOUND")
         continue
 
-    matches = list(pattern.finditer(source))
-    if len(matches) != 1:
-        raise SystemExit(
-            f"STOP: Expected seq_dense.bias assignment not found "
-            f"exactly once in {p.name}. Nothing changed."
-        )
+    lines = p.read_text().splitlines()
+    hits = [i for i, s in enumerate(lines)
+            if any(t in s.lower() for t in terms)]
+    shown = set()
 
-    indent = matches[0].group(1)
+    for i in hits[:18]:
+        for j in range(max(0, i-4), min(len(lines), i+6)):
+            if j not in shown:
+                print(f"{j+1}: {lines[j]}")
+                shown.add(j)
 
-    replacement = (
-        indent + "# CHECKPOINT_SEQ_DENSE_BIAS: original trained value\n"
-        + indent
-        + 'seq_b = __import__("torch").load('
-        '"artifacts/v1.168/core-artifact/model_0_base.pt", '
-        'map_location="cpu", weights_only=True)'
-        '["sequence_transformer.seq_dense.bias"]'
-        '.detach().cpu().numpy().astype(np.float32)'
-    )
-
-    updated = pattern.sub(lambda _: replacement, source, count=1)
-    ast.parse(updated, filename=str(p))
-    prepared.append((p, updated))
-
-# Apply only after both source files pass validation.
-for p, updated in prepared:
-    backup = p.with_suffix(".py.before_checkpoint_seq_bias")
-    if not backup.exists():
-        shutil.copy2(p, backup)
-    p.write_text(updated)
-    print("CORRECTED:", p.name)
-    print("BACKUP:", backup)
-
-print("ORIGINAL PYTORCH/DS FILES UNCHANGED")
-print("READY FOR CURRENT EIGHT-BRANCH VALIDATION")
+print("\nREAD ONLY — NOTHING MODIFIED")
 PY
-
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_max_branch_diag.py

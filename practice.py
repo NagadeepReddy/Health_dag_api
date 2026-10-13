@@ -1,80 +1,62 @@
 python - <<'PY'
-from pathlib import Path
 import ast
-import itertools
-import numpy as np
+from pathlib import Path
 
+original = Path("artifacts/v1.168/utils/dependency-utils/models.py")
 base = Path("artifacts/v1.168-max/cta_max")
-source = base / "grecbase_fusion_parity_max.py"
 
-pt = np.load(base / "real_sanity_pytorch_branches.npz")
-mx = np.load(base / "real_sanity_max_branches.npz")
+def functions(path):
+    tree = ast.parse(path.read_text())
+    return tree, [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+    ]
 
-names = [
-    "sequence", "context", "search0", "search1",
-    "task", "jet", "ihq", "sibling"
-]
+tree, fns = functions(original)
 
-# Identify the best one-to-one branch assignment.
-cost = np.zeros((8, 8))
-for i, a in enumerate(names):
-    for j, b in enumerate(names):
-        x = pt[a].astype(np.float64)
-        y = mx[b].astype(np.float64)
-        cost[i, j] = np.mean(np.abs(x - y))
-
-best = min(
-    itertools.permutations(range(8)),
-    key=lambda p: sum(cost[i, p[i]] for i in range(8))
+print("=== ORIGINAL PYTORCH GRecBase ===")
+cls = next(
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
+)
+forward = next(
+    n for n in cls.body
+    if isinstance(n, ast.FunctionDef) and n.name == "forward"
 )
 
-print("=== BEST ONE-TO-ONE BRANCH MATCH ===")
-for i, j in enumerate(best):
-    print(
-        f"PyTorch {names[i]:<9} -> "
-        f"MAX {names[j]:<9} "
-        f"mean_diff={cost[i,j]:.6f}"
-    )
-
-print("\n=== ACTUAL MAX FUSION CODE ===")
-lines = source.read_text().splitlines()
-tree = ast.parse(source.read_text())
-
-builders = [
-    n for n in tree.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "build_grecbase_fusion_graph_parity"
-]
-assert len(builders) == 1
-
-fn = builders[0]
-hits = set()
-
-for n in ast.walk(fn):
-    if isinstance(n, ast.Call):
-        expression = ast.unparse(n.func)
-        if (
-            expression.endswith(".concat")
-            or expression.endswith(".stack")
-            or (
-                expression == "norm"
-                and any(
-                    isinstance(a, ast.Constant)
-                    and a.value == "moe_norm1"
-                    for a in n.args
-                )
-            )
+for node in ast.walk(forward):
+    if isinstance(node, ast.Assign):
+        if any(
+            isinstance(t, ast.Name) and t.id == "outs"
+            for t in node.targets
         ):
-            hits.add(n.lineno)
+            print("OUTS =", ast.unparse(node.value))
 
-shown = set()
-for line in sorted(hits):
-    for i in range(max(fn.lineno, line-8),
-                   min(fn.end_lineno, line+5)+1):
-        if i not in shown:
-            print(f"{i}: {lines[i-1]}")
-            shown.add(i)
-    print("---")
+print("\n=== MAX FUSION ===")
+p = base / "grecbase_fusion_parity_max.py"
+_, fns = functions(p)
+fn = next(n for n in fns if n.name ==
+          "build_grecbase_fusion_graph_parity")
+
+for node in ast.walk(fn):
+    if isinstance(node, ast.Assign):
+        if any(
+            isinstance(t, ast.Name) and t.id in
+            ("outs", "task", "ihq", "jet")
+            for t in node.targets
+        ):
+            print(ast.unparse(node)[:500])
+
+print("\n=== MAX AUXILIARY RETURN ===")
+for p in sorted(base.glob("*aux*max.py")):
+    _, fns = functions(p)
+    for fn in fns:
+        if "aux" in fn.name:
+            print("FILE:", p.name)
+            print("FUNCTION:", fn.name)
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Return):
+                    print("RETURN:", ast.unparse(node.value))
 
 print("\nREAD ONLY — NO FILES MODIFIED")
 PY

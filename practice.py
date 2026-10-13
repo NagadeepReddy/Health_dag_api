@@ -1,70 +1,38 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-python3 - <<'PY'
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import numpy as np
 from pathlib import Path
-import ast, shutil
 
 base = Path("artifacts/v1.168-max/cta_max")
-adapter = base / "run_real_sanity_input_adapter.py"
-graph = base / "grecbase_fusion_order_correct_max.py"
 
-a = adapter.read_text()
-g = graph.read_text()
+pt = np.load(
+    base / "real_sanity_pytorch_same_input_verified.npz"
+)["final"].reshape(-1)
 
-def replace_once(src, old, new):
-    assert src.count(old) == 1, f"STOP: Expected exactly one: {old}"
-    return src.replace(old, new, 1)
+mx = np.load(
+    base / "real_sanity_max_2048_full_runner.npy"
+).reshape(-1)
 
-a2 = replace_once(
-    a,
-    'add("valid_length", get("vl_in", "v1_in"))',
-    'add("valid_length", get("vl_in", "v1_in"))\n'
-    '    add("sibling_valid_length", get("sibling_vl_in"))'
-)
+assert pt.shape == mx.shape == (2048,), "STOP: Shape mismatch"
 
-a2 = replace_once(
-    a2,
-    'len(labels) == 71',
-    'len(labels) == 72'
-)
+diff = np.abs(pt - mx)
 
-g2 = replace_once(
-    g,
-    '+ [TensorType(DType.int64, [1], device=device)])',
-    '+ [TensorType(DType.int64, [1], device=device) for _ in range(2)])'
-)
+print("FULL MAX DIFF:", float(diff.max()))
+print("MEAN DIFF:", float(diff.mean()))
 
-g2 = replace_once(
-    g2,
-    'assert len(remaining) == 66',
-    'assert len(remaining) == 67'
-)
+print("\nERROR BY 256-FEATURE REGION:")
+for i in range(8):
+    d = diff[i*256:(i+1)*256]
+    print(i, "max =", float(d.max()),
+          "mean =", float(d.mean()))
 
-g2 = replace_once(
-    g2,
-    'ops.reshape(remaining[65], [1, 1])',
-    'ops.reshape(remaining[66], [1, 1])'
-)
-
-assert 'valid_length = remaining[65]' in g2
-assert 'ops.reshape(remaining[66], [1, 1])' in g2
-
-ast.parse(a2)
-ast.parse(g2)
-
-for p in (adapter, graph):
-    backup = p.with_name(p.name + ".before_sibling_length_mapping_fix")
-    assert not backup.exists(), f"STOP: Backup exists: {backup}"
-
-for p in (adapter, graph):
-    shutil.copy2(p, p.with_name(p.name + ".before_sibling_length_mapping_fix"))
-
-adapter.write_text(a2)
-graph.write_text(g2)
-
-print("FIX APPLIED")
-print("Separate Sequence and Sibling lengths")
-print("MAX input count: 72")
-print("Python syntax: PASS")
-print("Both backups preserved")
+print("\nTOP 10 DIFFERENCES:")
+for idx in np.argsort(diff)[-10:][::-1]:
+    print(int(idx), "PT =", float(pt[idx]),
+          "MAX =", float(mx[idx]),
+          "DIFF =", float(diff[idx]))
 PY

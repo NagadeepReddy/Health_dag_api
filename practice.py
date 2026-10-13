@@ -1,122 +1,54 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys, types, importlib.util, importlib.machinery
+python - <<'PY'
 from pathlib import Path
 import numpy as np
-import torch
 
-root = Path("/workspace/artifacts/v1.168")
-base = Path("/workspace/artifacts/v1.168-max/cta_max")
+base = Path("artifacts/v1.168-max/cta_max")
 
-data = torch.load(
-    base / "real_sanity_model_in.pt",
-    map_location="cpu",
-    weights_only=True
-)
+for label, prefix, filename in [
+    ("SIBLING", "sibling_context_head", "sibling_context_max.py"),
+    ("CONTEXT", "context_head", "main_context_max.py"),
+]:
+    print("\n===", label, "BATCHNORM CHECK ===")
 
-deep = data["sibling_deep_in"].numpy()
-wide = data["sibling_wide_in"].numpy()
+    paths = {}
+    for name in ("weight", "bias", "running_mean", "running_var"):
+        matches = list(base.rglob(
+            prefix + ".num_batch_norm." + name + ".npy"
+        ))
+        print(name, "files:", len(matches))
+        if len(matches) == 1:
+            paths[name] = matches[0]
 
-print("=== REAL SIBLING INPUT CHECK ===")
-print("DEEP SHAPE:", deep.shape)
-print("WIDE SHAPE:", wide.shape)
-print("DEEP UNIQUE SIBLINGS:",
-      len(np.unique(deep[0].T, axis=0)))
-print("WIDE UNIQUE SIBLINGS:",
-      len(np.unique(wide[0].T, axis=0)))
-print("DEEP FIRST:", deep[0, :, 0].tolist())
-print("WIDE FIRST MIN/MAX:",
-      int(wide[0, :, 0].min()),
-      int(wide[0, :, 0].max()))
-print("WIDE NONZERO:", int(np.count_nonzero(wide)))
+    source = base / filename
+    if source.exists():
+        lines = source.read_text().splitlines()
+        for i, line in enumerate(lines):
+            if ".num_batch_norm." in line:
+                print(f"MAX LINE {i+1}: {line.strip()}")
 
-# Load the same original model that produced the reference.
-try:
-    import faiss
-except ImportError:
-    guard = types.ModuleType("faiss")
-    guard.__file__ = "<import-only-guard>"
-    guard.__spec__ = importlib.machinery.ModuleSpec(
-        "faiss", loader=None
-    )
-    def missing(name):
-        if name.startswith("__"):
-            raise AttributeError(name)
-        raise RuntimeError("Native FAISS required: " + name)
-    guard.__getattr__ = missing
-    sys.modules["faiss"] = guard
+    if len(paths) == 4:
+        gamma = np.load(paths["weight"]).astype(np.float64)
+        beta = np.load(paths["bias"]).astype(np.float64)
+        mean = np.load(paths["running_mean"]).astype(np.float64)
+        var = np.load(paths["running_var"]).astype(np.float64)
 
-for p in (
-    root, root / "core-artifact",
-    root / "utils",
-    root / "utils/dependency-utils"
-):
-    sys.path.insert(0, str(p))
+        print("FEATURES:", gamma.shape)
+        print("MAX ABS RUNNING MEAN:", float(np.max(np.abs(mean))))
+        print("RUNNING VAR RANGE:", float(var.min()), float(var.max()))
 
-spec = importlib.util.spec_from_file_location(
-    "cta_pipeline", root / "core-artifact/pipeline.py"
-)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-
-pipeline = module.pipeline()
-pipeline.load()
-
-state = pipeline.model_base.state_dict()
-keys = {
-    k: v.detach().cpu().numpy()
-    for k, v in state.items()
-    if k.startswith("sibling_context_head.")
-}
-
-print("\n=== ORIGINAL VS EXPORTED SIBLING WEIGHTS ===")
-print("ORIGINAL TENSORS:", len(keys))
-
-matched = 0
-different = []
-missing = []
-ambiguous = []
-
-for name, expected in sorted(keys.items()):
-    paths = list(base.rglob(name + ".npy"))
-
-    if len(paths) == 0:
-        missing.append(name)
-        continue
-    if len(paths) != 1:
-        ambiguous.append(name)
-        continue
-
-    actual = np.load(paths[0])
-
-    if actual.shape != expected.shape:
-        different.append((name, "SHAPE MISMATCH"))
-        continue
-
-    diff = float(np.max(np.abs(
-        actual.astype(np.float64)
-        - expected.astype(np.float64)
-    )))
-
-    if diff <= 1e-6:
-        matched += 1
+        # Quantify the difference for actual -1 / 0 feature values.
+        for value in (-1.0, 0.0):
+            current = value * gamma + beta
+            correct = (
+                (value - mean) / np.sqrt(var + 1e-5)
+            ) * gamma + beta
+            print(
+                "INPUT:", value,
+                "MAX FORMULA DIFFERENCE:",
+                float(np.max(np.abs(current - correct)))
+            )
     else:
-        different.append((name, diff))
+        print("Complete BatchNorm statistics not found.")
 
-print("WEIGHTS MATCHED:", matched)
-print("WEIGHTS DIFFERENT:", len(different))
-print("WEIGHTS MISSING:", len(missing))
-print("AMBIGUOUS MATCHES:", len(ambiguous))
-
-for name, detail in different[:10]:
-    print("DIFFERENT:", name, detail)
-for name in missing[:10]:
-    print("MISSING:", name)
-for name in ambiguous[:10]:
-    print("AMBIGUOUS:", name)
-
-print("\nREAD ONLY — NO SOURCE FILES MODIFIED")
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

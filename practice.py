@@ -1,36 +1,60 @@
 python - <<'PY'
 from pathlib import Path
-import shutil
 import ast
+import shutil
 
-p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py")
-s = p.read_text()
+base = Path("artifacts/v1.168-max/cta_max")
+p = base / "run_real_sanity_input_adapter.py"
 
-old = "sys.path.insert(0, str(BASE))"
-new = "sys.path.insert(0, str(BASE.parent))"
+old = 'add("page_wide", page_wide)'
+new = 'add("page_wide", page_wide.reshape(1, 50, 1))'
 
-if old in s:
-    updated = s.replace(old, new, 1)
-    updated = updated.replace(
-        "from grecbase_fusion_order_correct_max import (",
-        "from cta_max.grecbase_fusion_order_correct_max import (",
-        1
-    )
+source = p.read_text()
+
+if old in source:
+    updated = source.replace(old, new, 1)
     ast.parse(updated)
-    backup = p.with_suffix(".py.before_import_fix")
+    backup = p.with_suffix(".py.before_page_wide_fix")
     if not backup.exists():
         shutil.copy2(p, backup)
     p.write_text(updated)
-    print("MAX PACKAGE IMPORT FIXED")
-elif new in s:
-    print("PACKAGE PATH ALREADY PRESENT")
+    print("PAGE_WIDE SHAPE FIXED: (1, 50, 1)")
+elif new in source:
+    print("PAGE_WIDE ALREADY FIXED")
 else:
-    raise SystemExit("STOP: Runner source differs; nothing changed")
-PY
+    raise SystemExit("STOP: Adapter changed unexpectedly")
 
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py
+print("\n=== SEQUENCE GRAPH INPUT CONTRACT ===")
+
+found = False
+
+for f in sorted(base.glob("*.py")):
+    lines = f.read_text(errors="replace").splitlines()
+
+    matches = [
+        i for i, line in enumerate(lines)
+        if (
+            "def grecbase_max_sequence_max(" in line
+            or "seq_inputs =" in line
+            or "[1, 1, 50, 256]" in line
+        )
+    ]
+
+    if not matches:
+        continue
+
+    found = True
+    print("\nFILE:", f.name)
+
+    shown = set()
+    for i in matches:
+        for j in range(max(0, i-3), min(len(lines), i+18)):
+            if j not in shown:
+                print(f"{j+1}: {lines[j]}")
+                shown.add(j)
+
+if not found:
+    print("SEQUENCE DEFINITION NOT FOUND")
+
+print("\nORIGINAL PYTORCH/DS CODE UNCHANGED")
+PY

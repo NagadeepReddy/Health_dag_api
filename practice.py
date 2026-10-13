@@ -1,161 +1,155 @@
 podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
+  -v "$PWD:/workspace" \
+  -w /workspace \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 from pathlib import Path
-import sys, json, inspect
+import sys
+import json
 import numpy as np
 import torch
+import inspect
 
 root = Path("artifacts/v1.168")
 base = Path("artifacts/v1.168-max/cta_max")
 
-param_files = list(root.rglob("torch_model_params_base.json"))
-if len(param_files) != 1:
-    raise SystemExit(
-        f"STOP: Expected one original base-model config, found: {param_files}"
-    )
+config = root / "config/torch_model_params_base.json"
+nlp_config = root / "config/config.json"
+checkpoint = root / "core-artifact/model_0_base.pt"
+input_file = base / "real_sanity_model_in.pt"
+output_file = base / "real_sanity_pytorch_same_input_verified.npz"
 
-params = json.loads(param_files[0].read_text())
+for p in (config, nlp_config, checkpoint, input_file):
+    if not p.is_file():
+        raise SystemExit(f"STOP: Required existing file missing: {p}")
+
+params = json.loads(config.read_text())
 if isinstance(params, list):
+    if len(params) != 1:
+        raise SystemExit("STOP: Unexpected model config structure")
     params = params[0]
-if not isinstance(params, dict):
-    raise SystemExit("STOP: Unexpected original model config format")
 
-# Preserve the exact original pipeline settings.
+params["nlp_encoder_path"] = str(nlp_config)
 params["transfer_ind"] = True
 params["extract_deep_idx"] = -1
 
-encoder = Path(str(params.get("nlp_encoder_path", "")))
-if not encoder.is_file():
-    configs = []
-    for p in root.rglob("config.json"):
-        try:
-            cfg = json.loads(p.read_text())
-            if "hidden_size" in cfg and "num_hidden_layers" in cfg:
-                configs.append(p)
-        except (ValueError, OSError):
-            pass
-
-    if len(configs) != 1:
-        raise SystemExit(
-            f"STOP: Original NLP encoder config not uniquely resolved: {configs}"
-        )
-    encoder = configs[0]
-
-params["nlp_encoder_path"] = str(encoder)
-
-sys.path.insert(
-    0, str(root / "utils" / "dependency-utils")
-)
-
-try:
-    from models import GRecBase
-except ImportError as exc:
-    raise SystemExit(
-        f"STOP: Original PyTorch model dependency unavailable: {exc}"
-    )
-
-checkpoint = torch.load(
-    root / "core-artifact" / "model_0_base.pt",
-    map_location="cpu",
-    weights_only=True
-)
-if "state_dict" in checkpoint:
-    checkpoint = checkpoint["state_dict"]
-
-print("ORIGINAL CONFIG:", param_files[0])
-print("ORIGINAL NLP CONFIG:", encoder)
+sys.path.insert(0, str(root / "utils/dependency-utils"))
+from models import GRecBase
 
 model = GRecBase(**params)
-model.load_state_dict(checkpoint, strict=True)
+
+weights = torch.load(
+    checkpoint, map_location="cpu", weights_only=True
+)
+if isinstance(weights, dict) and "state_dict" in weights:
+    weights = weights["state_dict"]
+
+model.load_state_dict(weights, strict=True)
 model.eval()
 
 saved = torch.load(
-    base / "real_sanity_model_in.pt",
-    map_location="cpu",
-    weights_only=True
+    input_file, map_location="cpu", weights_only=True
 )
 
+seq_outputs = []
+sibling_outputs = []
+
+def capture_seq(module, args, result):
+    seq_outputs.append(result.detach().cpu())
+
+def capture_sibling(module, args, result):
+    sibling_outputs.append(result.detach().cpu())
+
+# Hook only modules verified to exist.
+if not hasattr(model, "seq_dense"):
+    raise SystemExit("STOP: Original sequence module unavailable")
+if not hasattr(model, "sibling_context_head"):
+    raise SystemExit("STOP: Original sibling module unavailable")
+
+hooks = [
+    model.seq_dense.register_forward_hook(capture_seq),
+    model.sibling_context_head.register_forward_hook(capture_sibling)
+]
+
 signature = inspect.signature(model.forward)
-aliases = {"tasks_in": "task_in"}
 kwargs = {}
 
 for name, parameter in signature.parameters.items():
-    key = aliases.get(name, name)
+    key = "task_in" if name == "tasks_in" else name
     if key in saved:
         kwargs[name] = saved[key]
     elif parameter.default is inspect.Parameter.empty:
-        raise SystemExit(
-            f"STOP: Required original forward input missing: {name}"
-        )
-
-sequence_outputs = []
-sibling_outputs = []
-
-def capture_sequence(module, inputs, output):
-    sequence_outputs.append(output.detach().cpu())
-
-def capture_sibling(module, inputs, output):
-    sibling_outputs.append(output.detach().cpu())
-
-h1 = model.seq_dense.register_forward_hook(capture_sequence)
-h2 = model.sibling_context_head.register_forward_hook(capture_sibling)
+        raise SystemExit(f"STOP: Missing original input: {name}")
 
 try:
     with torch.inference_mode():
         result = model(**kwargs)
-
-        if not torch.is_tensor(result):
-            raise RuntimeError("Unexpected original model output type")
-
-        if len(sequence_outputs) != 1 or len(sibling_outputs) != 10:
-            raise RuntimeError(
-                f"Unexpected branch calls: sequence={len(sequence_outputs)}, "
-                f"sibling={len(sibling_outputs)}"
-            )
-
-        sibling = model.ihq_pooling(
-            torch.stack(sibling_outputs, dim=1)
-        )
-
-        references = {
-            "sequence": sequence_outputs[0].numpy().astype(np.float32),
-            "sibling": sibling.detach().cpu().numpy().astype(np.float32),
-            "final": result.detach().cpu().numpy().astype(np.float32)
-        }
 finally:
-    h1.remove()
-    h2.remove()
+    for hook in hooks:
+        hook.remove()
+
+if not torch.is_tensor(result):
+    raise SystemExit("STOP: Unexpected model output type")
+if len(seq_outputs) != 1:
+    raise SystemExit(
+        f"STOP: Expected one sequence output, got {len(seq_outputs)}"
+    )
+if len(sibling_outputs) != 10:
+    raise SystemExit(
+        f"STOP: Expected ten sibling outputs, got {len(sibling_outputs)}"
+    )
+
+with torch.no_grad():
+    stacked = torch.stack(sibling_outputs, dim=1)
+
+    # Original MeanMaxPooling(axis=1) calculation.
+    sibling = torch.cat(
+        [
+            stacked.mean(dim=1),
+            stacked.max(dim=1).values
+        ],
+        dim=-1
+    )
+
+references = {
+    "sequence": seq_outputs[0].numpy().astype(np.float32),
+    "sibling": sibling.numpy().astype(np.float32),
+    "final": result.detach().cpu().numpy().astype(np.float32)
+}
+
+print("=== ORIGINAL PYTORCH / SAME REAL INPUTS ===")
 
 for name, value in references.items():
     print(
-        "ORIGINAL PYTORCH", name,
+        name,
         "SHAPE:", value.shape,
         "FINITE:", bool(np.isfinite(value).all())
     )
     if not np.isfinite(value).all():
-        raise SystemExit("STOP: Non-finite original reference")
+        raise SystemExit("STOP: Nonfinite reference")
 
 if references["final"].shape != (1, 2048):
-    raise SystemExit("STOP: Unexpected original model output shape")
+    raise SystemExit(
+        f"STOP: Unexpected final shape {references['final'].shape}"
+    )
 
-output = base / "real_sanity_pytorch_same_input_verified.npz"
-
-if output.exists():
-    with np.load(output, allow_pickle=False) as old:
-        identical = (
-            set(old.files) == set(references)
-            and all(np.array_equal(old[k], references[k]) for k in references)
+if output_file.exists():
+    with np.load(output_file, allow_pickle=False) as previous:
+        same = (
+            set(previous.files) == set(references)
+            and all(
+                np.array_equal(previous[k], references[k])
+                for k in references
+            )
         )
-    if not identical:
+    if not same:
         raise SystemExit(
             "STOP: Existing verified reference differs; not overwriting"
         )
-    print("MATCHING VERIFIED REFERENCE ALREADY EXISTS")
+    print("VERIFIED REFERENCE ALREADY EXISTS AND MATCHES")
 else:
-    np.savez(output, **references)
-    print("NEW VERIFIED REFERENCE SAVED:", output)
+    np.savez(output_file, **references)
+    print("VERIFIED REFERENCE SAVED:", output_file)
 
-print("ORIGINAL PYTORCH, MAX AND DS CODE UNCHANGED")
+print("ORIGINAL PYTORCH, DS, MAX AND WEIGHTS UNCHANGED")
 PY

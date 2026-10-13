@@ -3,22 +3,19 @@ podman run --rm -i \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 from pathlib import Path
-import torch
-import torch.nn.functional as F
 import numpy as np
+import torch
 
 base = Path("artifacts/v1.168-max/cta_max")
 
-inputs = torch.load(
+data = torch.load(
     base / "real_sanity_model_in.pt",
     map_location="cpu", weights_only=True
 )
-
 weights = torch.load(
     "artifacts/v1.168/core-artifact/model_0_base.pt",
     map_location="cpu", weights_only=True
 )
-
 if "state_dict" in weights:
     weights = weights["state_dict"]
 
@@ -26,31 +23,33 @@ with np.load(
     base / "real_sanity_pytorch_branches.npz",
     allow_pickle=False
 ) as saved:
-    reference = saved["task"].astype(np.float32).copy()
+    ref = saved["task"].reshape(-1).astype(np.float32)
 
-with torch.no_grad():
-    parts = []
-    for i in range(2):
-        ids = inputs["task_in"][i].long()
-        w = weights[f"task_embedding.{i}.weight"].float()
-        parts.append(F.embedding(ids, w).reshape(1, -1))
+print("=== TASK REFERENCE INPUT IDENTIFICATION ===")
+offset = 0
 
-    actual = torch.cat(parts, dim=-1).numpy()
+for i in range(2):
+    w = weights[f"task_embedding.{i}.weight"].cpu().numpy()
+    dim = w.shape[1]
+    chunk = ref[offset:offset + dim]
+    offset += dim
 
-print("=== TASK ORIGINAL MODEL VS SAVED REFERENCE ===")
-print("TASK INPUT IDS:", [x.tolist() for x in inputs["task_in"]])
-print("COMPUTED SHAPE:", actual.shape)
-print("REFERENCE SHAPE:", reference.shape)
+    if chunk.size != dim:
+        raise SystemExit("STOP: Reference dimension mismatch")
 
-if actual.shape != reference.shape:
-    raise SystemExit("TASK SHAPE MISMATCH")
+    differences = np.max(
+        np.abs(w.astype(np.float64) - chunk.astype(np.float64)),
+        axis=1
+    )
+    closest = int(np.argmin(differences))
+    actual = int(data["task_in"][i].reshape(-1)[0])
 
-diff = np.abs(actual.astype(np.float64) -
-              reference.astype(np.float64))
+    print(f"TASK {i}")
+    print("  CURRENT REAL INPUT ID:", actual)
+    print("  SAVED REFERENCE CLOSEST ID:", closest)
+    print("  CLOSEST WEIGHT DIFFERENCE:", float(differences[closest]))
+    print("  SAME ID:", actual == closest)
 
-print("MAX DIFFERENCE:", float(diff.max()))
-print("MATCH:", bool(np.allclose(
-    actual, reference, rtol=1e-3, atol=1e-3
-)))
-print("NO FILES MODIFIED")
+assert offset == ref.size, "Unexpected reference layout"
+print("READ ONLY — NOTHING MODIFIED")
 PY

@@ -1,90 +1,67 @@
 python - <<'PY'
-from pathlib import Path
 import ast
-import re
+from pathlib import Path
 
+root = Path("artifacts/v1.168")
 base = Path("artifacts/v1.168-max/cta_max")
-src = base / "run_real_sanity_verified_wiring_trial.py"
-dst = base / "run_real_sanity_first_bad_fusion_input.py"
 
-if not src.is_file():
-    raise SystemExit(f"STOP: Missing existing runner: {src}")
+original = root / "utils/dependency-utils/models.py"
+max_aux = base / "grecbase_aux_branches_max.py"
+max_graph = base / "grecbase_fusion_verified_wiring_trial.py"
 
-source = src.read_text()
+terms = ("task", "ihq", "jet", "sibling")
 
-pattern = re.compile(
-    r'(?m)^([ \t]*)print\("WORKING SOURCE AND WEIGHTS UNCHANGED", flush=True\)'
-)
-matches = list(pattern.finditer(source))
+for p in (original, max_aux, max_graph):
+    if not p.is_file():
+        raise SystemExit(f"STOP: Missing source: {p}")
 
-if len(matches) != 1:
-    raise SystemExit("STOP: Fusion diagnostic insertion point not unique")
+print("=== ORIGINAL PYTORCH GRecBase.forward — AUXILIARY BRANCHES ===")
 
-indent = matches[0].group(1)
-
-extra = """
-import numpy as np
-print("\\n=== FIRST INCORRECT FUSION INPUT ===", flush=True)
-
-names = [
-    "sequence", "context", "search0", "search1",
-    "task", "jet", "ihq", "sibling"
+source = original.read_text()
+tree = ast.parse(source)
+classes = [
+    n for n in tree.body
+    if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
 ]
+if len(classes) != 1:
+    raise SystemExit("STOP: GRecBase class not uniquely found")
 
-pt = np.asarray(stages["stacked"], dtype=np.float64)
-mx = np.asarray(outputs[9].to_numpy(), dtype=np.float64)
+methods = [
+    n for n in classes[0].body
+    if isinstance(n, ast.FunctionDef) and n.name == "forward"
+]
+if len(methods) != 1:
+    raise SystemExit("STOP: GRecBase.forward not uniquely found")
 
-assert pt.shape == mx.shape == (1, 8, 256)
+for node in methods[0].body:
+    snippet = ast.get_source_segment(source, node) or ""
+    if any(t in snippet.lower() for t in terms):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Expr)):
+            print(f"\nLINE {node.lineno}:\n{snippet[:2200]}")
 
-for i, name in enumerate(names):
-    live = np.asarray(
-        outputs[i + 1].to_numpy(), dtype=np.float64
-    ).reshape(-1)
+print("\n=== MAX AUXILIARY BRANCH IMPLEMENTATION ===")
 
-    assert live.size == 256
+source = max_aux.read_text()
+tree = ast.parse(source)
+for node in tree.body:
+    if isinstance(node, ast.FunctionDef) and (
+        node.name == "grecbase_aux_features"
+    ):
+        print(ast.get_source_segment(source, node))
 
-    model_diff = float(
-        np.max(np.abs(live - pt[0, i]))
-    )
-    wiring_diff = float(
-        np.max(np.abs(live - mx[0, i]))
-    )
+print("\n=== MAX ACTUAL AUXILIARY INPUT CONNECTIONS ===")
 
-    print(
-        f"{name:9s} "
-        f"PYTORCH_DIFF={model_diff:.9g} "
-        f"WIRING_DIFF={wiring_diff:.9g}",
-        flush=True
-    )
+source = max_graph.read_text()
+tree = ast.parse(source)
+for node in ast.walk(tree):
+    if isinstance(node, ast.Assign):
+        lhs = ", ".join(ast.unparse(t) for t in node.targets)
+        if any(t in lhs.lower() for t in terms):
+            if node.lineno <= 80:
+                print(
+                    f"LINE {node.lineno}: "
+                    f"{ast.get_source_segment(source, node)}"
+                )
 
-print("ORIGINAL CODE AND WEIGHTS UNCHANGED", flush=True)
-"""
-
-insertion = "\n".join(
-    indent + line if line else ""
-    for line in extra.strip().splitlines()
-) + "\n"
-
-updated = (
-    source[:matches[0].start()]
-    + insertion
-    + source[matches[0].start():]
-)
-
-ast.parse(updated, filename=str(dst))
-
-if dst.exists() and dst.read_text() != updated:
-    raise SystemExit("STOP: Existing diagnostic differs; not overwriting")
-
-if not dst.exists():
-    dst.write_text(updated)
-
-print("CORRECT IMPORT CONTEXT READY")
+print("\nREAD ONLY — NO MODEL FILES MODIFIED")
 PY
-
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_first_bad_fusion_input.py

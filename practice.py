@@ -1,7 +1,6 @@
 python - <<'PY'
 from pathlib import Path
 import ast
-import re
 
 p = Path(
     "artifacts/v1.168-max/cta_max/"
@@ -9,71 +8,42 @@ p = Path(
 )
 
 source = p.read_text()
-names = [
+tree = ast.parse(source)
+
+names = {
     "seq", "context", "search0", "search1",
-    "task", "jet", "ihq", "sibling"
-]
+    "task", "jet", "ihq", "sibling",
+    "outs", "stage_stacked"
+}
 
-pattern = re.compile(
-    r'(?P<indent>^[ \t]*)'
-    r'# TRIAL: wire the eight verified branch outputs into fusion[^\n]*\n'
-    r'(?P=indent)outs\s*=\s*ops\.stack\(\[\s*\n'
-    r'(?P<body>.*?)'
-    r'(?P=indent)\],\s*axis=1\)',
-    re.MULTILINE | re.DOTALL
-)
+print("=== CURRENT FUSION TENSOR PRODUCERS ===")
 
-matches = list(pattern.finditer(source))
+found = 0
+for node in sorted(ast.walk(tree), key=lambda n: getattr(n, "lineno", 0)):
+    if isinstance(node, ast.Assign):
+        assigned = {
+            x.id
+            for target in node.targets
+            for x in ast.walk(target)
+            if isinstance(x, ast.Name) and isinstance(x.ctx, ast.Store)
+        }
+        if assigned & names:
+            found += 1
+            print(f"\nLINE {node.lineno} — {', '.join(sorted(assigned & names))}")
+            print(ast.get_source_segment(source, node))
 
-if len(matches) != 1:
-    raise SystemExit(
-        "STOP: Expected trial stack not found exactly once. "
-        "No files changed."
-    )
+print("\n=== ACTUAL GRAPH OUTPUT CONNECTIONS ===")
+for node in ast.walk(tree):
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "graph"
+        and node.func.attr == "output"
+    ):
+        for i, arg in enumerate(node.args):
+            print(i, ast.unparse(arg))
 
-match = matches[0]
-
-actual = re.findall(
-    r'^\s*([A-Za-z_]\w*),\s*$',
-    match.group("body"),
-    re.MULTILINE
-)
-
-if actual != names:
-    raise SystemExit(
-        f"STOP: Unexpected branch list: {actual}. "
-        "No files changed."
-    )
-
-indent = match.group("indent")
-
-replacement = (
-    indent + "# TRIAL: wire the eight verified branch outputs into fusion\n"
-    + indent + "outs = ops.stack([\n"
-    + "".join(
-        indent + f"    ops.reshape({name}, [1, 256]),\n"
-        for name in names
-    )
-    + indent + "], axis=1)"
-)
-
-updated = (
-    source[:match.start()]
-    + replacement
-    + source[match.end():]
-)
-
-ast.parse(updated)
-p.write_text(updated)
-
-print("TRIAL STACK RANK CORRECTED")
-print("EIGHT BRANCH ORDER UNCHANGED")
-print("ORIGINAL MAX / PYTORCH / DS CODE UNCHANGED")
+print("\nASSIGNMENTS FOUND:", found)
+print("READ ONLY — NOTHING MODIFIED")
 PY
-
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_verified_wiring_trial.py

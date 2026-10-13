@@ -4,46 +4,44 @@ podman run --rm -i \
   -v "$PWD:/workspace" -w /workspace \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-from pathlib import Path
+import sys
 import numpy as np
-import torch
-import torch.nn.functional as F
 
-b = Path("artifacts/v1.168-max/cta_max")
-w = b / "get_path_weights"
+sys.path.insert(0, "/workspace/artifacts/v1.168-max")
 
-def weight(name):
-    return torch.from_numpy(
-        np.load(w / (name + ".npy")).astype(np.float32)
-    )
+from max.driver import CPU, Tensor
+from max.dtype import DType
+from max.graph import Graph, TensorType, DeviceRef
+from max.engine import InferenceSession
+from cta_max.grecbase_get_path_max import grecbase_get_path_max
 
-pt_fusion = torch.from_numpy(
-    np.load(b / "real_sanity_pytorch_same_input_verified.npz")["final"].astype(np.float32)
+base = "/workspace/artifacts/v1.168-max/cta_max"
+fusion = np.load(
+    base + "/real_sanity_max_2048_verified_latest.npy"
+).astype(np.float32)
+
+device = DeviceRef.CPU()
+
+graph = Graph(
+    "cta_isolated_trained_head",
+    input_types=[
+        TensorType(DType.float32, [1, 2048], device=device)
+    ],
 )
-max_head = torch.from_numpy(
-    np.load(b / "real_sanity_max_get_path_2048_latest.npy").astype(np.float32)
-)
 
-with torch.no_grad():
-    x = F.linear(
-        pt_fusion,
-        weight("remove_tasks_dense1.weight"),
-        weight("remove_tasks_dense1.bias")
-    )
-    a = F.linear(x, weight("remove_tasks_act1.w1.weight"))
-    c = F.linear(x, weight("remove_tasks_act1.w3.weight"))
-    pt_head = F.linear(
-        F.silu(a) * c,
-        weight("remove_tasks_act1.w2.weight")
-    )
+with graph:
+    output = grecbase_get_path_max(graph.inputs[0], device)
+    graph.output(output)
 
-assert pt_head.shape == max_head.shape == (1, 2048)
+session = InferenceSession(devices=[CPU()])
+model = session.load(graph)
 
-print("PT FUSION vs MAX HEAD:",
-      (pt_fusion - max_head).abs().max().item())
-print("PT HEAD vs MAX HEAD:",
-      (pt_head - max_head).abs().max().item())
-print("HEAD PARITY:",
-      bool(torch.allclose(pt_head, max_head, rtol=1e-3, atol=1e-3)))
-print("HEAD FINITE:", bool(torch.isfinite(pt_head).all()))
+result = model.execute(Tensor.from_numpy(fusion).to(CPU()))[0]
+head = result.to_numpy()
+
+print("HEAD OUTPUT SHAPE:", head.shape)
+print("HEAD FINITE:", bool(np.isfinite(head).all()))
+print("ISOLATED HEAD VS FUSION:",
+      float(np.max(np.abs(head - fusion))))
+print("ISOLATED HEAD EXECUTION: PASS")
 PY

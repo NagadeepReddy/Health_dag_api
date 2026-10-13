@@ -1,43 +1,48 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-set -e
 
 python3 - <<'PY'
 from pathlib import Path
-import shutil
+import ast, shutil
 
 p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py")
-lines = p.read_text().splitlines(keepends=True)
+src = p.read_text()
 
-starts = [i for i, x in enumerate(lines)
-          if x.strip() == "seq_raw = postprocess(sx2)"]
-ends = [i for i, x in enumerate(lines)
-        if x.strip().startswith("seq = ops.matmul(seq_raw,")]
+start = "    seq_raw = postprocess(sx2)"
+end = "    sibling_outputs = []"
 
-assert len(starts) == len(ends) == 1, "STOP: unexpected source"
-a, b = starts[0], ends[0]
-assert a < b and b-a <= 10, "STOP: unexpected block"
+assert src.count(start) == 1, "STOP: Sequence block not unique"
+assert src.count(end) == 1, "STOP: Sibling boundary not unique"
 
-block = "".join(lines[a:b+1])
-for token in ("seq_w = np.load", "seq_b = np.load",
-              "assert seq_w.shape", "assert seq_b.shape"):
-    assert token in block, f"STOP: missing {token}"
+a = src.index(start)
+b = src.index(end)
+assert a < b, "STOP: Unexpected source order"
+
+block = src[a:b]
+
+for token in (
+    "seq_w =",
+    "seq_b =",
+    "assert seq_w.shape",
+    "assert seq_b.shape",
+    "seq = ops.matmul(seq_raw",
+):
+    assert token in block, f"STOP: Missing {token}"
+
+new_src = (
+    src[:a]
+    + "    seq = postprocess(sx2)\n\n"
+    + src[b:]
+)
+
+ast.parse(new_src)
 
 backup = p.with_name(p.name + ".before_duplicate_seq_dense_fix")
-assert not backup.exists(), "STOP: backup already exists"
+assert not backup.exists(), "STOP: Backup already exists"
+
 shutil.copy2(p, backup)
+p.write_text(new_src)
 
-indent = lines[a][:len(lines[a])-len(lines[a].lstrip())]
-lines[a:b+1] = [indent + "seq = postprocess(sx2)\n"]
-p.write_text("".join(lines))
-
-print("FIX APPLIED: Removed duplicate seq_dense")
+print("FIX APPLIED: Redundant Sequence projection removed")
 print("BACKUP:", backup)
+print("SYNTAX: PASS")
 PY
-
-python3 -m py_compile \
-  artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py
-
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py

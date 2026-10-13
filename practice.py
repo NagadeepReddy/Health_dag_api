@@ -2,112 +2,113 @@ python - <<'PY'
 from pathlib import Path
 import ast
 import re
-import textwrap
 
 base = Path("artifacts/v1.168-max/cta_max")
-source = base / "run_real_sanity_fusion_stage_trial.py"
-trial = base / "run_real_sanity_fusion_slot_alignment.py"
+source_graph = base / "grecbase_fusion_fusion_stage_trial.py"
+source_runner = base / "run_real_sanity_fusion_stage_trial.py"
 
-if not source.is_file():
-    raise SystemExit("STOP: Existing fusion-stage runner missing")
+trial_graph = base / "grecbase_fusion_verified_wiring_trial.py"
+trial_runner = base / "run_real_sanity_verified_wiring_trial.py"
 
-code = source.read_text()
-pattern = re.compile(
-    r'(?m)^([ \t]*)print\("WORKING SOURCE AND WEIGHTS UNCHANGED", flush=True\)[ \t]*$'
-)
-matches = list(pattern.finditer(code))
+for p in (source_graph, source_runner):
+    if not p.is_file():
+        raise SystemExit(f"STOP: Existing working diagnostic missing: {p}")
 
-if len(matches) != 1:
-    raise SystemExit("STOP: Stage diagnostic insertion point not unique")
+code = source_graph.read_text()
+tree = ast.parse(code)
 
-extra = """
-print("\\n=== EXACT FUSION STACK ROOT CAUSE ===", flush=True)
-from itertools import permutations
+# Use the eight tensors already exposed by the successful
+# eight-branch comparison, in the original verified order.
+output_calls = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.Call)
+    and isinstance(n.func, ast.Attribute)
+    and isinstance(n.func.value, ast.Name)
+    and n.func.value.id == "graph"
+    and n.func.attr == "output"
+]
 
-names = (
-    "sequence", "context", "search0", "search1",
-    "task", "jet", "ihq", "sibling"
-)
+if len(output_calls) != 1:
+    raise SystemExit("STOP: Graph output not unique")
 
-pt_stack = np.asarray(stages["stacked"], dtype=np.float64)
-mx_stack = np.asarray(outputs[9].to_numpy(), dtype=np.float64)
+args = output_calls[0].args
+if len(args) == 1 and isinstance(args[0], (ast.List, ast.Tuple)):
+    args = args[0].elts
 
-assert pt_stack.shape == mx_stack.shape == (1, 8, 256), (
-    pt_stack.shape, mx_stack.shape
-)
-
-cost = np.array([
-    [
-        np.max(np.abs(pt_stack[0, i] - mx_stack[0, j]))
-        for j in range(8)
-    ]
-    for i in range(8)
-])
-
-print("\\nPYTORCH BRANCH -> CLOSEST MAX STACK SLOT")
-for i, name in enumerate(names):
-    nearest = int(np.argmin(cost[i]))
-    print(
-        f"{name:9s} expected_slot={i} "
-        f"closest_max_slot={nearest} "
-        f"closest_diff={cost[i, nearest]:.9g} "
-        f"same_slot_diff={cost[i, i]:.9g}"
+if len(args) != 13:
+    raise SystemExit(
+        f"STOP: Expected 13 verified graph outputs, found {len(args)}"
     )
 
-best = min(
-    permutations(range(8)),
-    key=lambda p: sum(cost[i, p[i]] for i in range(8))
+branches = [
+    ast.get_source_segment(code, n)
+    for n in args[1:9]
+]
+
+if len(branches) != 8 or any(x is None for x in branches):
+    raise SystemExit("STOP: Cannot safely resolve all eight branches")
+
+# This anchor is immediately before the original first fusion norm.
+anchors = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.Assign)
+    and len(n.targets) == 1
+    and isinstance(n.targets[0], ast.Name)
+    and n.targets[0].id == "stage_stacked"
+    and isinstance(n.value, ast.Name)
+    and n.value.id == "outs"
+]
+
+if len(anchors) != 1:
+    raise SystemExit("STOP: Fusion stack anchor not unique")
+
+node = anchors[0]
+lines = code.splitlines(keepends=True)
+line = lines[node.lineno - 1]
+indent = re.match(r"[ \t]*", line).group()
+
+insertion = (
+    indent + "# TRIAL: wire the eight verified branch outputs into fusion\n"
+    + indent + "outs = ops.stack([\n"
+    + "".join(indent + "    " + x + ",\n" for x in branches)
+    + indent + "], axis=1)\n"
 )
 
-print("\\nBEST ONE-TO-ONE SLOT MAPPING:", best)
-print("BEST MAPPING MAX_DIFF:",
-      float(max(cost[i, best[i]] for i in range(8))))
+lines.insert(node.lineno - 1, insertion)
+updated_graph = "".join(lines)
+ast.parse(updated_graph)
 
-print("\\nMAX BRANCH OUTPUT -> MAX FUSION STACK SLOT")
-for j, name in enumerate(names):
-    branch = np.asarray(
-        outputs[j + 1].to_numpy(),
-        dtype=np.float64
-    ).reshape(-1)
+runner = source_runner.read_text()
 
-    slot = mx_stack[0, j].reshape(-1)
+old_import = "cta_max.grecbase_fusion_fusion_stage_trial"
+new_import = "cta_max.grecbase_fusion_verified_wiring_trial"
 
-    if branch.shape != slot.shape:
-        print(name, "SHAPE MISMATCH",
-              branch.shape, slot.shape)
-    else:
-        print(
-            name,
-            "SLOT:", j,
-            "MAX_DIFF:", float(np.max(np.abs(branch - slot)))
-        )
+if runner.count(old_import) != 1:
+    raise SystemExit("STOP: Existing runner import not unique")
 
-if max(cost[i, best[i]] for i in range(8)) < 1e-3:
-    print("\\nCAUSE: STACK ORDER / PERMUTATION")
-else:
-    print("\\nCAUSE: STACK CONTENT OR WIRING; NOT JUST ORDER")
+updated_runner = runner.replace(old_import, new_import, 1)
+ast.parse(updated_runner)
 
-print("READ ONLY: ORIGINAL MODEL AND WEIGHTS UNCHANGED")
-"""
+for p, content in (
+    (trial_graph, updated_graph),
+    (trial_runner, updated_runner),
+):
+    if p.exists() and p.read_text() != content:
+        raise SystemExit(f"STOP: Existing trial differs: {p}")
 
-indent = matches[0].group(1)
-addition = textwrap.indent(textwrap.dedent(extra).strip(), indent)
+for p, content in (
+    (trial_graph, updated_graph),
+    (trial_runner, updated_runner),
+):
+    if not p.exists():
+        p.write_text(content)
+    print("READY:", p.name)
 
-updated = (
-    code[:matches[0].start()]
-    + addition + "\n"
-    + code[matches[0].start():]
-)
+print("VERIFIED BRANCH TENSORS:")
+for i, name in enumerate(branches):
+    print(i, name)
 
-ast.parse(updated, filename=str(trial))
-
-if trial.exists():
-    if trial.read_text() != updated:
-        raise SystemExit("STOP: Existing trial differs; not overwriting")
-else:
-    trial.write_text(updated)
-
-print("FUSION SLOT DIAGNOSTIC READY")
+print("ORIGINAL MAX, PYTORCH, DS AND WEIGHTS UNCHANGED")
 PY
 
 podman run --rm -i \
@@ -115,4 +116,4 @@ podman run --rm -i \
   -w /workspace \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_fusion_slot_alignment.py
+  artifacts/v1.168-max/cta_max/run_real_sanity_verified_wiring_trial.py

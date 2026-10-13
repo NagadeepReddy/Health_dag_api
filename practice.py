@@ -1,64 +1,53 @@
-python - <<'PY'
-from pathlib import Path
-import ast
-import shutil
-
-p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py")
-s = p.read_text()
-
-old = '''    for alias in aliases:
-        if alias in weights_registry:
-            existing = np.asarray(weights_registry[alias])
-            if not np.array_equal(existing, value):
-                raise RuntimeError(
-                    f"Conflicting trained weights for {alias}"
-                )
-        else:
-            weights_registry[alias] = value
-            added += 1'''
-
-new = '''    for alias in aliases:
-        if alias in weights_registry:
-            existing = np.asarray(weights_registry[alias])
-            if not np.array_equal(existing, value):
-                print(
-                    "CHECKPOINT PREFERRED OVER EXPORT:",
-                    alias,
-                    "checkpoint_shape=", existing.shape,
-                    "export_shape=", value.shape,
-                    flush=True,
-                )
-            continue
-
-        weights_registry[alias] = value
-        added += 1'''
-
-if old in s:
-    assert s.count(old) == 1
-    updated = s.replace(old, new)
-    ast.parse(updated, filename=str(p))
-
-    backup = p.with_suffix(".py.before_conflict_fix")
-    if not backup.exists():
-        shutil.copy2(p, backup)
-
-    p.write_text(updated)
-    print("WEIGHT REGISTRY MERGE FIXED")
-    print("ORIGINAL CHECKPOINT VALUES PRESERVED")
-    print("BACKUP:", backup)
-
-elif new in s:
-    print("WEIGHT REGISTRY FIX ALREADY PRESENT")
-
-else:
-    raise SystemExit(
-        "STOP: Expected registry block not found. Nothing modified."
-    )
-PY
-
 podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
+  -v "$PWD:/workspace" -w /workspace \
   --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+from pathlib import Path
+import torch
+import numpy as np
+
+base = Path("artifacts/v1.168-max/cta_max/grecbase_integration_weights")
+ckpt = torch.load(
+    "artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu", weights_only=True
+)
+if "state_dict" in ckpt:
+    ckpt = ckpt["state_dict"]
+
+print("=== EXACT WEIGHT MAPPING CHECK ===")
+
+targets = (
+    "seq_dense.bias",
+    "fused_attn_ff_proj.weight",
+)
+
+for target in targets:
+    print("\nTARGET:", target)
+    for name, value in ckpt.items():
+        if target in name:
+            arr = value.detach().cpu().numpy()
+            print("CHECKPOINT:", name, arr.shape)
+
+    for path in sorted(base.glob("*.npy")):
+        if target not in path.name:
+            continue
+        arr = np.load(path)
+        print("EXPORTED:", path.stem, arr.shape)
+
+        candidates = [
+            (name, tensor.detach().cpu().numpy())
+            for name, tensor in ckpt.items()
+            if name.endswith(target) and tensor.shape == arr.shape
+        ]
+        for name, original in candidates:
+            print(
+                "  COMPARE:", name,
+                "EXACT:", bool(np.array_equal(original, arr)),
+                "MAX_DIFF:", float(np.max(
+                    np.abs(original.astype(np.float64)
+                           - arr.astype(np.float64))
+                ))
+            )
+
+print("\nREAD ONLY — NO FILES MODIFIED")
+PY

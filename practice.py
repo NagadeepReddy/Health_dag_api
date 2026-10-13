@@ -1,35 +1,60 @@
 python - <<'PY'
 from pathlib import Path
 import ast
-import shutil
 
-p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py")
-backup = p.with_suffix(".py.before_branch_order_fix")
+base = Path("artifacts/v1.168-max/cta_max")
 
-old = "(seq, context, search0, search1, jet, ihq, sibling, task)"
-new = "(seq, context, search0, search1, task, jet, ihq, sibling)"
+names = [
+    "grecbase_fusion_order_correct_max.py",
+    "main_context_max.py",
+    "sibling_context_max.py",
+    "grecbase_aux_branches_max.py",
+    "att_pooling_max.py",
+    "grecbase_get_path_reference_max.py",
+]
 
-source = p.read_text()
+print("=== COMBINED MAX IMPLEMENTATION REVIEW ===")
 
-if old not in source:
-    if new in source:
-        print("BRANCH ORDER ALREADY CORRECT — nothing changed")
-    else:
-        print("STOP: Expected branch order not found — nothing changed")
-    raise SystemExit(0)
+for name in names:
+    p = base / name
+    print(f"\n========== {name} ==========")
 
-assert source.count(old) == 1, "Unexpected multiple occurrences"
+    if not p.exists():
+        print("NOT FOUND")
+        continue
 
-updated = source.replace(old, new)
-ast.parse(updated, filename=str(p))
+    lines = p.read_text().splitlines()
+    tree = ast.parse("\n".join(lines))
 
-if not backup.exists():
-    shutil.copy2(p, backup)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            print(f"\nFUNCTION {node.name}")
+            for line in lines[node.lineno-1:min(node.end_lineno, node.lineno+65)]:
+                print(line[:170])
 
-p.write_text(updated)
+        elif isinstance(node, ast.ClassDef):
+            print(f"\nCLASS {node.name}")
+            for child in node.body:
+                if isinstance(child, ast.FunctionDef) and child.name in (
+                    "__call__", "forward"
+                ):
+                    print(f"METHOD {child.name}")
+                    for line in lines[
+                        child.lineno-1:min(child.end_lineno, child.lineno+45)
+                    ]:
+                        print(line[:170])
 
-print("BRANCH ORDER CORRECTED")
-print("PYTHON SYNTAX: PASS")
-print("BACKUP:", backup)
-print("ORIGINAL PYTORCH/DS CODE UNCHANGED")
+print("\n=== GRAPH USAGE ===")
+for p in sorted(base.glob("*.py")):
+    if p.name in names:
+        continue
+    source = p.read_text(errors="replace")
+    for target in (
+        "grecbase_fusion_order_correct_max",
+        "real_sanity_max_branches",
+    ):
+        if target in source:
+            print(p.name, "uses", target)
+
+print("\nREAD ONLY — NOTHING MODIFIED")
 PY

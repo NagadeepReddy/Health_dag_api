@@ -1,27 +1,25 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-python3 - <<'PY'
-from pathlib import Path
-import ast
-import shutil
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import torch
 
-p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py")
-backup = p.with_name(p.name + ".before_duplicate_seq_dense_fix")
+p = "artifacts/v1.168-max/cta_max/real_sanity_model_in.pt"
+x = torch.load(p, map_location="cpu", weights_only=False)
 
-assert backup.is_file(), "STOP: Backup missing"
+print("SAVED INPUT TYPE:", type(x).__name__)
 
-current = p.read_text()
-previous = backup.read_text()
-
-assert current.count("seq = postprocess(sx2)") == 1, "STOP: Current version unexpected"
-assert previous.count("seq_raw = postprocess(sx2)") == 1, "STOP: Backup version unexpected"
-
-ast.parse(previous)
-
-shutil.copy2(backup, p)
-
-print("RESTORE SUCCESS")
-print("Previous MAX implementation restored")
-print("Python syntax PASS")
-print("Original backup preserved")
+if isinstance(x, dict):
+    print("INPUT KEYS:", list(x.keys()))
+    for name in ("v1_in", "sibling_v1_in"):
+        if name in x:
+            v = x[name]
+            print(name, "=", v.tolist() if hasattr(v, "tolist") else v)
+        else:
+            print(name, "NOT FOUND AT TOP LEVEL")
+else:
+    print("INPUT COUNT:", len(x) if hasattr(x, "__len__") else "unknown")
+    print("INPUT STRUCTURE:", [type(v).__name__ for v in x] if isinstance(x, (list, tuple)) else "other")
 PY

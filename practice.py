@@ -1,72 +1,78 @@
-podman run --rm -i -v "$PWD:/workspace" -w /workspace --entrypoint python docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+python - <<'PY'
 from pathlib import Path
 import numpy as np
-import torch
-import torch.nn.functional as F
 
 base = Path("artifacts/v1.168-max/cta_max")
-checkpoint = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
+weights = base / "grecbase_integration_weights"
 
-pt_path = base / "real_sanity_pytorch_output.npy"
-max_path = base / "real_sanity_max_output.npy"
-
-weights = torch.load(checkpoint, map_location="cpu", weights_only=True)
-if isinstance(weights, dict) and "state_dict" in weights:
-    weights = weights["state_dict"]
-
-required = [
+names = [
     "remove_tasks_dense1.weight",
     "remove_tasks_dense1.bias",
     "remove_tasks_act1.w1.weight",
-    "remove_tasks_act1.w2.weight",
     "remove_tasks_act1.w3.weight",
+    "remove_tasks_act1.w2.weight",
     "remove_tasks_dense2.weight",
 ]
 
-missing = [k for k in required if k not in weights]
-if missing:
-    raise SystemExit(f"MISSING CHECKPOINT WEIGHTS: {missing}")
+files = {n: weights / (n + ".npy") for n in names}
+missing = [n for n, p in files.items() if not p.is_file()]
 
-x = torch.from_numpy(np.load(pt_path).astype(np.float32))
-mx = np.load(max_path)
+input_file = base / "real_sanity_max_2048.npy"
 
-print("SAVED PYTORCH TENSOR:", tuple(x.shape))
-print("SAVED MAX FINAL:", mx.shape)
+print("=== FINAL GET_PATH ISOLATION ===")
+print("INPUT FOUND:", input_file.is_file())
+print("MISSING WEIGHTS:", missing)
 
-if tuple(x.shape) != (1, 2048) or mx.shape != (1, 10819):
-    raise SystemExit("UNEXPECTED SHAPES - STOP WITHOUT CHANGES")
+if not input_file.is_file() or missing:
+    print("STOP: Required saved inputs unavailable. Nothing changed.")
+    raise SystemExit(0)
 
-def linear(value, name, bias=False):
-    w = weights[name + ".weight"].float()
-    b = weights[name + ".bias"].float() if bias else None
-    return F.linear(value, w, b)
+w = {n: np.load(p).astype(np.float32) for n, p in files.items()}
+x = np.load(input_file).astype(np.float32)
 
-with torch.no_grad():
-    x = linear(x, "remove_tasks_dense1", bias=True)
-    a = linear(x, "remove_tasks_act1.w1")
-    b = linear(x, "remove_tasks_act1.w3")
-    h = linear(F.silu(a) * b, "remove_tasks_act1.w2")
-    ref = linear(h, "remove_tasks_dense2").numpy()
+assert x.shape == (1, 2048), x.shape
 
-assert ref.shape == mx.shape == (1, 10819)
+def linear(v, prefix, bias=False):
+    result = v @ w[prefix + ".weight"].T
+    if bias:
+        result = result + w[prefix + ".bias"]
+    return result
 
-diff = np.abs(ref.astype(np.float64) - mx.astype(np.float64))
-match = np.allclose(ref, mx, rtol=1e-3, atol=1e-3)
+x = linear(x, "remove_tasks_dense1", True)
+a = linear(x, "remove_tasks_act1.w1")
+b = linear(x, "remove_tasks_act1.w3")
 
-print("\n=== TRAINED FINAL-LAYER COMPARISON ===")
-print("PYTORCH FINAL SHAPE:", ref.shape)
-print("MAX FINAL SHAPE:", mx.shape)
-print("MAX DIFFERENCE:", float(diff.max()))
-print("MEAN DIFFERENCE:", float(diff.mean()))
-print("MATCH:", bool(match))
+with np.errstate(over="ignore"):
+    swish = a / (1.0 + np.exp(-a))
 
-output = base / "real_sanity_pytorch_final_from_2048_candidate.npy"
-if output.exists():
-    print("CANDIDATE ALREADY EXISTS - NOT OVERWRITING:", output)
-else:
-    np.save(output, ref)
-    print("CANDIDATE REFERENCE SAVED:", output)
+hidden = linear(swish * b, "remove_tasks_act1.w2")
+calculated = linear(hidden, "remove_tasks_dense2")
 
-print("NOTE: Confirm saved 2048 tensor is the original get_path input")
-print("ORIGINAL PYTORCH AND DS SOURCE UNCHANGED")
+print("CALCULATED SHAPE:", calculated.shape)
+print("FINITE:", bool(np.isfinite(calculated).all()))
+
+references = [
+    "real_sanity_pytorch_final_from_2048_candidate.npy",
+    "real_sanity_max_output.npy",
+]
+
+for name in references:
+    p = base / name
+    if not p.is_file():
+        print(name, "NOT FOUND")
+        continue
+
+    ref = np.load(p)
+    print("\nREFERENCE:", name)
+    print("SHAPE:", ref.shape)
+
+    if ref.shape == calculated.shape:
+        diff = np.abs(calculated.astype(np.float64) - ref)
+        print("MAX DIFF:", float(diff.max()))
+        print("MEAN DIFF:", float(diff.mean()))
+        print("MATCH:", bool(np.allclose(
+            calculated, ref, rtol=1e-3, atol=1e-3
+        )))
+
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

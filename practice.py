@@ -1,77 +1,35 @@
-podman run --rm -i -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+python - <<'PY'
 from pathlib import Path
 import ast
-import torch
 
-root = Path("artifacts/v1.168")
-source_file = root / "utils/dependency-utils/models.py"
-input_file = Path(
-    "artifacts/v1.168-max/cta_max/real_sanity_model_in.pt"
-)
+base = Path("artifacts/v1.168-max/cta_max")
+p = base / "att_pooling_max.py"
+tree = ast.parse(p.read_text())
 
-print("=== ORIGINAL PYTORCH POOLING DEFINITIONS ===")
-
-source = source_file.read_text()
-tree = ast.parse(source)
-
-found = False
+print("=== ATTENTION POOLING IMPORT CHECK ===")
 for node in ast.walk(tree):
-    if isinstance(node, (ast.Assign, ast.AnnAssign)):
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        for target in targets:
-            if isinstance(target, ast.Attribute) and target.attr in (
-                "ihq_pooling", "jet_pooling"
-            ):
-                print(f"LINE {node.lineno}:",
-                      ast.get_source_segment(source, node))
-                found = True
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        imports = [
+            n.lineno for n in ast.walk(node)
+            if isinstance(n, ast.Import)
+            and any(a.name == "numpy" for a in n.names)
+        ]
+        if imports:
+            print(f"{node.name}: local numpy imports at {imports}")
 
-if not found:
-    print("POOLING ASSIGNMENTS NOT FOUND")
-
-print("\n=== SAVED REAL PYTORCH MODEL INPUTS ===")
-
-data = torch.load(
-    input_file, map_location="cpu", weights_only=True
-)
-
-names = [
-    "deep_in", "page_in", "item_in", "item_meta_in",
-    "page_meta_wide_in", "v1_in", "task_in", "tf_name_in",
-    "sibling_wide_in", "sibling_deep_in",
-    "sibling_item_wide_in", "sibling_item_in",
-    "current_in", "current_meta_in", "wide_in",
-    "input_ids", "attention_mask"
+print("\n=== ORIGINAL PYTORCH POOLING USAGE ===")
+src = Path("artifacts/v1.168/utils/dependency-utils/models.py")
+lines = src.read_text().splitlines()
+matches = [
+    i for i, line in enumerate(lines)
+    if "ihq_pooling" in line or "jet_pooling" in line
 ]
+if not matches:
+    print("No direct pooling references found")
+for i in matches:
+    print(f"\n--- Original source around line {i+1} ---")
+    for j in range(max(0, i-4), min(len(lines), i+5)):
+        print(f"{j+1}: {lines[j]}")
 
-def describe(x):
-    if isinstance(x, torch.Tensor):
-        return f"Tensor {tuple(x.shape)} {x.dtype}"
-    if isinstance(x, dict):
-        return "dict " + str({
-            k: describe(v) for k, v in list(x.items())[:20]
-        })
-    if isinstance(x, (list, tuple)):
-        return (
-            f"{type(x).__name__}[{len(x)}] "
-            + str([describe(v) for v in x[:20]])
-        )
-    return type(x).__name__
-
-print("SAVED OBJECT:", type(data).__name__)
-
-if isinstance(data, (list, tuple)):
-    print("INPUT COUNT:", len(data))
-    for i, value in enumerate(data):
-        name = names[i] if i < len(names) else f"extra_{i}"
-        print(f"{i:02d} {name}: {describe(value)}")
-elif isinstance(data, dict):
-    for key, value in data.items():
-        print(key, describe(value))
-else:
-    print(describe(data))
-
-print("\nREAD ONLY — ORIGINAL CODE AND SAVED FILES UNCHANGED")
+print("\nREAD ONLY — NOTHING MODIFIED")
 PY

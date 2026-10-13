@@ -1,31 +1,64 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-set -e
 
 python - <<'PY'
-from pathlib import Path
 import ast
+from pathlib import Path
 
-p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py")
-s = p.read_text()
+roots = [
+    Path("artifacts/v1.168/utils"),
+    Path("artifacts/v1.168-max/cta_max"),
+]
+names = {"ParallelTransformerMAEP", "ParallelTransformerMAEPMAX"}
+terms = (
+    "item_pre", "v1_in", "embedding", "concat",
+    "transformer", "pool", "valid_len", "seq_dense"
+)
 
-old = "features(page, item, item_meta, item_pre, page_wide)"
-new = "features(page, item, item_meta, item, page_wide)"
+found = set()
 
-if s.count(old) != 1:
-    raise SystemExit("STOP: Expected graph call not found. No change.")
+for root in roots:
+    for path in root.rglob("*.py"):
+        try:
+            source = path.read_text()
+            tree = ast.parse(source)
+        except (SyntaxError, UnicodeError, OSError):
+            continue
 
-updated = s.replace(old, new, 1)
-ast.parse(updated)
-p.write_text(updated)
+        lines = source.splitlines()
 
-print("UNDEFINED VARIABLE FIXED")
-print("SEQUENCE EMBEDDING FIX PRESERVED")
-print("FUSION ORDER AND SIBLING POOLING PRESERVED")
+        for cls in ast.walk(tree):
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            if cls.name not in names:
+                continue
+
+            found.add(cls.name)
+            print(f"\n=== {cls.name} ===")
+            print("FILE:", path)
+
+            for method in cls.body:
+                if not isinstance(method, ast.FunctionDef):
+                    continue
+                if method.name not in ("forward", "__call__"):
+                    continue
+
+                print("METHOD:", method.name)
+                print(
+                    "SIGNATURE:",
+                    ast.unparse(method.args)
+                )
+
+                selected = set()
+                for n in range(method.lineno, method.end_lineno + 1):
+                    if any(t in lines[n - 1] for t in terms):
+                        selected.update(
+                            range(max(method.lineno, n - 1),
+                                  min(method.end_lineno, n + 1) + 1)
+                        )
+
+                for n in sorted(selected):
+                    print(f"{n}: {lines[n - 1]}")
+
+print("\nCLASSES FOUND:", ", ".join(sorted(found)) or "NONE")
+print("READ ONLY — ORIGINAL CODE AND WEIGHTS UNCHANGED")
 PY
-
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py

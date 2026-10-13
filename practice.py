@@ -1,155 +1,113 @@
+python - <<'PY'
+from pathlib import Path
+import ast
+import re
+import shutil
+
+base = Path("artifacts/v1.168-max/cta_max")
+p = base / "run_real_sanity_max_branch_diag.py"
+ref = base / "real_sanity_pytorch_same_input_verified.npz"
+
+if not p.is_file() or not ref.is_file():
+    raise SystemExit("STOP: Existing diagnostic or verified reference missing")
+
+s = p.read_text()
+marker = "SAME_REAL_INPUT_VERIFIED_COMPARISON"
+
+if marker in s:
+    print("VERIFIED COMPARISON ALREADY INSTALLED")
+else:
+    pattern = re.compile(
+        r'(?m)^([ \t]*)if actual\.size != expected\.size:[ \t]*$'
+    )
+    matches = list(pattern.finditer(s))
+
+    if len(matches) != 1:
+        raise SystemExit("STOP: Branch comparison location not unique")
+
+    indent = matches[0].group(1)
+
+    branch_fix = "\n".join([
+        indent + "# SAME_REAL_INPUT_VERIFIED_COMPARISON",
+        indent + 'if name in ("sequence", "sibling"):',
+        indent + '    with np.load(',
+        indent + '        BASE / "real_sanity_pytorch_same_input_verified.npz",',
+        indent + '        allow_pickle=False',
+        indent + '    ) as verified:',
+        indent + '        expected = np.asarray(verified[name], dtype=np.float32)',
+        indent + '    print(name.upper(), "REFERENCE: VERIFIED SAME REAL INPUT")',
+    ]) + "\n"
+
+    s = pattern.sub(
+        lambda m: branch_fix + m.group(0), s, count=1
+    )
+
+    anchor = 'print("\\nCURRENT BRANCH PARITY:", passed, "/8")'
+
+    if s.count(anchor) != 1:
+        raise SystemExit("STOP: Branch summary location not unique")
+
+    final_check = '''
+print("\\n=== VERIFIED SAME-INPUT FINAL MODEL PARITY ===")
+with np.load(
+    BASE / "real_sanity_pytorch_same_input_verified.npz",
+    allow_pickle=False
+) as verified:
+    pt_final = np.asarray(verified["final"], dtype=np.float32)
+
+max_final = np.asarray(outputs[0].to_numpy(), dtype=np.float32)
+
+print("PYTORCH SHAPE:", pt_final.shape)
+print("MAX SHAPE:", max_final.shape)
+
+if pt_final.shape != max_final.shape:
+    raise RuntimeError("Verified final-output shapes differ")
+
+difference = np.abs(
+    pt_final.astype(np.float64) - max_final.astype(np.float64)
+)
+
+print("VERIFIED FINAL MAX_DIFF:", float(difference.max()))
+print("VERIFIED FINAL MEAN_DIFF:", float(difference.mean()))
+print(
+    "VERIFIED FINAL MATCH:",
+    bool(np.allclose(max_final, pt_final, rtol=1e-3, atol=1e-3))
+)
+'''
+
+    m = re.search(
+        r'(?m)^([ \t]*)'
+        + re.escape(anchor)
+        + r'[ \t]*$',
+        s
+    )
+    if not m:
+        raise SystemExit("STOP: Final comparison insertion point missing")
+
+    summary_indent = m.group(1)
+    final_indented = "\n".join(
+        summary_indent + line if line else ""
+        for line in final_check.strip("\n").splitlines()
+    )
+
+    s = s[:m.end()] + "\n\n" + final_indented + s[m.end():]
+
+    ast.parse(s, filename=str(p))
+
+    backup = p.with_suffix(".py.before_verified_comparison")
+    if not backup.exists():
+        shutil.copy2(p, backup)
+
+    p.write_text(s)
+    print("VERIFIED COMPARISON ADDED")
+    print("BACKUP:", backup)
+
+print("MAX MODEL, ORIGINAL PYTORCH, DS CODE AND WEIGHTS UNCHANGED")
+PY
+
 podman run --rm -i \
   -v "$PWD:/workspace" \
   -w /workspace \
   --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-from pathlib import Path
-import sys
-import json
-import numpy as np
-import torch
-import inspect
-
-root = Path("artifacts/v1.168")
-base = Path("artifacts/v1.168-max/cta_max")
-
-config = root / "config/torch_model_params_base.json"
-nlp_config = root / "config/config.json"
-checkpoint = root / "core-artifact/model_0_base.pt"
-input_file = base / "real_sanity_model_in.pt"
-output_file = base / "real_sanity_pytorch_same_input_verified.npz"
-
-for p in (config, nlp_config, checkpoint, input_file):
-    if not p.is_file():
-        raise SystemExit(f"STOP: Required existing file missing: {p}")
-
-params = json.loads(config.read_text())
-if isinstance(params, list):
-    if len(params) != 1:
-        raise SystemExit("STOP: Unexpected model config structure")
-    params = params[0]
-
-params["nlp_encoder_path"] = str(nlp_config)
-params["transfer_ind"] = True
-params["extract_deep_idx"] = -1
-
-sys.path.insert(0, str(root / "utils/dependency-utils"))
-from models import GRecBase
-
-model = GRecBase(**params)
-
-weights = torch.load(
-    checkpoint, map_location="cpu", weights_only=True
-)
-if isinstance(weights, dict) and "state_dict" in weights:
-    weights = weights["state_dict"]
-
-model.load_state_dict(weights, strict=True)
-model.eval()
-
-saved = torch.load(
-    input_file, map_location="cpu", weights_only=True
-)
-
-seq_outputs = []
-sibling_outputs = []
-
-def capture_seq(module, args, result):
-    seq_outputs.append(result.detach().cpu())
-
-def capture_sibling(module, args, result):
-    sibling_outputs.append(result.detach().cpu())
-
-# Hook only modules verified to exist.
-if not hasattr(model, "seq_dense"):
-    raise SystemExit("STOP: Original sequence module unavailable")
-if not hasattr(model, "sibling_context_head"):
-    raise SystemExit("STOP: Original sibling module unavailable")
-
-hooks = [
-    model.seq_dense.register_forward_hook(capture_seq),
-    model.sibling_context_head.register_forward_hook(capture_sibling)
-]
-
-signature = inspect.signature(model.forward)
-kwargs = {}
-
-for name, parameter in signature.parameters.items():
-    key = "task_in" if name == "tasks_in" else name
-    if key in saved:
-        kwargs[name] = saved[key]
-    elif parameter.default is inspect.Parameter.empty:
-        raise SystemExit(f"STOP: Missing original input: {name}")
-
-try:
-    with torch.inference_mode():
-        result = model(**kwargs)
-finally:
-    for hook in hooks:
-        hook.remove()
-
-if not torch.is_tensor(result):
-    raise SystemExit("STOP: Unexpected model output type")
-if len(seq_outputs) != 1:
-    raise SystemExit(
-        f"STOP: Expected one sequence output, got {len(seq_outputs)}"
-    )
-if len(sibling_outputs) != 10:
-    raise SystemExit(
-        f"STOP: Expected ten sibling outputs, got {len(sibling_outputs)}"
-    )
-
-with torch.no_grad():
-    stacked = torch.stack(sibling_outputs, dim=1)
-
-    # Original MeanMaxPooling(axis=1) calculation.
-    sibling = torch.cat(
-        [
-            stacked.mean(dim=1),
-            stacked.max(dim=1).values
-        ],
-        dim=-1
-    )
-
-references = {
-    "sequence": seq_outputs[0].numpy().astype(np.float32),
-    "sibling": sibling.numpy().astype(np.float32),
-    "final": result.detach().cpu().numpy().astype(np.float32)
-}
-
-print("=== ORIGINAL PYTORCH / SAME REAL INPUTS ===")
-
-for name, value in references.items():
-    print(
-        name,
-        "SHAPE:", value.shape,
-        "FINITE:", bool(np.isfinite(value).all())
-    )
-    if not np.isfinite(value).all():
-        raise SystemExit("STOP: Nonfinite reference")
-
-if references["final"].shape != (1, 2048):
-    raise SystemExit(
-        f"STOP: Unexpected final shape {references['final'].shape}"
-    )
-
-if output_file.exists():
-    with np.load(output_file, allow_pickle=False) as previous:
-        same = (
-            set(previous.files) == set(references)
-            and all(
-                np.array_equal(previous[k], references[k])
-                for k in references
-            )
-        )
-    if not same:
-        raise SystemExit(
-            "STOP: Existing verified reference differs; not overwriting"
-        )
-    print("VERIFIED REFERENCE ALREADY EXISTS AND MATCHES")
-else:
-    np.savez(output_file, **references)
-    print("VERIFIED REFERENCE SAVED:", output_file)
-
-print("ORIGINAL PYTORCH, DS, MAX AND WEIGHTS UNCHANGED")
-PY
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_max_branch_diag.py

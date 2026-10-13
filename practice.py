@@ -1,107 +1,47 @@
 python - <<'PY'
 import ast
-import os
 from pathlib import Path
 
-path = Path(
-    "artifacts/v1.168-max/cta_max/sibling_context_max.py"
+root = Path("artifacts/v1.168")
+base = Path("artifacts/v1.168-max/cta_max")
+
+original = ast.parse(
+    (root/"utils/dependency-utils/models.py").read_text()
 )
-backup = path.with_name(
+maxfile = base/"main_context_max.py"
+tree = ast.parse(maxfile.read_text())
+
+print("=== ORIGINAL MAIN CONTEXT FORWARD ===")
+for cls in ast.walk(original):
+    if not isinstance(cls, ast.ClassDef):
+        continue
+    if cls.name != "ContextHead":
+        continue
+    for node in cls.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "forward":
+            for stmt in node.body:
+                print(ast.unparse(stmt).replace("\n", " ")[:500])
+
+print("\n=== MAX MAIN CONTEXT OPERATIONS ===")
+for fn in tree.body:
+    if not isinstance(fn, ast.FunctionDef):
+        continue
+    if "context" not in fn.name.lower():
+        continue
+    print("FUNCTION:", fn.name)
+    for stmt in fn.body:
+        if isinstance(stmt, ast.Assign):
+            target = ast.unparse(stmt.targets[0])
+            if target in ("deep", "wide"):
+                print(ast.unparse(stmt).replace("\n", " ")[:350])
+
+print("\n=== SIBLING FIX CONFIRMATION ===")
+p = base/"sibling_context_max.py"
+text = p.read_text()
+print("FIXED FILE EXISTS:", p.is_file())
+print("BACKUP EXISTS:", p.with_name(
     "sibling_context_max.py.before_activation_fix.bak"
-)
+).is_file())
 
-assert path.is_file(), f"Missing: {path}"
-original = path.read_text()
-tree = ast.parse(original)
-
-functions = [
-    n for n in tree.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "sibling_context_forward"
-]
-assert len(functions) == 1
-
-remove = {}
-for stmt in functions[0].body:
-    if not isinstance(stmt, ast.Assign):
-        continue
-    if len(stmt.targets) != 1:
-        continue
-    if not isinstance(stmt.targets[0], ast.Name):
-        continue
-
-    name = stmt.targets[0].id
-    expr = ast.unparse(stmt.value)
-
-    if name in ("deep", "wide") and (
-        f"ops.relu({name})" in expr
-        and f"ops.relu(-{name})" in expr
-    ):
-        assert name not in remove
-        remove[name] = (stmt.lineno, stmt.end_lineno)
-
-assert set(remove) == {"deep", "wide"}, (
-    "Expected two verified activations; refusing edit",
-    remove
-)
-
-lines = original.splitlines(keepends=True)
-deleted = set()
-
-for start, end in remove.values():
-    deleted.update(range(start, end + 1))
-
-updated = "".join(
-    line for number, line in enumerate(lines, 1)
-    if number not in deleted
-)
-
-compile(updated, str(path), "exec")
-
-# Confirm exactly those two assignments disappeared.
-new_tree = ast.parse(updated)
-new_fn = next(
-    n for n in new_tree.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "sibling_context_forward"
-)
-assert not any(
-    isinstance(s, ast.Assign)
-    and len(s.targets) == 1
-    and isinstance(s.targets[0], ast.Name)
-    and s.targets[0].id in ("deep", "wide")
-    and "ops.relu(" + s.targets[0].id + ")" in ast.unparse(s.value)
-    for s in new_fn.body
-)
-
-if backup.exists():
-    assert backup.read_text() == original, (
-        "Backup already exists with different contents; stopped"
-    )
-else:
-    backup.write_text(original)
-
-temp = path.with_name("sibling_context_max.py.parity_tmp")
-assert not temp.exists(), "Temporary file exists; stopped"
-
-try:
-    temp.write_text(updated)
-    os.replace(temp, path)
-finally:
-    if temp.exists():
-        temp.unlink()
-
-assert path.read_text() == updated
-
-print("SIBLING VERIFIED ACTIVATION FIX: SAVED")
-print("DEEP AND WIDE EXTRA ACTIVATIONS: REMOVED")
-print("MAX SOURCE SYNTAX: PASS")
-print("BACKUP:", backup)
-print("ORIGINAL PYTORCH AND DS CODE: UNCHANGED")
-
-# Next targets, without changing them.
-context = path.with_name("main_context_max.py")
-sequence = path.with_name("parallel_transformer_graph_full_sequence.py")
-print("MAIN CONTEXT FILE EXISTS:", context.is_file())
-print("SEQUENCE GRAPH EXISTS:", sequence.is_file())
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

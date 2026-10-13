@@ -1,53 +1,80 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+python - <<'PY'
 from pathlib import Path
-import torch
-import numpy as np
+import ast
+import shutil
 
-base = Path("artifacts/v1.168-max/cta_max/grecbase_integration_weights")
-ckpt = torch.load(
-    "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu", weights_only=True
-)
-if "state_dict" in ckpt:
-    ckpt = ckpt["state_dict"]
+p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py")
+s = p.read_text()
 
-print("=== EXACT WEIGHT MAPPING CHECK ===")
+anchor = "# Reuse the previously exported trained MAX weights."
 
-targets = (
-    "seq_dense.bias",
-    "fused_attn_ff_proj.weight",
-)
+mapping = '''# Map original checkpoint names to MAX graph names.
+# The PyTorch transformer has a .fn. wrapper; MAX does not.
+for key, tensor in state.items():
+    if not isinstance(tensor, torch.Tensor):
+        continue
 
-for target in targets:
-    print("\nTARGET:", target)
-    for name, value in ckpt.items():
-        if target in name:
-            arr = value.detach().cpu().numpy()
-            print("CHECKPOINT:", name, arr.shape)
+    value = tensor.detach().cpu().contiguous().numpy()
+    aliases = []
 
-    for path in sorted(base.glob("*.npy")):
-        if target not in path.name:
+    if key.startswith("sequence_transformer.ptransformer.") and ".fn." in key:
+        aliases.append(key.replace(".fn.", ".", 1))
+
+    if key.startswith("sequence_transformer.seq_dense."):
+        aliases.append(key.removeprefix("sequence_transformer."))
+
+    for alias in aliases:
+        if alias in weights_registry:
+            if not np.array_equal(np.asarray(weights_registry[alias]), value):
+                raise RuntimeError("Checkpoint alias conflict: " + alias)
+        else:
+            weights_registry[alias] = value
+
+print("CHECKPOINT TRANSFORMER ALIASES: READY", flush=True)
+
+'''
+
+old = '''    for alias in aliases:
+        if alias in weights_registry:
+            existing = np.asarray(weights_registry[alias])
+            if not np.array_equal(existing, value):
+                raise RuntimeError(
+                    f"Conflicting trained weights for {alias}"
+                )
+        else:
+            weights_registry[alias] = value
+            added += 1'''
+
+new = '''    for alias in aliases:
+        if alias in weights_registry:
+            if not np.array_equal(np.asarray(weights_registry[alias]), value):
+                print("PRESERVING CHECKPOINT WEIGHT:", alias, flush=True)
             continue
-        arr = np.load(path)
-        print("EXPORTED:", path.stem, arr.shape)
+        weights_registry[alias] = value
+        added += 1'''
 
-        candidates = [
-            (name, tensor.detach().cpu().numpy())
-            for name, tensor in ckpt.items()
-            if name.endswith(target) and tensor.shape == arr.shape
-        ]
-        for name, original in candidates:
-            print(
-                "  COMPARE:", name,
-                "EXACT:", bool(np.array_equal(original, arr)),
-                "MAX_DIFF:", float(np.max(
-                    np.abs(original.astype(np.float64)
-                           - arr.astype(np.float64))
-                ))
-            )
+if "CHECKPOINT TRANSFORMER ALIASES: READY" not in s:
+    if s.count(anchor) != 1 or s.count(old) != 1:
+        raise SystemExit("STOP: Expected runner block not found; no changes")
 
-print("\nREAD ONLY — NO FILES MODIFIED")
+    updated = s.replace(anchor, mapping + anchor, 1)
+    updated = updated.replace(old, new, 1)
+    ast.parse(updated, filename=str(p))
+
+    backup = p.with_suffix(".py.before_canonical_weight_mapping")
+    if not backup.exists():
+        shutil.copy2(p, backup)
+
+    p.write_text(updated)
+    print("WEIGHT REGISTRATION CORRECTED")
+    print("BACKUP:", backup)
+else:
+    print("WEIGHT REGISTRATION CORRECTION ALREADY PRESENT")
 PY
+
+podman run --rm -i \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py

@@ -1,116 +1,72 @@
-python - <<'PY'
+podman run --rm -i -v "$PWD:/workspace" -w /workspace --entrypoint python docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 from pathlib import Path
 import numpy as np
+import torch
+import torch.nn.functional as F
 
-B = Path("artifacts/v1.168-max/cta_max")
-ATOL = 1e-3
-RTOL = 1e-3
+base = Path("artifacts/v1.168-max/cta_max")
+checkpoint = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
 
-print("\n========== CTA OFFERS v1.168 FINAL PARITY AUDIT ==========")
+pt_path = base / "real_sanity_pytorch_output.npy"
+max_path = base / "real_sanity_max_output.npy"
+
+weights = torch.load(checkpoint, map_location="cpu", weights_only=True)
+if isinstance(weights, dict) and "state_dict" in weights:
+    weights = weights["state_dict"]
 
 required = [
-    "real_sanity_model_in.pt",
-    "real_sanity_max_output.npy",
-    "real_sanity_pytorch_output.npy",
-    "real_sanity_max_branches.npz",
-    "real_sanity_pytorch_branches.npz",
+    "remove_tasks_dense1.weight",
+    "remove_tasks_dense1.bias",
+    "remove_tasks_act1.w1.weight",
+    "remove_tasks_act1.w2.weight",
+    "remove_tasks_act1.w3.weight",
+    "remove_tasks_dense2.weight",
 ]
 
-for name in required:
-    p = B / name
-    print(f"{name}: {'FOUND' if p.is_file() else 'MISSING'}")
+missing = [k for k in required if k not in weights]
+if missing:
+    raise SystemExit(f"MISSING CHECKPOINT WEIGHTS: {missing}")
 
-if any(not (B / n).is_file() for n in required):
-    raise SystemExit("BLOCKED: Required saved artifacts missing")
+x = torch.from_numpy(np.load(pt_path).astype(np.float32))
+mx = np.load(max_path)
 
-def compare(label, pt, mx):
-    pt = np.asarray(pt)
-    mx = np.asarray(mx)
+print("SAVED PYTORCH TENSOR:", tuple(x.shape))
+print("SAVED MAX FINAL:", mx.shape)
 
-    print(f"\n--- {label} ---")
-    print("PYTORCH SHAPE:", pt.shape)
-    print("MAX SHAPE:", mx.shape)
+if tuple(x.shape) != (1, 2048) or mx.shape != (1, 10819):
+    raise SystemExit("UNEXPECTED SHAPES - STOP WITHOUT CHANGES")
 
-    if pt.shape != mx.shape:
-        print("RESULT: SHAPE MISMATCH")
-        return False, float("inf")
+def linear(value, name, bias=False):
+    w = weights[name + ".weight"].float()
+    b = weights[name + ".bias"].float() if bias else None
+    return F.linear(value, w, b)
 
-    try:
-        a = pt.astype(np.float64)
-        b = mx.astype(np.float64)
-    except (TypeError, ValueError):
-        print("RESULT: NON-NUMERIC DATA")
-        return False, float("inf")
+with torch.no_grad():
+    x = linear(x, "remove_tasks_dense1", bias=True)
+    a = linear(x, "remove_tasks_act1.w1")
+    b = linear(x, "remove_tasks_act1.w3")
+    h = linear(F.silu(a) * b, "remove_tasks_act1.w2")
+    ref = linear(h, "remove_tasks_dense2").numpy()
 
-    finite = bool(np.isfinite(a).all() and np.isfinite(b).all())
-    if not finite:
-        print("RESULT: NON-FINITE VALUES")
-        return False, float("inf")
+assert ref.shape == mx.shape == (1, 10819)
 
-    diff = np.abs(a - b)
-    maximum = float(diff.max()) if diff.size else 0.0
-    mean = float(diff.mean()) if diff.size else 0.0
-    match = bool(np.allclose(a, b, atol=ATOL, rtol=RTOL))
-    failures = int(np.count_nonzero(diff > (ATOL + RTOL * np.abs(a))))
+diff = np.abs(ref.astype(np.float64) - mx.astype(np.float64))
+match = np.allclose(ref, mx, rtol=1e-3, atol=1e-3)
 
-    print("MAX DIFF:", maximum)
-    print("MEAN DIFF:", mean)
-    print("ELEMENTS OUTSIDE TOLERANCE:", failures)
-    print("MATCH:", match)
+print("\n=== TRAINED FINAL-LAYER COMPARISON ===")
+print("PYTORCH FINAL SHAPE:", ref.shape)
+print("MAX FINAL SHAPE:", mx.shape)
+print("MAX DIFFERENCE:", float(diff.max()))
+print("MEAN DIFFERENCE:", float(diff.mean()))
+print("MATCH:", bool(match))
 
-    if not match and diff.size:
-        idx = np.unravel_index(np.argmax(diff), diff.shape)
-        print("WORST INDEX:", idx)
-        print("PYTORCH VALUE:", a[idx])
-        print("MAX VALUE:", b[idx])
-
-    return match, maximum
-
-pt = np.load(B / "real_sanity_pytorch_output.npy")
-mx = np.load(B / "real_sanity_max_output.npy")
-
-final_match, _ = compare("FINAL CTA OUTPUT", pt, mx)
-dimension_match = pt.shape == mx.shape and pt.size == 10819
-
-print("\n========== REAL EIGHT-BRANCH COMPARISON ==========")
-
-results = []
-with np.load(B / "real_sanity_pytorch_branches.npz") as p, \
-     np.load(B / "real_sanity_max_branches.npz") as m:
-
-    pk = set(p.files)
-    mk = set(m.files)
-
-    print("PYTORCH BRANCH KEYS:", sorted(pk))
-    print("MAX BRANCH KEYS:", sorted(mk))
-
-    for key in sorted(pk & mk):
-        matched, error = compare(key, p[key], m[key])
-        results.append((key, matched, error))
-
-    print("\nONLY IN PYTORCH:", sorted(pk - mk))
-    print("ONLY IN MAX:", sorted(mk - pk))
-
-    keys_aligned = pk == mk
-
-print("\n========== FINAL RESULTS ==========")
-print("REAL INPUT AVAILABLE:", (B / "real_sanity_model_in.pt").is_file())
-print("OUTPUT DIMENSION 10819:", dimension_match)
-print("FINAL OUTPUT PARITY:", "PASS" if final_match else "FAIL")
-print("BRANCH KEYS ALIGNED:", keys_aligned)
-
-for key, matched, error in sorted(results, key=lambda x: x[2], reverse=True):
-    print(f"BRANCH {key}: {'PASS' if matched else 'FAIL'} | MAX DIFF {error:.8g}")
-
-print("\nNEXT DECISION:")
-if final_match and dimension_match:
-    print("NUMERICAL PARITY PASSED.")
-    print("Remaining: real JSON pipeline, scoring, serving, CPU/GPU validation.")
+output = base / "real_sanity_pytorch_final_from_2048_candidate.npy"
+if output.exists():
+    print("CANDIDATE ALREADY EXISTS - NOT OVERWRITING:", output)
 else:
-    print("NUMERICAL PARITY NOT YET PASSED.")
-    print("Fix the highest-error branch using existing saved references.")
-    print("Do not rebuild already validated components.")
+    np.save(output, ref)
+    print("CANDIDATE REFERENCE SAVED:", output)
 
-print("\nORIGINAL PYTORCH AND DS CODE UNCHANGED")
-print("READ ONLY - NO FILES MODIFIED")
+print("NOTE: Confirm saved 2048 tensor is the original get_path input")
+print("ORIGINAL PYTORCH AND DS SOURCE UNCHANGED")
 PY

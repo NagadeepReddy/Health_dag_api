@@ -1,70 +1,54 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-set -e
 
-python3 - <<'PY'
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 from pathlib import Path
-import ast
-import shutil
+import torch, ast, shutil
 
-p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py")
+p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py")
+ckpt = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
+
+state = torch.load(ckpt, map_location="cpu", weights_only=True)
+
+outer_key = "seq_dense.bias"
+inner_key = "sequence_transformer.seq_dense.bias"
+
+assert outer_key in state, "STOP: Outer bias missing"
+assert inner_key in state, "STOP: Inner bias missing"
+
+outer = state[outer_key]
+inner = state[inner_key]
+
+assert outer.shape == inner.shape == (256,), "STOP: Unexpected bias shape"
+
+print("OUTER BIAS:", outer_key)
+print("INNER BIAS:", inner_key)
+print("BIAS MAX DIFFERENCE:",
+      (outer - inner).abs().max().item())
+
 src = p.read_text()
 
-old_ref = 'ref_path = BASE / "real_sanity_pytorch_output.npy"'
-new_ref = 'ref_path = BASE / "real_sanity_pytorch_same_input_verified.npz"'
+assert src.count(f'["{inner_key}"]') == 1, \
+    "STOP: Unexpected current source"
 
-old_load = 'np.load(ref_path, allow_pickle=False).astype(np.float32)'
-new_load = 'np.load(ref_path, allow_pickle=False)["final"].astype(np.float32)'
+updated = src.replace(
+    f'["{inner_key}"]',
+    f'["{outer_key}"]',
+    1
+)
 
-assert src.count(old_ref) == 1, "STOP: Unexpected reference"
-assert src.count(old_load) == 1, "STOP: Unexpected reference loader"
-
-src = src.replace(old_ref, new_ref)
-src = src.replace(old_load, new_load)
-
-lines = src.splitlines(keepends=True)
-
-a = [i for i, x in enumerate(lines)
-     if 'saved = BASE / "real_sanity_max_2048_full_runner.npy"' in x]
-b = [i for i, x in enumerate(lines)
-     if 'if result.shape == (1, 10819):' in x]
-
-assert len(a) == len(b) == 1, "STOP: Unexpected save block"
-a, b = a[0], b[0]
-assert 5 <= b - a <= 12, "STOP: Unexpected block size"
-
-block = "".join(lines[a:b])
-assert "if not saved.exists():" in block
-assert "np.save(saved, result)" in block
-assert "EXISTING OUTPUT PRESERVED:" in block
-
-indent = lines[a][:len(lines[a]) - len(lines[a].lstrip())]
-
-replacement = [
-    indent + 'saved = BASE / "real_sanity_max_2048_verified_latest.npy"\n',
-    indent + 'np.save(saved, result)\n',
-    indent + 'print("CURRENT MAX OUTPUT SAVED:", saved)\n',
-    '\n'
-]
-
-updated = "".join(lines[:a] + replacement + lines[b:])
 ast.parse(updated)
 
-backup = p.with_name(p.name + ".before_verified_reference_fix")
+backup = p.with_name(p.name + ".before_outer_seq_bias_fix")
 assert not backup.exists(), "STOP: Backup already exists"
 
 shutil.copy2(p, backup)
 p.write_text(updated)
 
-print("RUNNER FIX: PASS")
-print("Verified PyTorch reference selected")
-print("Latest MAX output will be saved")
-print("Original MAX graph unchanged")
-print("Python syntax: PASS")
+print("FIX APPLIED: Outer Sequence bias corrected")
+print("BACKUP:", backup)
+print("PYTHON SYNTAX: PASS")
+print("72-INPUT MAPPING: UNCHANGED")
 PY
-
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py

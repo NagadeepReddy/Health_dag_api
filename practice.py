@@ -1,34 +1,38 @@
 python - <<'PY'
-from pathlib import Path
 import ast
+from pathlib import Path
 
-root = Path("artifacts/v1.168")
-pipeline = root / "core-artifact/pipeline.py"
-models = root / "utils/dependency-utils/models.py"
+original = Path("artifacts/v1.168/utils/dependency-utils/models.py")
+target = Path("artifacts/v1.168-max/cta_max/grecbase_get_path_max.py")
 
-for path in (pipeline, models):
-    lines = path.read_text().splitlines()
-    tree = ast.parse("\n".join(lines))
-    print("\n===", path.name, "===")
+tree = ast.parse(original.read_text())
+cls = next(n for n in ast.walk(tree)
+           if isinstance(n, ast.ClassDef) and n.name == "GRecBase")
+fn = next(n for n in cls.body
+          if isinstance(n, ast.FunctionDef) and n.name == "get_path")
 
-    if path == pipeline:
-        terms = ("model_base", "model_in", "model_response",
-                 "get_path(", "predict_raw(", "remove_tasks_dense")
-        hits = [i for i, s in enumerate(lines)
-                if any(t in s for t in terms)]
-        selected = set()
-        for i in hits:
-            selected.update(range(max(0, i-2), min(len(lines), i+4)))
-        for i in sorted(selected):
-            print(f"{i+1}: {lines[i][:180]}")
-    else:
-        for cls in ast.walk(tree):
-            if isinstance(cls, ast.ClassDef) and cls.name == "GRecBase":
-                for fn in cls.body:
-                    if isinstance(fn, ast.FunctionDef) and fn.name in ("forward", "get_path"):
-                        print(f"\nGRecBase.{fn.name}:")
-                        for i in range(max(fn.lineno-1, fn.end_lineno-22), fn.end_lineno):
-                            print(f"{i+1}: {lines[i][:180]}")
+original_method = ast.get_source_segment(original.read_text(), fn)
+assert "self.remove_tasks_act1(task_out)" in original_method
+assert "remove_tasks_dense2" not in original_method
 
-print("\nREAD ONLY — NOTHING MODIFIED")
+source = target.read_text()
+old = 'return linear(hidden, "remove_tasks_dense2")'
+new = 'return hidden'
+
+assert source.count(old) == 1, "STOP: MAX source differs from expected"
+
+backup = target.with_name(target.name + ".before_output_fix.bak")
+assert not backup.exists(), "STOP: backup already exists"
+
+backup.write_text(source)
+updated = source.replace(old, new, 1)
+ast.parse(updated)
+target.write_text(updated)
+
+print("ORIGINAL PYTORCH GET_PATH VERIFIED: PASS")
+print("INCORRECT EXTRA MAX OUTPUT LAYER: REMOVED")
+print("EXPECTED OUTPUT DIMENSION: 2048")
+print("MAX SOURCE SYNTAX: PASS")
+print("BACKUP:", backup)
+print("ORIGINAL PYTORCH AND DS CODE: UNCHANGED")
 PY

@@ -1,28 +1,21 @@
 python - <<'PY'
 from pathlib import Path
 
-p = Path("artifacts/v1.168/core-artifact/pipeline.py")
-lines = p.read_text().splitlines()
+base = Path("artifacts/v1.168-max/cta_max")
 
-print("=== ORIGINAL MODEL LOADING AND EXECUTION ===")
-terms = (
-    "GRecBase(",
-    "loadBaseModel(",
-    "load_state_dict(",
-    "model.eval(",
-    "self.model(",
-    "model_in",
-)
+print("=== EXISTING REAL INPUT / REFERENCE ARTIFACTS ===")
 
-seen = set()
-for i, line in enumerate(lines):
-    if any(t in line for t in terms):
-        lo, hi = max(0, i-5), min(len(lines), i+9)
-        for j in range(lo, hi):
-            if j not in seen:
-                print(f"{j+1}: {lines[j]}")
-                seen.add(j)
-        print("---")
+terms = ("sanity", "real", "reference", "model_in", "input_bundle", "pytorch")
 
-print("READ ONLY — NO FILES MODIFIED")
+found = []
+for p in base.rglob("*"):
+    if p.is_file() and p.suffix in (".npz", ".pt", ".pth", ".npy"):
+        if any(term in p.name.lower() for term in terms):
+            found.append(p)
+
+for p in sorted(found):
+    print(p)
+
+print("MATCHING FILES:", len(found))
+print("READ ONLY — NOTHING MODIFIED")
 PY

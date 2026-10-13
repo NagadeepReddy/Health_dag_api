@@ -10,26 +10,23 @@ source = p.read_text()
 
 old = "sibling = ops.concat([ops.mean(sibling_stack, axis=1), ops.max(sibling_stack, axis=1)], axis=1)"
 
-new = """sibling_valid_len = ops.cast(
-        ops.reshape(remaining[65], [1, 1]), DType.float32
-    )
-    sibling_mean = ops.sum(sibling_stack, axis=1) / (
-        sibling_valid_len
-        + ops.constant(1e-7, dtype=DType.float32, device=device)
-    )
-    sibling = ops.concat(
-        [sibling_mean, ops.max(sibling_stack, axis=1)],
-        axis=1
-    )"""
+new = (
+    "sibling = ops.concat(["
+    "ops.sum(sibling_stack, axis=1) / "
+    "(ops.cast(ops.reshape(remaining[65], [1, 1]), DType.float32) "
+    "+ ops.constant(1e-7, dtype=DType.float32, device=device)), "
+    "ops.max(sibling_stack, axis=1)"
+    "], axis=1)"
+)
 
 if source.count(old) != 1:
-    raise SystemExit("STOP: Expected Sibling pooling expression not found exactly once. No changes.")
+    raise SystemExit("STOP: Expected original pooling line not found. No changes.")
 
-if source.count("sibling_inputs = remaining[25:65]") != 1:
-    raise SystemExit("STOP: Sibling input mapping differs. No changes.")
+if "sibling_inputs = remaining[25:65]" not in source:
+    raise SystemExit("STOP: Input mapping differs. No changes.")
 
 updated = source.replace(old, new, 1)
-ast.parse(updated)
+ast.parse(updated, filename=str(p))
 
 backup = p.with_suffix(".py.before_sibling_pooling_fix")
 if not backup.exists():
@@ -37,10 +34,9 @@ if not backup.exists():
 
 p.write_text(updated)
 
-print("ACTUAL MAX SIBLING POOLING UPDATED")
-print("SUM / VALID LENGTH + MAX")
-print("FUSION ORDER, PYTORCH, DS, WEIGHTS UNCHANGED")
-print("BACKUP:", backup)
+print("SIBLING POOLING FIXED IN ACTUAL MAX GRAPH")
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL PYTORCH AND WEIGHTS UNCHANGED")
 PY
 
 if [ $? -eq 0 ]; then

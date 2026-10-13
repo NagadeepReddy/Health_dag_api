@@ -1,78 +1,102 @@
-python - <<'PY'
+podman run --rm -i -v "$PWD:/workspace" -w /workspace --entrypoint python docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import sys
+import importlib
 from pathlib import Path
 import numpy as np
+import torch
+import torch.nn.functional as F
 
-base = Path("artifacts/v1.168-max/cta_max")
-weights = base / "grecbase_integration_weights"
+from max.dtype import DType
+from max.graph import Graph, TensorType, DeviceRef
+from max.driver import CPU, Tensor
+from max.engine import InferenceSession
 
-names = [
+root = Path("artifacts/v1.168-max/cta_max")
+sys.path.insert(0, str(root.parent))
+gp = importlib.import_module("cta_max.grecbase_get_path_max")
+
+checkpoint = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
+input_file = root / "real_sanity_max_2048.npy"
+
+required = [
     "remove_tasks_dense1.weight",
     "remove_tasks_dense1.bias",
     "remove_tasks_act1.w1.weight",
-    "remove_tasks_act1.w3.weight",
     "remove_tasks_act1.w2.weight",
+    "remove_tasks_act1.w3.weight",
     "remove_tasks_dense2.weight",
 ]
 
-files = {n: weights / (n + ".npy") for n in names}
-missing = [n for n, p in files.items() if not p.is_file()]
+state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+if "state_dict" in state:
+    state = state["state_dict"]
 
-input_file = base / "real_sanity_max_2048.npy"
+missing = [k for k in required if k not in state]
+if missing:
+    raise RuntimeError(f"Missing checkpoint keys: {missing}")
 
-print("=== FINAL GET_PATH ISOLATION ===")
-print("INPUT FOUND:", input_file.is_file())
-print("MISSING WEIGHTS:", missing)
-
-if not input_file.is_file() or missing:
-    print("STOP: Required saved inputs unavailable. Nothing changed.")
-    raise SystemExit(0)
-
-w = {n: np.load(p).astype(np.float32) for n, p in files.items()}
+assert input_file.is_file(), f"Missing saved input: {input_file}"
 x = np.load(input_file).astype(np.float32)
+assert x.shape == (1, 2048), f"Unexpected input shape: {x.shape}"
 
-assert x.shape == (1, 2048), x.shape
+dest = Path(gp.WEIGHTS)
+assert dest.resolve().is_relative_to(root.resolve()), (
+    f"Unexpected MAX weight location: {dest}"
+)
 
-def linear(v, prefix, bias=False):
-    result = v @ w[prefix + ".weight"].T
-    if bias:
-        result = result + w[prefix + ".bias"]
-    return result
+# Verify all existing files before writing anything.
+for key in required:
+    path = dest / (key + ".npy")
+    expected = state[key].detach().cpu().numpy().astype(np.float32)
+    if path.exists():
+        actual = np.load(path)
+        if not np.array_equal(actual, expected):
+            raise RuntimeError(f"Existing weight differs: {path}")
 
-x = linear(x, "remove_tasks_dense1", True)
-a = linear(x, "remove_tasks_act1.w1")
-b = linear(x, "remove_tasks_act1.w3")
+dest.mkdir(parents=True, exist_ok=True)
+created = []
+for key in required:
+    path = dest / (key + ".npy")
+    if not path.exists():
+        np.save(path, state[key].detach().cpu().numpy().astype(np.float32))
+        created.append(key)
 
-with np.errstate(over="ignore"):
-    swish = a / (1.0 + np.exp(-a))
+print("WEIGHTS READY:", len(required))
+print("NEW WEIGHT FILES:", created)
 
-hidden = linear(swish * b, "remove_tasks_act1.w2")
-calculated = linear(hidden, "remove_tasks_dense2")
+def linear(v, name, bias=False):
+    w = state[name + ".weight"].float()
+    b = state[name + ".bias"].float() if bias else None
+    return F.linear(v, w, b)
 
-print("CALCULATED SHAPE:", calculated.shape)
-print("FINITE:", bool(np.isfinite(calculated).all()))
+with torch.no_grad():
+    t = torch.from_numpy(x)
+    t = linear(t, "remove_tasks_dense1", bias=True)
+    a = linear(t, "remove_tasks_act1.w1")
+    b = linear(t, "remove_tasks_act1.w3")
+    t = linear(F.silu(a) * b, "remove_tasks_act1.w2")
+    pytorch_out = linear(t, "remove_tasks_dense2").numpy()
 
-references = [
-    "real_sanity_pytorch_final_from_2048_candidate.npy",
-    "real_sanity_max_output.npy",
-]
+device = CPU()
+device_ref = DeviceRef.from_device(device)
 
-for name in references:
-    p = base / name
-    if not p.is_file():
-        print(name, "NOT FOUND")
-        continue
+with Graph(
+    "cta_get_path_isolated_parity",
+    input_types=[TensorType(DType.float32, [1, 2048], device_ref)],
+) as graph:
+    graph.output(gp.grecbase_get_path_max(graph.inputs[0], device_ref))
 
-    ref = np.load(p)
-    print("\nREFERENCE:", name)
-    print("SHAPE:", ref.shape)
+session = InferenceSession(devices=[device])
+model = session.load(graph)
+max_out = model.execute(Tensor.from_numpy(x))[0].to_numpy()
 
-    if ref.shape == calculated.shape:
-        diff = np.abs(calculated.astype(np.float64) - ref)
-        print("MAX DIFF:", float(diff.max()))
-        print("MEAN DIFF:", float(diff.mean()))
-        print("MATCH:", bool(np.allclose(
-            calculated, ref, rtol=1e-3, atol=1e-3
-        )))
+diff = np.abs(pytorch_out.astype(np.float64) - max_out.astype(np.float64))
 
-print("\nREAD ONLY — NO FILES MODIFIED")
+print("\n=== ISOLATED FINAL GET_PATH PARITY ===")
+print("PYTORCH SHAPE:", pytorch_out.shape)
+print("MAX SHAPE:", max_out.shape)
+print("MAX DIFFERENCE:", float(diff.max()))
+print("MEAN DIFFERENCE:", float(diff.mean()))
+print("MATCH:", bool(np.allclose(pytorch_out, max_out, rtol=1e-3, atol=1e-3)))
+print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
 PY

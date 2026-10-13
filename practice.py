@@ -1,55 +1,77 @@
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+python - <<'PY'
 from pathlib import Path
-import numpy as np
-import torch
+import ast
+import re
+import shutil
 
-base = Path("artifacts/v1.168-max/cta_max")
-
-data = torch.load(
-    base / "real_sanity_model_in.pt",
-    map_location="cpu", weights_only=True
+p = Path(
+    "artifacts/v1.168-max/cta_max/"
+    "run_real_sanity_max_branch_diag.py"
 )
-weights = torch.load(
-    "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu", weights_only=True
+
+source = p.read_text()
+marker = "TASK_REFERENCE_ALIGNED_TO_REAL_INPUTS"
+
+pattern = re.compile(
+    r'(?m)^([ \t]*)expected = np\.asarray'
+    r'\(references\[name\], dtype=np\.float32\)[ \t]*$'
 )
-if "state_dict" in weights:
-    weights = weights["state_dict"]
 
-with np.load(
-    base / "real_sanity_pytorch_branches.npz",
-    allow_pickle=False
-) as saved:
-    ref = saved["task"].reshape(-1).astype(np.float32)
+if marker in source:
+    print("TASK COMPARISON ALREADY CORRECTED")
+else:
+    matches = list(pattern.finditer(source))
+    if len(matches) != 1:
+        raise SystemExit(
+            "STOP: Expected comparison not found. No changes."
+        )
 
-print("=== TASK REFERENCE INPUT IDENTIFICATION ===")
-offset = 0
+    indent = matches[0].group(1)
+    lines = [
+        "# TASK_REFERENCE_ALIGNED_TO_REAL_INPUTS",
+        'if name == "task":',
+        '    real = torch.load(',
+        '        BASE / "real_sanity_model_in.pt",',
+        '        map_location="cpu", weights_only=True',
+        '    )',
+        '    ids = real["task_in"]',
+        '    assert len(ids) == 2',
+        '    parts = [',
+        '        torch.nn.functional.embedding(',
+        '            ids[i].long(),',
+        '            state[f"task_embedding.{i}.weight"].float()',
+        '        ).reshape(1, -1).detach().cpu().numpy()',
+        '        for i in range(2)',
+        '    ]',
+        '    expected = np.concatenate(parts, axis=1).astype(np.float32)',
+        '    print("TASK REFERENCE: SAME REAL INPUT AND CHECKPOINT")',
+        'else:',
+        '    expected = np.asarray(references[name], dtype=np.float32)',
+    ]
 
-for i in range(2):
-    w = weights[f"task_embedding.{i}.weight"].cpu().numpy()
-    dim = w.shape[1]
-    chunk = ref[offset:offset + dim]
-    offset += dim
+    replacement = "\n".join(indent + line for line in lines)
 
-    if chunk.size != dim:
-        raise SystemExit("STOP: Reference dimension mismatch")
-
-    differences = np.max(
-        np.abs(w.astype(np.float64) - chunk.astype(np.float64)),
-        axis=1
+    updated = pattern.sub(
+        lambda m: replacement, source, count=1
     )
-    closest = int(np.argmin(differences))
-    actual = int(data["task_in"][i].reshape(-1)[0])
 
-    print(f"TASK {i}")
-    print("  CURRENT REAL INPUT ID:", actual)
-    print("  SAVED REFERENCE CLOSEST ID:", closest)
-    print("  CLOSEST WEIGHT DIFFERENCE:", float(differences[closest]))
-    print("  SAME ID:", actual == closest)
+    ast.parse(updated, filename=str(p))
 
-assert offset == ref.size, "Unexpected reference layout"
-print("READ ONLY — NOTHING MODIFIED")
+    backup = p.with_suffix(".py.before_task_reference_alignment")
+    if not backup.exists():
+        shutil.copy2(p, backup)
+
+    p.write_text(updated)
+
+    print("TASK DIAGNOSTIC REFERENCE ALIGNED")
+    print("BACKUP:", backup)
+
+print("MODEL, CHECKPOINT, SAVED REFERENCES AND DS CODE UNCHANGED")
 PY
+
+podman run --rm -i \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_max_branch_diag.py

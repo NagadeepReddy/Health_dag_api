@@ -1,54 +1,71 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+set -e
 
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+python3 - <<'PY'
 from pathlib import Path
-import torch, ast, shutil
+import ast
 
-p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py")
-ckpt = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
+base = Path("artifacts/v1.168-max/cta_max")
 
-state = torch.load(ckpt, map_location="cpu", weights_only=True)
+graph = base / "grecbase_fusion_order_correct_max.py"
+runner = base / "run_real_sanity_max_full.py"
 
-outer_key = "seq_dense.bias"
-inner_key = "sequence_transformer.seq_dense.bias"
+new_graph = base / "grecbase_fusion_full_head_72_max.py"
+new_runner = base / "run_real_sanity_full_head_72.py"
 
-assert outer_key in state, "STOP: Outer bias missing"
-assert inner_key in state, "STOP: Inner bias missing"
+assert not new_graph.exists(), "STOP: Final graph already exists"
+assert not new_runner.exists(), "STOP: Final runner already exists"
 
-outer = state[outer_key]
-inner = state[inner_key]
+g = graph.read_text()
+r = runner.read_text()
 
-assert outer.shape == inner.shape == (256,), "STOP: Unexpected bias shape"
+# Replace the 2048 reference output adapter
+# with the existing native MAX final task head.
+old_head = "grecbase_get_path_reference_max"
+new_head = "grecbase_get_path_max"
 
-print("OUTER BIAS:", outer_key)
-print("INNER BIAS:", inner_key)
-print("BIAS MAX DIFFERENCE:",
-      (outer - inner).abs().max().item())
+assert g.count(old_head) == 3, "STOP: Unexpected head wiring"
 
-src = p.read_text()
+g = g.replace(old_head, new_head)
 
-assert src.count(f'["{inner_key}"]') == 1, \
-    "STOP: Unexpected current source"
+# Reuse the working 72-input runner.
+old_import = "grecbase_fusion_order_correct_max"
+new_import = "grecbase_fusion_full_head_72_max"
 
-updated = src.replace(
-    f'["{inner_key}"]',
-    f'["{outer_key}"]',
+assert r.count(old_import) == 1, "STOP: Unexpected graph import"
+
+r = r.replace(old_import, new_import)
+
+# Save actual final model output for later E2E validation.
+marker = "    if result.shape == (1, 10819):"
+assert r.count(marker) == 1, "STOP: Unexpected output block"
+
+r = r.replace(
+    marker,
+    marker + """
+        final_path = BASE / "real_sanity_max_10819_latest.npy"
+        np.save(final_path, result)
+        print("FINAL HEAD OUTPUT SAVED:", final_path)
+""",
     1
 )
 
-ast.parse(updated)
+ast.parse(g)
+ast.parse(r)
 
-backup = p.with_name(p.name + ".before_outer_seq_bias_fix")
-assert not backup.exists(), "STOP: Backup already exists"
+new_graph.write_text(g)
+new_runner.write_text(r)
 
-shutil.copy2(p, backup)
-p.write_text(updated)
-
-print("FIX APPLIED: Outer Sequence bias corrected")
-print("BACKUP:", backup)
+print("FINAL MAX GRAPH: READY")
+print("EXISTING TRAINED HEAD: REUSED")
+print("72-INPUT GRAPH: PRESERVED")
+print("ORIGINAL FILES: UNCHANGED")
 print("PYTHON SYNTAX: PASS")
-print("72-INPUT MAPPING: UNCHANGED")
 PY
+
+podman run --rm -i \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_full_head_72.py

@@ -3,39 +3,29 @@ from pathlib import Path
 import ast
 import shutil
 
-p = Path(
-    "artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py"
-)
-s = p.read_text()
+p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py")
+source = p.read_text()
 
-old = '''    if key.startswith("sequence_transformer.seq_dense."):
-        aliases.append(key.removeprefix("sequence_transformer."))
+old = "    result = np.asarray(output)"
+new = "    result = np.asarray(output, dtype=np.float32)"
 
-'''
+if source.count(old) == 1:
+    updated = source.replace(old, new, 1)
+    ast.parse(updated, filename=str(p))
 
-if old not in s:
-    raise SystemExit(
-        "STOP: Expected incorrect alias block not found. "
-        "Nothing changed."
-    )
+    backup = p.with_suffix(".py.before_output_dtype_fix")
+    if not backup.exists():
+        shutil.copy2(p, backup)
 
-if s.count(old) != 1:
-    raise SystemExit("STOP: Unexpected duplicate alias blocks.")
+    p.write_text(updated)
+    print("MAX OUTPUT CONVERSION FIXED")
+    print("BACKUP:", backup)
+elif new in source:
+    print("MAX OUTPUT CONVERSION ALREADY FIXED")
+else:
+    raise SystemExit("STOP: Expected output line not found; nothing changed")
 
-updated = s.replace(old, "", 1)
-ast.parse(updated, filename=str(p))
-
-backup = p.with_suffix(".py.before_seq_dense_alias_fix")
-if not backup.exists():
-    shutil.copy2(p, backup)
-
-p.write_text(updated)
-
-print("UNNECESSARY SEQ_DENSE ALIAS REMOVED")
-print("TRANSFORMER .fn. MAPPING PRESERVED")
-print("EXISTING TRAINED WEIGHTS UNCHANGED")
-print("PYTHON SYNTAX: PASS")
-print("BACKUP:", backup)
+print("ORIGINAL PYTORCH/DS FILES UNCHANGED")
 PY
 
 podman run --rm -i \

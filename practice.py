@@ -1,60 +1,77 @@
-python - <<'PY'
+podman run --rm -i -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 from pathlib import Path
 import ast
+import torch
 
-base = Path("artifacts/v1.168-max/cta_max")
+root = Path("artifacts/v1.168")
+source_file = root / "utils/dependency-utils/models.py"
+input_file = Path(
+    "artifacts/v1.168-max/cta_max/real_sanity_model_in.pt"
+)
+
+print("=== ORIGINAL PYTORCH POOLING DEFINITIONS ===")
+
+source = source_file.read_text()
+tree = ast.parse(source)
+
+found = False
+for node in ast.walk(tree):
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Attribute) and target.attr in (
+                "ihq_pooling", "jet_pooling"
+            ):
+                print(f"LINE {node.lineno}:",
+                      ast.get_source_segment(source, node))
+                found = True
+
+if not found:
+    print("POOLING ASSIGNMENTS NOT FOUND")
+
+print("\n=== SAVED REAL PYTORCH MODEL INPUTS ===")
+
+data = torch.load(
+    input_file, map_location="cpu", weights_only=True
+)
 
 names = [
-    "grecbase_fusion_order_correct_max.py",
-    "main_context_max.py",
-    "sibling_context_max.py",
-    "grecbase_aux_branches_max.py",
-    "att_pooling_max.py",
-    "grecbase_get_path_reference_max.py",
+    "deep_in", "page_in", "item_in", "item_meta_in",
+    "page_meta_wide_in", "v1_in", "task_in", "tf_name_in",
+    "sibling_wide_in", "sibling_deep_in",
+    "sibling_item_wide_in", "sibling_item_in",
+    "current_in", "current_meta_in", "wide_in",
+    "input_ids", "attention_mask"
 ]
 
-print("=== COMBINED MAX IMPLEMENTATION REVIEW ===")
+def describe(x):
+    if isinstance(x, torch.Tensor):
+        return f"Tensor {tuple(x.shape)} {x.dtype}"
+    if isinstance(x, dict):
+        return "dict " + str({
+            k: describe(v) for k, v in list(x.items())[:20]
+        })
+    if isinstance(x, (list, tuple)):
+        return (
+            f"{type(x).__name__}[{len(x)}] "
+            + str([describe(v) for v in x[:20]])
+        )
+    return type(x).__name__
 
-for name in names:
-    p = base / name
-    print(f"\n========== {name} ==========")
+print("SAVED OBJECT:", type(data).__name__)
 
-    if not p.exists():
-        print("NOT FOUND")
-        continue
+if isinstance(data, (list, tuple)):
+    print("INPUT COUNT:", len(data))
+    for i, value in enumerate(data):
+        name = names[i] if i < len(names) else f"extra_{i}"
+        print(f"{i:02d} {name}: {describe(value)}")
+elif isinstance(data, dict):
+    for key, value in data.items():
+        print(key, describe(value))
+else:
+    print(describe(data))
 
-    lines = p.read_text().splitlines()
-    tree = ast.parse("\n".join(lines))
-
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            print(f"\nFUNCTION {node.name}")
-            for line in lines[node.lineno-1:min(node.end_lineno, node.lineno+65)]:
-                print(line[:170])
-
-        elif isinstance(node, ast.ClassDef):
-            print(f"\nCLASS {node.name}")
-            for child in node.body:
-                if isinstance(child, ast.FunctionDef) and child.name in (
-                    "__call__", "forward"
-                ):
-                    print(f"METHOD {child.name}")
-                    for line in lines[
-                        child.lineno-1:min(child.end_lineno, child.lineno+45)
-                    ]:
-                        print(line[:170])
-
-print("\n=== GRAPH USAGE ===")
-for p in sorted(base.glob("*.py")):
-    if p.name in names:
-        continue
-    source = p.read_text(errors="replace")
-    for target in (
-        "grecbase_fusion_order_correct_max",
-        "real_sanity_max_branches",
-    ):
-        if target in source:
-            print(p.name, "uses", target)
-
-print("\nREAD ONLY — NOTHING MODIFIED")
+print("\nREAD ONLY — ORIGINAL CODE AND SAVED FILES UNCHANGED")
 PY

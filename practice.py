@@ -1,33 +1,64 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
 python3 - <<'PY'
-import ast
 from pathlib import Path
+import ast
+import shutil
 
-b = Path("artifacts/v1.168-max/cta_max")
-g = b / "grecbase_fusion_full_head_72_max.py"
-r = b / "run_real_sanity_full_head_72.py"
+p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_input_adapter.py")
+src = p.read_text()
 
-tree = ast.parse(g.read_text())
-runner = ast.parse(r.read_text())
+old_def = "def build_real_inputs():"
+assert src.count(old_def) == 1, "STOP: Unexpected function signature"
 
-print("=== INTEGRATED GRAPH ===")
-for node in ast.walk(tree):
-    if isinstance(node, ast.Call):
-        fn = ast.unparse(node.func)
-        if fn in ("graph.output",
-                  "grecbase_get_path_max",
-                  "grecbase_get_path_reference_max"):
-            print(node.lineno, ast.unparse(node))
+tree = ast.parse(src)
+fn = next(
+    n for n in tree.body
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "build_real_inputs"
+)
 
-print("=== RUNNER IMPORT ===")
-for node in ast.walk(runner):
-    if isinstance(node, ast.ImportFrom):
-        if "grecbase" in (node.module or ""):
-            print(node.lineno, ast.unparse(node))
+calls = [
+    n for n in ast.walk(fn)
+    if isinstance(n, ast.Call)
+    and isinstance(n.func, ast.Attribute)
+    and isinstance(n.func.value, ast.Name)
+    and n.func.value.id == "torch"
+    and n.func.attr == "load"
+]
 
-print("=== RUNNER OUTPUT SELECTION ===")
-for i, line in enumerate(r.read_text().splitlines(), 1):
-    if "model.execute(" in line or "outputs[0]" in line or "enumerate(outputs)" in line:
-        print(i, line.strip())
+assert len(calls) == 1, "STOP: Unexpected saved-input loader"
+
+node = calls[0]
+lines = src.splitlines(keepends=True)
+
+start = sum(map(len, lines[:node.lineno - 1])) + node.col_offset
+end = sum(map(len, lines[:node.end_lineno - 1])) + node.end_col_offset
+
+original = src[start:end]
+
+updated = (
+    src[:start]
+    + "(model_in if model_in is not None else " + original + ")"
+    + src[end:]
+)
+
+updated = updated.replace(
+    old_def,
+    "def build_real_inputs(model_in=None):",
+    1
+)
+
+ast.parse(updated)
+
+backup = p.with_name(p.name + ".before_live_input_support")
+assert not backup.exists(), "STOP: Backup already exists"
+
+shutil.copy2(p, backup)
+p.write_text(updated)
+
+print("LIVE INPUT SUPPORT: READY")
+print("SAVED INPUT BEHAVIOR: PRESERVED")
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL DS/PIPELINE: UNCHANGED")
 PY

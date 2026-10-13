@@ -1,110 +1,107 @@
-set -e
+cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
 python - <<'PY'
 from pathlib import Path
 import ast
 import shutil
 
-base = Path("artifacts/v1.168-max/cta_max")
-path = base / "grecbase_fusion_order_correct_max.py"
-runner = base / "run_real_sanity_max_full.py"
+p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py")
+runner = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py")
 
-if not path.is_file() or not runner.is_file():
-    raise SystemExit("STOP: Actual MAX graph or full runner missing")
+if not p.is_file() or not runner.is_file():
+    raise SystemExit("STOP: Actual MAX graph or runner missing")
 
-source = path.read_text()
+source = p.read_text()
 tree = ast.parse(source)
 
-old_order = [
-    "seq", "context", "search0", "search1",
-    "task", "jet", "ihq", "sibling"
-]
+old = ["seq", "context", "search0", "search1",
+       "task", "jet", "ihq", "sibling"]
 
-correct_order = [
-    "seq", "context", "search0", "search1",
-    "jet", "ihq", "sibling", "task"
-]
+correct = ["seq", "context", "search0", "search1",
+           "jet", "ihq", "sibling", "task"]
 
-matches = []
+lines = source.splitlines(keepends=True)
+
+def offset(line, col):
+    return sum(map(len, lines[:line-1])) + col
+
+def branch_name(expr):
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if (isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and expr.func.attr == "reshape"
+        and expr.args):
+        return branch_name(expr.args[0])
+    return None
+
+changes = []
 
 for node in ast.walk(tree):
     if not isinstance(node, ast.Assign):
         continue
-
-    if not any(
-        isinstance(t, ast.Name) and t.id == "outs"
-        for t in node.targets
-    ):
+    if not any(isinstance(t, ast.Name) and t.id == "outs"
+               for t in node.targets):
         continue
 
-    value = node.value
-    if not (
-        isinstance(value, ast.Call)
-        and isinstance(value.func, ast.Attribute)
-        and value.func.attr == "concat"
-        and value.args
-        and isinstance(value.args[0], ast.ListComp)
-    ):
+    call = node.value
+    if not (isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr in ("stack", "concat")
+            and call.args):
         continue
 
-    comp = value.args[0]
-    if len(comp.generators) != 1:
+    container = call.args[0]
+
+    if isinstance(container, ast.ListComp):
+        if len(container.generators) != 1:
+            continue
+        container = container.generators[0].iter
+
+    if not isinstance(container, (ast.List, ast.Tuple)):
         continue
 
-    items = comp.generators[0].iter
-    if not isinstance(items, ast.List):
+    names = [branch_name(x) for x in container.elts]
+
+    if names == correct:
+        print("FUSION ORDER ALREADY CORRECT — NO CHANGE")
         continue
 
-    names = [
-        x.id for x in items.elts
-        if isinstance(x, ast.Name)
-    ]
+    if names != old:
+        continue
 
-    if names == old_order:
-        matches.append(items)
-    elif names == correct_order:
-        print("ACTUAL GRAPH ALREADY HAS CORRECT ORDER")
-        print("NO CHANGES NEEDED")
-        raise SystemExit(0)
+    exprs = {
+        name: ast.get_source_segment(source, expr)
+        for name, expr in zip(names, container.elts)
+    }
 
-if len(matches) != 1:
-    raise SystemExit(
-        "STOP: Actual fusion expression differs from "
-        "previously verified source. No files changed."
-    )
+    bracket = ("[", "]") if isinstance(container, ast.List) else ("(", ")")
+    replacement = bracket[0] + ", ".join(exprs[n] for n in correct) + bracket[1]
 
-items = matches[0]
-lines = source.splitlines(keepends=True)
+    changes.append((
+        offset(container.lineno, container.col_offset),
+        offset(container.end_lineno, container.end_col_offset),
+        replacement
+    ))
 
-def offset(line, column):
-    return sum(len(x) for x in lines[:line - 1]) + column
+if not changes:
+    print("NO OLD-ORDER FUSION EXPRESSION FOUND")
+    print("No source changed. Do not repeat fusion-order work.")
+else:
+    updated = source
+    for start, end, replacement in sorted(changes, reverse=True):
+        updated = updated[:start] + replacement + updated[end:]
 
-start = offset(items.lineno, items.col_offset)
-end = offset(items.end_lineno, items.end_col_offset)
+    ast.parse(updated)
 
-updated = (
-    source[:start]
-    + "[" + ", ".join(correct_order) + "]"
-    + source[end:]
-)
+    backup = p.with_suffix(".py.before_actual_order_fix")
+    if not backup.exists():
+        shutil.copy2(p, backup)
 
-ast.parse(updated)
+    p.write_text(updated)
+    print("ACTUAL MAX GRAPH CORRECTED")
+    print("ORDER:", " -> ".join(correct))
+    print("BACKUP:", backup)
 
-backup = path.with_suffix(".py.before_real_fusion_order_fix")
-if not backup.exists():
-    shutil.copy2(path, backup)
-
-path.write_text(updated)
-
-print("ACTUAL MAX FUSION GRAPH CORRECTED")
-print("NEW ORDER:", " → ".join(correct_order))
-print("BACKUP:", backup)
-print("ORIGINAL PYTORCH / DS / CHECKPOINT UNCHANGED")
+print("ORIGINAL PYTORCH / DS / WEIGHTS UNCHANGED")
 PY
-
-podman run --rm -i \
-  -v "$PWD:/workspace" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py

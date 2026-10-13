@@ -2,22 +2,34 @@ cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
 python3 - <<'PY'
 from pathlib import Path
-import ast, shutil
+import ast
+import shutil
 
 p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max.py")
 src = p.read_text()
+lines = src.splitlines(keepends=True)
 
-start = "    seq_raw = postprocess(sx2)"
-end = "    sibling_outputs = []"
+starts = [
+    i for i, line in enumerate(lines)
+    if line.strip() == "seq_raw = postprocess(sx2)"
+]
+ends = [
+    i for i, line in enumerate(lines)
+    if line.strip() == "sibling_outputs = []"
+]
 
-assert src.count(start) == 1, "STOP: Sequence block not unique"
-assert src.count(end) == 1, "STOP: Sibling boundary not unique"
+assert len(starts) == 1, "STOP: Sequence start not unique"
+assert len(ends) == 1, "STOP: Sibling boundary not unique"
 
-a = src.index(start)
-b = src.index(end)
-assert a < b, "STOP: Unexpected source order"
+a, b = starts[0], ends[0]
+assert a < b and b - a <= 15, "STOP: Unexpected block"
 
-block = src[a:b]
+indent = lines[a][:len(lines[a]) - len(lines[a].lstrip())]
+sibling_indent = lines[b][:len(lines[b]) - len(lines[b].lstrip())]
+
+assert indent == sibling_indent, "STOP: Indentation differs"
+
+block = "".join(lines[a:b])
 
 for token in (
     "seq_w =",
@@ -28,11 +40,13 @@ for token in (
 ):
     assert token in block, f"STOP: Missing {token}"
 
-new_src = (
-    src[:a]
-    + "    seq = postprocess(sx2)\n\n"
-    + src[b:]
+new_lines = (
+    lines[:a]
+    + [indent + "seq = postprocess(sx2)\n"]
+    + lines[b:]
 )
+
+new_src = "".join(new_lines)
 
 ast.parse(new_src)
 
@@ -42,7 +56,9 @@ assert not backup.exists(), "STOP: Backup already exists"
 shutil.copy2(p, backup)
 p.write_text(new_src)
 
-print("FIX APPLIED: Redundant Sequence projection removed")
-print("BACKUP:", backup)
-print("SYNTAX: PASS")
+print("FIX APPLIED")
+print("Duplicate Sequence projection removed")
+print("Sibling code preserved")
+print("Python syntax PASS")
+print("Backup:", backup)
 PY

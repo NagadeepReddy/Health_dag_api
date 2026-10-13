@@ -3,63 +3,76 @@ from pathlib import Path
 import ast
 import shutil
 
-p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_input_adapter.py")
+p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py")
 source = p.read_text()
 
-old = '    add("valid_length", get("vl_in", "v1_in"))'
+old = "model = session.load(graph)"
 
-new = '''    # Rotary position tensor for the 50-token sequence.
-    # Reuse the exported model frequencies; do not substitute valid_length.
-    freq_dir = BASE / "grecbase_integration_weights"
-    candidates = sorted(freq_dir.glob("*inv_freq.npy"))
-    candidates = [
-        f for f in candidates
-        if np.load(f).shape == (128,)
-    ]
-    if not candidates:
-        raise RuntimeError("No exported 256-d rotary frequency weights found")
+new = '''# Register existing trained checkpoint weights with MAX.
+import torch
 
-    sequence_candidates = [
-        f for f in candidates
-        if "seq" in f.name.lower() or "transformer" in f.name.lower()
-    ]
-    chosen = sequence_candidates or candidates
-
-    inv = np.load(chosen[0]).astype(np.float32)
-    for f in chosen[1:]:
-        if not np.allclose(inv, np.load(f), rtol=1e-6, atol=1e-7):
-            raise RuntimeError("Conflicting rotary frequencies: " + str(f))
-
-    positions = np.arange(page_in_length, dtype=np.float32)[:, None]
-    angles = positions * inv[None, :]
-    pos = np.concatenate([angles, angles], axis=-1)
-    pos = pos.reshape(1, 1, page_in_length, 256)
-
-    print("ROTARY FREQUENCY SOURCE:", chosen[0])
-    add("pos", torch.from_numpy(pos.copy()))'''
-
-# The current adapter already supplies page_in with shape (1,50).
-new = new.replace(
-    'positions = np.arange(page_in_length, dtype=np.float32)[:, None]',
-    'page_in_length = int(as_array(get("page_in")).shape[1])\n'
-    '    assert page_in_length == 50\n'
-    '    positions = np.arange(page_in_length, dtype=np.float32)[:, None]'
+checkpoint = Path(
+    "artifacts/v1.168/core-artifact/model_0_base.pt"
+)
+state = torch.load(
+    checkpoint, map_location="cpu", weights_only=True
 )
 
-if old in source:
-    updated = source.replace(old, new, 1)
-    ast.parse(updated, filename=str(p))
+if "state_dict" in state:
+    state = state["state_dict"]
 
-    backup = p.with_suffix(".py.before_rotary_input_fix")
+weights_registry = {}
+
+for name, tensor in state.items():
+    if not isinstance(tensor, torch.Tensor):
+        continue
+
+    value = tensor.detach().cpu().contiguous().numpy()
+
+    # Keep original checkpoint names.
+    weights_registry[name] = value
+
+    # MAX Embedding modules use the name without '.weight'.
+    if name.endswith(".weight"):
+        weights_registry.setdefault(name[:-7], value)
+
+required = "sequence_transformer.page_embedding"
+
+if required not in weights_registry:
+    raise RuntimeError(
+        f"Checkpoint has no mapping for {required}"
+    )
+
+print("TRAINED CHECKPOINT TENSORS:", len(state))
+print("MAX WEIGHT REGISTRY ENTRIES:", len(weights_registry))
+print("PAGE EMBEDDING REGISTERED: PASS", flush=True)
+
+model = session.load(
+    graph, weights_registry=weights_registry
+)'''
+
+if old in source:
+    assert source.count(old) == 1
+    updated = source.replace(old, new, 1)
+    ast.parse(updated)
+
+    backup = p.with_suffix(".py.before_registry_fix")
     if not backup.exists():
         shutil.copy2(p, backup)
 
     p.write_text(updated)
-    print("ROTARY POSITION INPUT FIXED")
-elif 'add("pos", torch.from_numpy(pos.copy()))' in source:
-    print("ROTARY POSITION INPUT ALREADY PRESENT")
+    print("MAX WEIGHT REGISTRATION ADDED")
+    print("BACKUP:", backup)
+
+elif "PAGE EMBEDDING REGISTERED: PASS" in source:
+    print("WEIGHT REGISTRATION ALREADY ADDED")
+
 else:
-    raise SystemExit("STOP: Expected adapter code not found; nothing changed")
+    raise SystemExit(
+        "STOP: Runner differs from expected source"
+    )
+
+print("ORIGINAL PYTORCH/DS CODE UNCHANGED")
 PY
 
 podman run --rm -i \

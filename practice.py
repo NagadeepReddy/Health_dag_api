@@ -1,44 +1,61 @@
 python - <<'PY'
 from pathlib import Path
-from datetime import datetime
-import numpy as np
 
 base = Path("artifacts/v1.168-max/cta_max")
-files = {
-    "PyTorch": base / "real_sanity_pytorch_branches.npz",
-    "MAX": base / "real_sanity_max_branches.npz",
-}
 
-for name, p in files.items():
+targets = [
+    "grecbase_fusion_graph_all8_max.py",
+    "grecbase_fusion_order_correct_max.py",
+    "grecbase_fusion_graph_real_shapes_max.py",
+    "grecbase_fusion_graph_with_context_max.py",
+    "grecbase_fusion_graph_with_aux_max.py",
+    "grecbase_max.py",
+]
+
+terms = (
+    "context", "sequence", "sibling", "ihq",
+    "jet", "task", "branch", "placeholder",
+    "random", "zeros(", "ones(", "graph.output",
+)
+
+print("=== SIX-BRANCH INTEGRATION SOURCE AUDIT ===")
+
+for name in targets:
+    p = base / name
     if not p.is_file():
-        raise SystemExit(f"MISSING: {p}")
-    print(name, "saved:", datetime.fromtimestamp(p.stat().st_mtime))
+        continue
 
-with np.load(files["PyTorch"]) as pt, np.load(files["MAX"]) as mx:
-    keys = sorted(set(pt.files) | set(mx.files))
-    passed = 0
+    lines = p.read_text(errors="replace").splitlines()
+    matches = [
+        i for i, line in enumerate(lines)
+        if any(t in line.lower() for t in terms)
+        and not line.strip().startswith("#")
+    ]
 
-    print("\n=== SAVED 8-BRANCH NUMERICAL PARITY ===")
-    for key in keys:
-        if key not in pt or key not in mx:
-            print(key, "MISSING IN ONE REFERENCE")
-            continue
+    if not matches:
+        continue
 
-        a, b = pt[key], mx[key]
-        if a.shape != b.shape:
-            print(key, "SHAPE MISMATCH", a.shape, b.shape)
-            continue
+    print(f"\n=== {name} ===")
+    shown = set()
+    for i in matches[:22]:
+        for j in range(max(0, i-1), min(len(lines), i+2)):
+            if j not in shown:
+                print(f"{j+1}: {lines[j][:190]}")
+                shown.add(j)
 
-        diff = np.abs(a.astype(np.float64) - b.astype(np.float64))
-        match = bool(np.allclose(a, b, rtol=1e-3, atol=1e-3))
-        passed += match
+    if len(matches) > 22:
+        print(f"... {len(matches)-22} further matching lines")
 
-        print(
-            key,
-            "PASS" if match else "FAIL",
-            "max_diff=", float(diff.max())
-        )
+print("\n=== SAVED BRANCH RESULTS PRODUCER ===")
+found = False
+for p in sorted(base.glob("*.py")):
+    lines = p.read_text(errors="replace").splitlines()
+    for i, line in enumerate(lines):
+        if "real_sanity_max_branches" in line:
+            found = True
+            print(f"{p.name}:{i+1}: {line.strip()[:190]}")
+if not found:
+    print("No saved producer script found; may have been a terminal-only run")
 
-    print(f"\nRESULT: {passed}/{len(keys)} PASS")
-    print("SAVED FILES ONLY — NOTHING MODIFIED")
+print("\nREAD ONLY — NO TESTS OR FILES MODIFIED")
 PY

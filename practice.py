@@ -1,32 +1,34 @@
-python - <<'PY'
-import ast
+podman run --rm -i -v "$PWD:/workspace" -w /workspace --entrypoint python docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import torch
 from pathlib import Path
 
-p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_real_shapes_max.py")
-assert p.is_file(), f"Missing: {p}"
+path = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
+assert path.is_file(), f"Checkpoint missing: {path}"
 
-lines = p.read_text().splitlines()
-tree = ast.parse("\n".join(lines))
+checkpoint = torch.load(path, map_location="cpu", weights_only=True)
 
-print("=== MAX GRAPH OUTPUT AND FINAL LAYERS ===")
+if isinstance(checkpoint, dict):
+    for key in ("state_dict", "model_state_dict"):
+        if key in checkpoint and isinstance(checkpoint[key], dict):
+            checkpoint = checkpoint[key]
+            break
 
-for node in ast.walk(tree):
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-        if node.func.attr == "output":
-            start = max(0, node.lineno - 16)
-            end = min(len(lines), node.end_lineno + 3)
-            for i in range(start, end):
-                print(f"{i+1}: {lines[i]}")
+print("=== ORIGINAL PYTORCH FINAL LAYER ===")
+matches = [
+    (name, tuple(value.shape))
+    for name, value in checkpoint.items()
+    if "remove_tasks_dense2.weight" in name
+    and hasattr(value, "shape")
+]
 
-print("\n=== GET_PATH / CONCAT / RESHAPE USAGE ===")
-for i, line in enumerate(lines, 1):
-    if any(x in line for x in (
-        "grecbase_get_path_max(",
-        "ops.concat(",
-        "ops.reshape(",
-        "graph.output(",
-    )):
-        print(f"{i}: {line.strip()}")
+for name, shape in matches:
+    print(name, shape)
+    print("EXPECTED FINAL OUTPUT DIM:", shape[0])
+    print("MAX OUTPUT DIM: 10819")
+    print("DIMENSION MATCH:", shape[0] == 10819)
 
-print("\nREAD ONLY — NOTHING MODIFIED")
+if not matches:
+    print("Final layer not found in checkpoint; do not assume output parity.")
+
+print("READ ONLY — NO FILES MODIFIED")
 PY

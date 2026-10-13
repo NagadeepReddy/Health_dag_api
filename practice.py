@@ -1,67 +1,135 @@
 python - <<'PY'
-import ast
 from pathlib import Path
+import ast
+import re
 
-root = Path("artifacts/v1.168")
 base = Path("artifacts/v1.168-max/cta_max")
 
-original = root / "utils/dependency-utils/models.py"
-max_aux = base / "grecbase_aux_branches_max.py"
-max_graph = base / "grecbase_fusion_verified_wiring_trial.py"
+graph_src = base / "grecbase_fusion_verified_wiring_trial.py"
+runner_src = base / "run_real_sanity_verified_wiring_trial.py"
 
-terms = ("task", "ihq", "jet", "sibling")
+graph_dst = base / "grecbase_fusion_pytorch_order_trial.py"
+runner_dst = base / "run_real_sanity_pytorch_order_trial.py"
 
-for p in (original, max_aux, max_graph):
+for p in (graph_src, runner_src):
     if not p.is_file():
-        raise SystemExit(f"STOP: Missing source: {p}")
+        raise SystemExit(f"STOP: Missing existing working file: {p}")
 
-print("=== ORIGINAL PYTORCH GRecBase.forward — AUXILIARY BRANCHES ===")
-
-source = original.read_text()
+source = graph_src.read_text()
 tree = ast.parse(source)
-classes = [
-    n for n in tree.body
-    if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
+
+old_order = [
+    "seq", "context", "search0", "search1",
+    "task", "jet", "ihq", "sibling"
 ]
-if len(classes) != 1:
-    raise SystemExit("STOP: GRecBase class not uniquely found")
-
-methods = [
-    n for n in classes[0].body
-    if isinstance(n, ast.FunctionDef) and n.name == "forward"
+correct_order = [
+    "seq", "context", "search0", "search1",
+    "jet", "ihq", "sibling", "task"
 ]
-if len(methods) != 1:
-    raise SystemExit("STOP: GRecBase.forward not uniquely found")
 
-for node in methods[0].body:
-    snippet = ast.get_source_segment(source, node) or ""
-    if any(t in snippet.lower() for t in terms):
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.Expr)):
-            print(f"\nLINE {node.lineno}:\n{snippet[:2200]}")
+candidates = []
 
-print("\n=== MAX AUXILIARY BRANCH IMPLEMENTATION ===")
-
-source = max_aux.read_text()
-tree = ast.parse(source)
-for node in tree.body:
-    if isinstance(node, ast.FunctionDef) and (
-        node.name == "grecbase_aux_features"
-    ):
-        print(ast.get_source_segment(source, node))
-
-print("\n=== MAX ACTUAL AUXILIARY INPUT CONNECTIONS ===")
-
-source = max_graph.read_text()
-tree = ast.parse(source)
 for node in ast.walk(tree):
-    if isinstance(node, ast.Assign):
-        lhs = ", ".join(ast.unparse(t) for t in node.targets)
-        if any(t in lhs.lower() for t in terms):
-            if node.lineno <= 80:
-                print(
-                    f"LINE {node.lineno}: "
-                    f"{ast.get_source_segment(source, node)}"
-                )
+    if not isinstance(node, ast.Assign):
+        continue
+    if not any(
+        isinstance(t, ast.Name) and t.id == "outs"
+        for t in node.targets
+    ):
+        continue
 
-print("\nREAD ONLY — NO MODEL FILES MODIFIED")
+    call = node.value
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "stack"
+        and len(call.args) == 1
+        and isinstance(call.args[0], ast.List)
+    ):
+        continue
+
+    items = call.args[0].elts
+    names = []
+
+    for item in items:
+        if not (
+            isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Attribute)
+            and item.func.attr == "reshape"
+            and item.args
+            and isinstance(item.args[0], ast.Name)
+        ):
+            break
+        names.append(item.args[0].id)
+
+    if names == old_order:
+        candidates.append((node, call.args[0], items))
+
+if len(candidates) != 1:
+    raise SystemExit(
+        f"STOP: Expected one incorrect active stack, "
+        f"found {len(candidates)}. Nothing changed."
+    )
+
+node, list_node, items = candidates
+parts = source.splitlines(keepends=True)
+
+def offset(line, col):
+    return sum(len(x) for x in parts[:line - 1]) + col
+
+start = offset(list_node.lineno, list_node.col_offset)
+end = offset(list_node.end_lineno, list_node.end_col_offset)
+
+expressions = {
+    name: ast.get_source_segment(source, item)
+    for name, item in zip(old_order, items)
+}
+
+indent = re.match(
+    r"[ \t]*", parts[node.lineno - 1]
+).group()
+
+replacement = "[\n"
+for name in correct_order:
+    replacement += indent + "    " + expressions[name] + ",\n"
+replacement += indent + "]"
+
+updated_graph = source[:start] + replacement + source[end:]
+ast.parse(updated_graph)
+
+runner = runner_src.read_text()
+
+old_import = "cta_max.grecbase_fusion_verified_wiring_trial"
+new_import = "cta_max.grecbase_fusion_pytorch_order_trial"
+
+if runner.count(old_import) != 1:
+    raise SystemExit("STOP: Runner import not uniquely found")
+
+updated_runner = runner.replace(old_import, new_import, 1)
+ast.parse(updated_runner)
+
+for p, content in (
+    (graph_dst, updated_graph),
+    (runner_dst, updated_runner),
+):
+    if p.exists() and p.read_text() != content:
+        raise SystemExit(f"STOP: Existing trial differs: {p}")
+
+for p, content in (
+    (graph_dst, updated_graph),
+    (runner_dst, updated_runner),
+):
+    if not p.exists():
+        p.write_text(content)
+
+print("CORRECTED FUSION ORDER:")
+print(" → ".join(correct_order))
+print("PYTORCH/DS AND EXISTING MAX FILES UNCHANGED")
 PY
+
+podman run --rm -i \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_pytorch_order_trial.py

@@ -2,148 +2,69 @@ python - <<'PY'
 from pathlib import Path
 import ast
 import re
+import shutil
 
 base = Path("artifacts/v1.168-max/cta_max")
 
-graph_src = base / "grecbase_fusion_order_correct_max.py"
-runner_src = base / "run_real_sanity_max_full.py"
-
-graph_diag = base / "grecbase_fusion_order_correct_max_branch_diag.py"
-runner_diag = base / "run_real_sanity_max_branch_diag.py"
-
-source = graph_src.read_text()
-
-pattern = r'(?m)^([ \t]*)graph\.output\(\s*result\s*\)\s*$'
-matches = list(re.finditer(pattern, source))
-
-if len(matches) != 1:
-    raise SystemExit(
-        "STOP: Expected single final graph.output(result) not found"
-    )
-
-names = [
-    "seq", "context", "search0", "search1",
-    "task", "jet", "ihq", "sibling"
+files = [
+    base / "grecbase_fusion_order_correct_max.py",
+    base / "grecbase_fusion_order_correct_max_branch_diag.py",
 ]
 
-for name in names:
-    if not re.search(r'\b' + name + r'\b', source):
-        raise SystemExit(f"STOP: Missing branch variable: {name}")
-
-updated_graph = re.sub(
-    pattern,
-    lambda m: (
-        m.group(1)
-        + "graph.output(result, " + ", ".join(names) + ")"
-    ),
-    source,
-    count=1
+pattern = re.compile(
+    r'''(?m)^([ \t]*)seq_b\s*=\s*np\.load\(
+    WDIR\s*/\s*["']seq_dense\.bias\.npy["']
+    \)\.astype\(np\.float32\)[ \t]*$''',
+    re.VERBOSE,
 )
 
-ast.parse(updated_graph)
+marker = "CHECKPOINT_SEQ_DENSE_BIAS"
+prepared = []
 
-runner = runner_src.read_text()
+for p in files:
+    if not p.is_file():
+        raise SystemExit(f"STOP: Missing existing file: {p}")
 
-old_import = "from cta_max.grecbase_fusion_order_correct_max import ("
-new_import = (
-    "from cta_max.grecbase_fusion_order_correct_max_branch_diag import ("
-)
+    source = p.read_text()
 
-if runner.count(old_import) != 1:
-    raise SystemExit("STOP: Expected working graph import not found")
+    if marker in source:
+        print("ALREADY CORRECTED:", p.name)
+        continue
 
-runner = runner.replace(old_import, new_import, 1)
+    matches = list(pattern.finditer(source))
+    if len(matches) != 1:
+        raise SystemExit(
+            f"STOP: Expected seq_dense.bias assignment not found "
+            f"exactly once in {p.name}. Nothing changed."
+        )
 
-anchor = "outputs = model.execute(*runtime_inputs)"
+    indent = matches[0].group(1)
 
-diagnostic = '''
-print("\\n=== CURRENT REAL-INPUT EIGHT-BRANCH PARITY ===", flush=True)
-
-branches = [
-    "seq_PLACEHOLDER", "context", "search0", "search1",
-    "task", "jet", "ihq", "sibling"
-]
-branches[0] = "sequence"
-
-if len(outputs) != 9:
-    raise RuntimeError(
-        f"Expected main output + 8 branches, received {len(outputs)}"
+    replacement = (
+        indent + "# CHECKPOINT_SEQ_DENSE_BIAS: original trained value\n"
+        + indent
+        + 'seq_b = __import__("torch").load('
+        '"artifacts/v1.168/core-artifact/model_0_base.pt", '
+        'map_location="cpu", weights_only=True)'
+        '["sequence_transformer.seq_dense.bias"]'
+        '.detach().cpu().numpy().astype(np.float32)'
     )
 
-reference_file = BASE / "real_sanity_pytorch_branches.npz"
+    updated = pattern.sub(lambda _: replacement, source, count=1)
+    ast.parse(updated, filename=str(p))
+    prepared.append((p, updated))
 
-with np.load(reference_file, allow_pickle=False) as references:
-    passed = 0
+# Apply only after both source files pass validation.
+for p, updated in prepared:
+    backup = p.with_suffix(".py.before_checkpoint_seq_bias")
+    if not backup.exists():
+        shutil.copy2(p, backup)
+    p.write_text(updated)
+    print("CORRECTED:", p.name)
+    print("BACKUP:", backup)
 
-    for index, name in enumerate(branches, start=1):
-        if name not in references:
-            print(name, "REFERENCE MISSING")
-            continue
-
-        expected = np.asarray(references[name], dtype=np.float32)
-        actual = np.asarray(
-            outputs[index].to_numpy(), dtype=np.float32
-        )
-
-        if actual.size != expected.size:
-            print(
-                name, "SIZE MISMATCH",
-                "PT:", expected.shape,
-                "MAX:", actual.shape
-            )
-            continue
-
-        actual = actual.reshape(expected.shape)
-
-        difference = np.abs(
-            actual.astype(np.float64)
-            - expected.astype(np.float64)
-        )
-
-        match = bool(np.allclose(
-            actual, expected,
-            rtol=1e-3, atol=1e-3
-        ))
-
-        passed += int(match)
-
-        print(
-            name,
-            "PASS" if match else "FAIL",
-            "MAX_DIFF:", float(difference.max()),
-            "MEAN_DIFF:", float(difference.mean())
-        )
-
-    print("\\nCURRENT BRANCH PARITY:", passed, "/8")
-'''
-
-if runner.count(anchor) != 1:
-    raise SystemExit("STOP: Expected execution line not found")
-
-runner = runner.replace(anchor, anchor + "\n" + diagnostic, 1)
-ast.parse(runner)
-
-for path, content in [
-    (graph_diag, updated_graph),
-    (runner_diag, runner),
-]:
-    if path.exists():
-        if path.read_text() != content:
-            raise SystemExit(
-                f"STOP: Existing diagnostic file differs: {path}"
-            )
-
-for path, content in [
-    (graph_diag, updated_graph),
-    (runner_diag, runner),
-]:
-    if not path.exists():
-        path.write_text(content)
-        print("CREATED:", path)
-    else:
-        print("REUSING:", path)
-
-print("WORKING SOURCE AND TRAINED WEIGHTS UNCHANGED")
+print("ORIGINAL PYTORCH/DS FILES UNCHANGED")
+print("READY FOR CURRENT EIGHT-BRANCH VALIDATION")
 PY
 
 podman run --rm -i \

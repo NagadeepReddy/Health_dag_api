@@ -1,36 +1,70 @@
 python - <<'PY'
 from pathlib import Path
+import ast
+import shutil
 
-base = Path("artifacts/v1.168-max/cta_max")
-names = [
-    "parallel_transformer_block.py",
-    "parallel_transformer_graph_full_sequence.py",
-    "grecbase_fusion_order_correct_max.py",
-]
+p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_input_adapter.py")
+source = p.read_text()
 
-for name in names:
-    p = base / name
-    print(f"\n=== {name} ===")
-    if not p.exists():
-        print("NOT FOUND")
-        continue
+old = '    add("valid_length", get("vl_in", "v1_in"))'
 
-    lines = p.read_text().splitlines()
-    hits = [
-        i for i, line in enumerate(lines)
-        if (
-            "pos" in line.lower()
-            or "rotary" in line.lower()
-            or "inv_freq" in line
-        ) and not line.strip().startswith("#")
+new = '''    # Rotary position tensor for the 50-token sequence.
+    # Reuse the exported model frequencies; do not substitute valid_length.
+    freq_dir = BASE / "grecbase_integration_weights"
+    candidates = sorted(freq_dir.glob("*inv_freq.npy"))
+    candidates = [
+        f for f in candidates
+        if np.load(f).shape == (128,)
     ]
+    if not candidates:
+        raise RuntimeError("No exported 256-d rotary frequency weights found")
 
-    shown = set()
-    for i in hits[:18]:
-        for j in range(max(0, i-2), min(len(lines), i+3)):
-            if j not in shown:
-                print(f"{j+1}: {lines[j]}")
-                shown.add(j)
+    sequence_candidates = [
+        f for f in candidates
+        if "seq" in f.name.lower() or "transformer" in f.name.lower()
+    ]
+    chosen = sequence_candidates or candidates
 
-print("\nREAD ONLY — NO FILES CHANGED")
+    inv = np.load(chosen[0]).astype(np.float32)
+    for f in chosen[1:]:
+        if not np.allclose(inv, np.load(f), rtol=1e-6, atol=1e-7):
+            raise RuntimeError("Conflicting rotary frequencies: " + str(f))
+
+    positions = np.arange(page_in_length, dtype=np.float32)[:, None]
+    angles = positions * inv[None, :]
+    pos = np.concatenate([angles, angles], axis=-1)
+    pos = pos.reshape(1, 1, page_in_length, 256)
+
+    print("ROTARY FREQUENCY SOURCE:", chosen[0])
+    add("pos", torch.from_numpy(pos.copy()))'''
+
+# The current adapter already supplies page_in with shape (1,50).
+new = new.replace(
+    'positions = np.arange(page_in_length, dtype=np.float32)[:, None]',
+    'page_in_length = int(as_array(get("page_in")).shape[1])\n'
+    '    assert page_in_length == 50\n'
+    '    positions = np.arange(page_in_length, dtype=np.float32)[:, None]'
+)
+
+if old in source:
+    updated = source.replace(old, new, 1)
+    ast.parse(updated, filename=str(p))
+
+    backup = p.with_suffix(".py.before_rotary_input_fix")
+    if not backup.exists():
+        shutil.copy2(p, backup)
+
+    p.write_text(updated)
+    print("ROTARY POSITION INPUT FIXED")
+elif 'add("pos", torch.from_numpy(pos.copy()))' in source:
+    print("ROTARY POSITION INPUT ALREADY PRESENT")
+else:
+    raise SystemExit("STOP: Expected adapter code not found; nothing changed")
 PY
+
+podman run --rm -i \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py

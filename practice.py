@@ -4,61 +4,48 @@ python - <<'PY'
 import ast
 from pathlib import Path
 
-roots = [
-    Path("artifacts/v1.168/utils"),
-    Path("artifacts/v1.168-max/cta_max"),
+p = Path("artifacts/v1.168/utils/dependency-utils/models.py")
+source = p.read_text()
+tree = ast.parse(source)
+
+classes = [
+    n for n in tree.body
+    if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
 ]
-names = {"ParallelTransformerMAEP", "ParallelTransformerMAEPMAX"}
-terms = (
-    "item_pre", "v1_in", "embedding", "concat",
-    "transformer", "pool", "valid_len", "seq_dense"
-)
+if len(classes) != 1:
+    raise SystemExit("STOP: Original GRecBase not uniquely found")
 
-found = set()
+print("=== ORIGINAL SEQUENCE INITIALIZATION ===")
 
-for root in roots:
-    for path in root.rglob("*.py"):
-        try:
-            source = path.read_text()
-            tree = ast.parse(source)
-        except (SyntaxError, UnicodeError, OSError):
-            continue
+for method in classes[0].body:
+    if not isinstance(method, ast.FunctionDef):
+        continue
+    if method.name != "__init__":
+        continue
 
-        lines = source.splitlines()
-
-        for cls in ast.walk(tree):
-            if not isinstance(cls, ast.ClassDef):
-                continue
-            if cls.name not in names:
-                continue
-
-            found.add(cls.name)
-            print(f"\n=== {cls.name} ===")
-            print("FILE:", path)
-
-            for method in cls.body:
-                if not isinstance(method, ast.FunctionDef):
-                    continue
-                if method.name not in ("forward", "__call__"):
-                    continue
-
-                print("METHOD:", method.name)
+    for node in ast.walk(method):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = (
+                node.targets if isinstance(node, ast.Assign)
+                else [node.target]
+            )
+            if any(
+                "sequence_transformer" in ast.unparse(t)
+                for t in targets
+            ):
                 print(
-                    "SIGNATURE:",
-                    ast.unparse(method.args)
+                    f"LINE {node.lineno}:",
+                    ast.get_source_segment(source, node)
                 )
 
-                selected = set()
-                for n in range(method.lineno, method.end_lineno + 1):
-                    if any(t in lines[n - 1] for t in terms):
-                        selected.update(
-                            range(max(method.lineno, n - 1),
-                                  min(method.end_lineno, n + 1) + 1)
-                        )
+print("\n=== ORIGINAL SEQUENCE CLASS REFERENCES ===")
 
-                for n in sorted(selected):
-                    print(f"{n}: {lines[n - 1]}")
+for i, line in enumerate(source.splitlines(), 1):
+    if (
+        "ParallelTransformer" in line
+        or "SequenceTransformer" in line
+    ):
+        print(f"{i}: {line}")
 
-print("\nCLASSES FOUND:", ", ".join(sorted(found)) or "NONE")
-print("READ ONLY — ORIGINAL CODE AND WEIGHTS UNCHANGED")
+print("\nREAD ONLY — NO FILES MODIFIED")
 PY

@@ -1,8 +1,11 @@
 podman run --rm -i -v "$PWD:/workspace" -w /workspace --entrypoint python docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys
+import sys, types, inspect
 from pathlib import Path
 import numpy as np
 import torch
+
+# Same import-only FAISS workaround used for successful preprocessing.
+sys.modules["faiss"] = types.ModuleType("faiss")
 
 root = Path("artifacts/v1.168")
 base = Path("artifacts/v1.168-max/cta_max")
@@ -12,46 +15,46 @@ sys.path.insert(0, str(root / "utils/dependency-utils"))
 
 from pipeline import pipeline
 
-inputs_path = base / "real_sanity_model_in.pt"
-max_path = base / "real_sanity_max_output.npy"
-
-assert inputs_path.is_file(), f"Missing: {inputs_path}"
-assert max_path.is_file(), f"Missing: {max_path}"
-
-model_inputs = torch.load(
-    inputs_path, map_location="cpu", weights_only=True
+inputs = torch.load(
+    base / "real_sanity_model_in.pt",
+    map_location="cpu",
+    weights_only=True
 )
-assert isinstance(model_inputs, dict) and len(model_inputs) == 17
+assert isinstance(inputs, dict) and len(inputs) == 17
 
 p = pipeline()
 p.load()
+print("ORIGINAL PIPELINE LOAD: PASS")
 
-candidates = []
-for attr, value in vars(p).items():
-    if isinstance(value, torch.nn.Module):
-        for name, module in value.named_modules():
-            if type(module).__name__ == "GRecBase":
-                candidates.append((attr, name, module))
+model = p.model_base
+assert isinstance(model, torch.nn.Module)
+model.eval()
 
-print("ORIGINAL GRecBase CANDIDATES:", len(candidates))
-for attr, name, _ in candidates:
-    print(" ", attr, name)
+signature = inspect.signature(model.forward)
+kwargs = {k: v for k, v in inputs.items() if k in signature.parameters}
 
-assert len(candidates) == 1, (
-    "Need to identify the original base model safely"
-)
+# Original DS input name versus GRecBase forward argument.
+if "tasks_in" in signature.parameters and "task_in" in inputs:
+    kwargs["tasks_in"] = inputs["task_in"]
 
-model = candidates[0][2].cpu().eval()
+missing = [
+    k for k, v in signature.parameters.items()
+    if k not in kwargs
+    and v.default is inspect.Parameter.empty
+    and k != "self"
+]
+assert not missing, f"Missing GRecBase inputs: {missing}"
 
 with torch.inference_mode():
-    result = model(**model_inputs)
+    result = model(**kwargs)
 
-assert isinstance(result, torch.Tensor)
-pt = result.detach().cpu().numpy().astype(np.float32)
-mx = np.load(max_path).astype(np.float32)
+assert isinstance(result, torch.Tensor), type(result)
+pt = result.detach().cpu().numpy()
+mx = np.load(base / "real_sanity_max_output.npy")
 
-print("PYTORCH SHAPE:", pt.shape)
-print("MAX SHAPE:", mx.shape)
+print("PYTORCH:", pt.shape)
+print("MAX:", mx.shape)
+
 assert pt.shape == mx.shape == (1, 10819)
 
 diff = np.abs(pt.astype(np.float64) - mx.astype(np.float64))
@@ -59,8 +62,8 @@ print("MEAN DIFF:", float(diff.mean()))
 print("MAX DIFF:", float(diff.max()))
 print("MATCH:", bool(np.allclose(pt, mx, rtol=1e-3, atol=1e-3)))
 
-output = base / "real_sanity_pytorch_output.npy"
-np.save(output, pt)
-print("PYTORCH REFERENCE SAVED:", output)
+out = base / "real_sanity_pytorch_output.npy"
+np.save(out, pt)
+print("PYTORCH REFERENCE SAVED:", out)
 print("ORIGINAL PYTORCH AND DS SOURCE UNCHANGED")
 PY

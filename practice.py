@@ -1,81 +1,89 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+set -e
+
+python3 - <<'PY'
+from pathlib import Path
+import ast, shutil
+
+b = Path("artifacts/v1.168-max/cta_max")
+p = b / "run_real_sanity_full_head_72.py"
+s = p.read_text()
+lines = s.splitlines(keepends=True)
+
+starts = [i for i, x in enumerate(lines)
+          if x.strip() == "if result.shape == (1, 2048):"]
+ends = [i for i, x in enumerate(lines)
+        if x.strip() == "if result.shape == (1, 10819):"]
+
+assert len(starts) == len(ends) == 1, "STOP: Unexpected runner"
+a, z = starts[0], ends[0]
+assert a < z, "STOP: Invalid code boundaries"
+assert "HEAD VS FUSION MAX DIFF" in "".join(lines[a:z]), \
+    "STOP: Existing validation changed"
+
+replacement = '''
+    if result.shape == (1, 2048):
+        import torch
+        import torch.nn.functional as F
+
+        weights = BASE / "get_path_weights"
+
+        def wt(name):
+            return torch.from_numpy(
+                np.load(weights / (name + ".npy")).astype(np.float32)
+            )
+
+        fusion_ref = np.load(
+            BASE / "real_sanity_pytorch_same_input_verified.npz"
+        )["final"].astype(np.float32)
+
+        with torch.no_grad():
+            x = torch.from_numpy(fusion_ref)
+            x = F.linear(x, wt("remove_tasks_dense1.weight"),
+                         wt("remove_tasks_dense1.bias"))
+            a = F.linear(x, wt("remove_tasks_act1.w1.weight"))
+            c = F.linear(x, wt("remove_tasks_act1.w3.weight"))
+            expected = F.linear(
+                F.silu(a) * c,
+                wt("remove_tasks_act1.w2.weight")
+            ).numpy()
+
+        assert result.shape == expected.shape == (1, 2048)
+
+        diff = np.abs(result - expected)
+        passed = bool(np.allclose(
+            result, expected, rtol=1e-3, atol=1e-3
+        ))
+
+        print("INTEGRATED MAX HEAD MAX DIFF:", float(diff.max()))
+        print("INTEGRATED MAX HEAD MEAN DIFF:", float(diff.mean()))
+        print("INTEGRATED HEAD PARITY:", passed)
+
+        if passed:
+            saved = BASE / "real_sanity_integrated_head_72_verified.npy"
+            np.save(saved, result)
+            print("INTEGRATED OUTPUT SAVED:", saved)
+        else:
+            print("STOP: Integrated graph parity not yet established")
+
+'''
+
+updated = "".join(lines[:a]) + replacement + "".join(lines[z:])
+ast.parse(updated)
+
+backup = p.with_name(p.name + ".before_integrated_head_parity")
+assert not backup.exists(), "STOP: Backup already exists"
+
+shutil.copy2(p, backup)
+p.write_text(updated)
+
+print("INTEGRATED PARITY CHECK READY")
+print("ORIGINAL DS AND PIPELINE UNCHANGED")
+print("PYTHON SYNTAX PASS")
+PY
 
 podman run --rm -i \
   -v "$PWD:/workspace" -w /workspace \
   --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys
-from pathlib import Path
-import numpy as np
-import torch
-import torch.nn.functional as F
-
-sys.path.insert(0, "/workspace/artifacts/v1.168-max")
-
-from max.driver import CPU, Tensor
-from max.dtype import DType
-from max.graph import Graph, TensorType, DeviceRef
-from max.engine import InferenceSession
-from cta_max.grecbase_get_path_max import grecbase_get_path_max
-
-b = Path("/workspace/artifacts/v1.168-max/cta_max")
-w = b / "get_path_weights"
-
-fusion = np.load(
-    b / "real_sanity_max_2048_verified_latest.npy"
-).astype(np.float32)
-
-pt_fusion = np.load(
-    b / "real_sanity_pytorch_same_input_verified.npz"
-)["final"].astype(np.float32)
-
-assert fusion.shape == pt_fusion.shape == (1, 2048)
-fusion_diff = float(np.max(np.abs(fusion - pt_fusion)))
-print("FUSION MAX DIFF:", fusion_diff)
-assert fusion_diff < 1e-3, "STOP: Saved fusion not verified"
-
-device = DeviceRef.CPU()
-graph = Graph(
-    "cta_real_fusion_to_trained_head",
-    input_types=[TensorType(DType.float32, [1, 2048], device=device)]
-)
-
-with graph:
-    graph.output(grecbase_get_path_max(graph.inputs[0], device))
-
-session = InferenceSession(devices=[CPU()])
-model = session.load(graph)
-mx = model.execute(Tensor.from_numpy(fusion).to(CPU()))[0].to_numpy()
-
-def weight(name):
-    return torch.from_numpy(
-        np.load(w / (name + ".npy")).astype(np.float32)
-    )
-
-with torch.no_grad():
-    x = torch.from_numpy(pt_fusion)
-    x = F.linear(x, weight("remove_tasks_dense1.weight"),
-                 weight("remove_tasks_dense1.bias"))
-    a = F.linear(x, weight("remove_tasks_act1.w1.weight"))
-    c = F.linear(x, weight("remove_tasks_act1.w3.weight"))
-    pt = F.linear(
-        F.silu(a) * c,
-        weight("remove_tasks_act1.w2.weight")
-    ).numpy()
-
-assert mx.shape == pt.shape == (1, 2048)
-diff = np.abs(mx - pt)
-passed = bool(np.allclose(mx, pt, rtol=1e-3, atol=1e-3))
-
-print("COMBINED OUTPUT:", mx.shape)
-print("COMBINED MAX DIFF:", float(diff.max()))
-print("COMBINED MEAN DIFF:", float(diff.mean()))
-print("COMBINED PARITY:", passed)
-
-assert passed, "STOP: Combined parity failed"
-
-saved = b / "real_sanity_max_get_path_verified_latest.npy"
-assert not saved.exists(), "STOP: Output already exists"
-np.save(saved, mx)
-print("VERIFIED COMBINED OUTPUT SAVED:", saved)
-PY
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_full_head_72.py

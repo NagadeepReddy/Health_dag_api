@@ -1,83 +1,103 @@
-python - <<'PY'
-import ast
-import os
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import sys
 from pathlib import Path
+import numpy as np
+import torch
 
-p = Path("artifacts/v1.168-max/cta_max/main_context_max.py")
-backup = p.with_name("main_context_max.py.before_activation_fix.bak")
+root = Path("/workspace/artifacts/v1.168-max")
+base = root / "cta_max"
+sys.path.insert(0, str(root))
 
-assert p.is_file()
-original = p.read_text()
-tree = ast.parse(original)
+from max.driver import CPU, Tensor
+from max.engine import InferenceSession
+from max.graph import Graph, TensorType, DeviceRef
+from max.dtype import DType
+from cta_max.main_context_max import main_context_forward
 
-funcs = [
-    n for n in tree.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "main_context_forward"
-]
-assert len(funcs) == 1, "Unexpected function structure"
-
-found = {}
-
-for stmt in funcs[0].body:
-    if not isinstance(stmt, ast.Assign):
-        continue
-    if len(stmt.targets) != 1:
-        continue
-    if not isinstance(stmt.targets[0], ast.Name):
-        continue
-
-    name = stmt.targets[0].id
-    expr = ast.unparse(stmt.value)
-
-    if (
-        name in ("deep", "wide")
-        and f"ops.relu({name})" in expr
-        and f"ops.relu(-{name})" in expr
-    ):
-        assert name not in found
-        found[name] = (stmt.lineno, stmt.end_lineno)
-
-assert set(found) == {"deep", "wide"}, (
-    "Expected exactly two extra activations; no edits made",
-    found
+data = torch.load(
+    base / "real_sanity_model_in.pt",
+    map_location="cpu",
+    weights_only=True
 )
 
-lines = original.splitlines(keepends=True)
-remove = set()
+pt = np.load(base / "real_sanity_pytorch_branches.npz")
+expected = pt["context"]
 
-for start, end in found.values():
-    remove.update(range(start, end + 1))
+device = CPU()
+ref = DeviceRef.CPU()
 
-updated = "".join(
-    line for i, line in enumerate(lines, 1)
-    if i not in remove
+assert len(data["deep_in"]) == 17
+assert len(data["wide_in"]) == 127
+
+graph = Graph(
+    "cta_main_context_real_parity",
+    input_types=[
+        TensorType(DType.int64, [1], device=ref)
+        for _ in range(17)
+    ] + [
+        TensorType(DType.float32, [1, 127], device=ref)
+    ]
 )
 
-compile(updated, str(p), "exec")
-
-if backup.exists():
-    assert backup.read_text() == original, (
-        "Existing backup differs; refusing overwrite"
+with graph:
+    *deep_ids, wide = graph.inputs
+    combined, extracted = main_context_forward(
+        deep_ids, wide, ref
     )
-else:
-    backup.write_text(original)
+    graph.output(combined)
 
-tmp = p.with_name("main_context_max.py.activation_tmp")
-assert not tmp.exists()
+inputs = []
 
-try:
-    tmp.write_text(updated)
-    os.replace(tmp, p)
-finally:
-    if tmp.exists():
-        tmp.unlink()
+for x in data["deep_in"]:
+    arr = x.detach().cpu().numpy().astype(
+        np.int64
+    ).reshape(1)
+    inputs.append(
+        Tensor.from_numpy(
+            np.ascontiguousarray(arr)
+        ).to(device)
+    )
 
-assert p.read_text() == updated
+wide = np.stack([
+    x.detach().cpu().numpy()
+    for x in data["wide_in"]
+], axis=1).astype(np.float32)
 
-print("MAIN CONTEXT EXTRA ACTIVATIONS: REMOVED")
-print("DEEP + WIDE: CORRECTED")
-print("MAX SOURCE SYNTAX: PASS")
-print("BACKUP:", backup)
-print("ORIGINAL PYTORCH AND DS CODE: UNCHANGED")
+assert wide.shape == (1, 127)
+
+inputs.append(
+    Tensor.from_numpy(
+        np.ascontiguousarray(wide)
+    ).to(device)
+)
+
+session = InferenceSession(devices=[device])
+model = session.load(graph)
+
+actual = model.execute(*inputs)[0].to_numpy()
+
+assert expected.shape == actual.shape == (1, 256)
+assert np.isfinite(actual).all()
+
+diff = np.abs(
+    expected.astype(np.float64)
+    - actual.astype(np.float64)
+)
+
+match = bool(np.allclose(
+    expected, actual,
+    rtol=1e-3,
+    atol=1e-3
+))
+
+print("\n=== MAIN CONTEXT REAL PARITY ===")
+print("SHAPE:", actual.shape)
+print("MEAN DIFF:", float(diff.mean()))
+print("MAX DIFF:", float(diff.max()))
+print("MATCH:", match)
+print("ORIGINAL PYTORCH AND DS CODE UNCHANGED")
+print("NO FILES MODIFIED")
 PY

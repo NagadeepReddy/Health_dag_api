@@ -1,28 +1,29 @@
 python - <<'PY'
 from pathlib import Path
 
-root = Path("artifacts/v1.168-max/cta_max")
+base = Path("artifacts/v1.168-max/cta_max")
 
-print("=== FULL GRAPH EXECUTION CALLERS ===")
-for p in sorted(root.rglob("*.py")):
-    s = p.read_text()
-    if "build_grecbase_fusion_graph_all8" in s or "grecbase_fusion_all8_max" in s:
-        print("\nFILE:", p)
-        for i, line in enumerate(s.splitlines(), 1):
-            if any(x in line for x in (
-                "import ", "build_grecbase_fusion_graph_all8(",
-                "session.load(", ".execute(", "weights_registry="
-            )):
-                print(f"{i}: {line.strip()[:180]}")
-
-print("\n=== SAVED REAL INPUTS AND WEIGHTS ===")
-for pattern in (
-    "*real*model*in*.pt",
-    "*real*input*.npz",
-    "*integration*weight*",
-):
-    for p in sorted(root.glob(pattern)):
-        print(p)
+for name in [
+    "grecbase_get_path_max.py",
+    "grecbase_fusion_all8_max.py",
+]:
+    p = base / name
+    print(f"\n=== {name} ===")
+    assert p.is_file(), f"Missing: {p}"
+    lines = p.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if any(k in line for k in (
+            "remove_tasks_dense2",
+            "grecbase_get_path_max(",
+            "graph.output(",
+            "return linear(",
+            "return result",
+        )):
+            lo = max(0, i - 3)
+            hi = min(len(lines), i + 5)
+            for j in range(lo, hi):
+                print(f"{j+1}: {lines[j]}")
+            print("---")
 
 print("READ ONLY — NO FILES MODIFIED")
 PY

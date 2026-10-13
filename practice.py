@@ -4,75 +4,78 @@ import ast
 import shutil
 
 p = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_full.py")
-source = p.read_text()
+s = p.read_text()
 
-old = "model = session.load(graph)"
+anchor = "model = session.load(\n    graph, weights_registry=weights_registry\n)"
 
-new = '''# Register existing trained checkpoint weights with MAX.
-import torch
+patch = '''# Reuse the previously exported trained MAX weights.
+# Never replace checkpoint values with conflicting exported values.
+export_dir = BASE / "grecbase_integration_weights"
+if not export_dir.is_dir():
+    raise RuntimeError(f"Existing MAX exports not found: {export_dir}")
 
-checkpoint = Path(
-    "artifacts/v1.168/core-artifact/model_0_base.pt"
-)
-state = torch.load(
-    checkpoint, map_location="cpu", weights_only=True
-)
+added = 0
+for file in sorted(export_dir.glob("*.npy")):
+    name = file.name[:-4]
+    value = np.load(file, allow_pickle=False)
 
-if "state_dict" in state:
-    state = state["state_dict"]
+    aliases = [name]
 
-weights_registry = {}
+    if name.startswith("ptransformer."):
+        aliases.append("sequence_transformer." + name)
 
-for name, tensor in state.items():
-    if not isinstance(tensor, torch.Tensor):
-        continue
+    if name.startswith("seq_dense."):
+        aliases.append("sequence_transformer." + name)
 
-    value = tensor.detach().cpu().contiguous().numpy()
+    for alias in aliases:
+        if alias in weights_registry:
+            existing = np.asarray(weights_registry[alias])
+            if not np.array_equal(existing, value):
+                raise RuntimeError(
+                    f"Conflicting trained weights for {alias}"
+                )
+        else:
+            weights_registry[alias] = value
+            added += 1
 
-    # Keep original checkpoint names.
-    weights_registry[name] = value
+print("EXISTING MAX EXPORTS REGISTERED:", added)
+print("TOTAL REGISTRY ENTRIES:", len(weights_registry))
 
-    # MAX Embedding modules use the name without '.weight'.
-    if name.endswith(".weight"):
-        weights_registry.setdefault(name[:-7], value)
+required_fused = [
+    f"sequence_transformer.ptransformer.{i}.fused_attn_ff_proj.weight"
+    for i in (0, 1)
+]
+missing_fused = [
+    name for name in required_fused
+    if name not in weights_registry
+]
 
-required = "sequence_transformer.page_embedding"
-
-if required not in weights_registry:
-    raise RuntimeError(
-        f"Checkpoint has no mapping for {required}"
+if missing_fused:
+    print("UNRESOLVED TRANSFORMER WEIGHT NAMES:", missing_fused)
+    print("AVAILABLE FUSED WEIGHTS:")
+    for name in sorted(weights_registry):
+        if "fused_attn_ff_proj" in name:
+            print(" ", name, np.asarray(weights_registry[name]).shape)
+    raise SystemExit(
+        "STOP: Weight-name mapping must be verified before execution"
     )
 
-print("TRAINED CHECKPOINT TENSORS:", len(state))
-print("MAX WEIGHT REGISTRY ENTRIES:", len(weights_registry))
-print("PAGE EMBEDDING REGISTERED: PASS", flush=True)
+print("BOTH TRANSFORMER FUSED WEIGHTS REGISTERED: PASS", flush=True)
 
-model = session.load(
-    graph, weights_registry=weights_registry
-)'''
+'''
 
-if old in source:
-    assert source.count(old) == 1
-    updated = source.replace(old, new, 1)
-    ast.parse(updated)
-
-    backup = p.with_suffix(".py.before_registry_fix")
+if "BOTH TRANSFORMER FUSED WEIGHTS REGISTERED: PASS" in s:
+    print("EXPORTED WEIGHT REGISTRATION ALREADY ADDED")
+elif s.count(anchor) == 1:
+    updated = s.replace(anchor, patch + anchor)
+    ast.parse(updated, filename=str(p))
+    backup = p.with_suffix(".py.before_export_registry_fix")
     if not backup.exists():
         shutil.copy2(p, backup)
-
     p.write_text(updated)
-    print("MAX WEIGHT REGISTRATION ADDED")
-    print("BACKUP:", backup)
-
-elif "PAGE EMBEDDING REGISTERED: PASS" in source:
-    print("WEIGHT REGISTRATION ALREADY ADDED")
-
+    print("EXISTING WEIGHT EXPORT REGISTRATION ADDED")
 else:
-    raise SystemExit(
-        "STOP: Runner differs from expected source"
-    )
-
-print("ORIGINAL PYTORCH/DS CODE UNCHANGED")
+    raise SystemExit("STOP: Unexpected runner structure; nothing changed")
 PY
 
 podman run --rm -i \

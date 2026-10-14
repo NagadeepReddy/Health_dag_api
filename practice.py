@@ -1,56 +1,70 @@
+set -o pipefail
+
 python3 - <<'PY'
-import ast
-import difflib
 from pathlib import Path
+import ast
+import shutil
 
-base = Path("artifacts/v1.168-max/cta_max")
-files = {
-    "WORKING_72": base / "grecbase_fusion_order_correct_max.py",
-    "OLD_71": base / "grecbase_fusion_seq_isolation_trial.py",
-}
+p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
+original = p.read_text()
+lines = original.splitlines(keepends=True)
 
-def extract(path):
-    source = path.read_text()
-    tree = ast.parse(source)
-    found = []
+start = next(
+    (i for i, line in enumerate(lines)
+     if "causal = np.triu(" in line),
+    None
+)
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
-        if name != "Graph":
-            continue
-        for kw in node.keywords:
-            if kw.arg == "input_types":
-                found.append((node.lineno, ast.unparse(kw.value)))
+if start is None:
+    raise SystemExit("STOP: Expected MAX causal mask not found. No changes.")
 
-    return found
+end = next(
+    (i for i in range(start + 1, len(lines))
+     if "attn = ops.softmax(scores)" in lines[i]),
+    None
+)
 
-results = {label: extract(path) for label, path in files.items()}
+if end is None or end - start > 12:
+    raise SystemExit("STOP: Unexpected attention layout. No changes.")
 
-for label, items in results.items():
-    print(f"\n=== {label} ===")
-    print("Graph input_types definitions:", len(items))
-    for line, expr in items:
-        print("Graph starts at line:", line)
-        print("Expression characters:", len(expr))
+removed = "".join(lines[start:end])
 
-if all(len(items) == 1 for items in results.values()):
-    old = results["OLD_71"][0][1]
-    new = results["WORKING_72"][0][1]
+if (
+    "scores = scores + ops.constant(" not in removed
+    or "causal.reshape(" not in removed
+    or "dtype=scores.dtype" not in removed
+):
+    raise SystemExit("STOP: Causal block differs. No changes.")
 
-    old_lines = old.replace(" + [", "\n+ [").splitlines()
-    new_lines = new.replace(" + [", "\n+ [").splitlines()
+replacement = (
+    " " * (len(lines[start]) - len(lines[start].lstrip()))
+    + "# Match original PyTorch: no causal mask; retain valid-length masking above.\n"
+)
 
-    print("\n=== EXACT GRAPH INPUT DIFFERENCE ===")
-    diff = list(difflib.unified_diff(
-        old_lines, new_lines,
-        fromfile="OLD_71", tofile="WORKING_72",
-        lineterm=""
-    ))
-    print("\n".join(diff[:100]) if diff else "Input definitions identical")
-else:
-    print("\nGraph definitions need a different comparison; no changes made.")
+updated = "".join(lines[:start]) + replacement + "".join(lines[end:])
+ast.parse(updated)
 
-print("\nOriginal files: UNCHANGED")
+backup = p.with_name(p.stem + ".before_causal_alignment.bak")
+if backup.exists():
+    raise SystemExit("STOP: Backup already exists. No changes.")
+
+shutil.copy2(p, backup)
+p.write_text(updated)
+
+print("MAX causal-mask alignment: APPLIED")
+print("Backup:", backup)
+print("Original PyTorch/DS files: UNCHANGED")
+print("MAX Python syntax: PASS")
 PY
+
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  exit "$rc"
+fi
+
+podman run --rm -i --pull=never \
+  -v "$PWD:/workspace:ro" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_max_branch_diag.py \
+  2>&1 | tail -50

@@ -16,6 +16,7 @@ with np.load(base + "max_sequence_stages_diag.npz") as saved:
 
 real = torch.load(base + "real_sanity_model_in.pt",
                   map_location="cpu", weights_only=True)
+
 state = torch.load(
     "artifacts/v1.168/core-artifact/model_0_base.pt",
     map_location="cpu", weights_only=True)
@@ -28,7 +29,7 @@ weights = {
 }
 
 block = ParallelTransformerBlock(
-    dim=256, dim_head=256, heads=6, ff_mult=2
+    dim=256, dim_head=256, heads=6, ff_mult=4
 ).eval()
 
 block.load_state_dict(weights, strict=True)

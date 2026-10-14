@@ -1,29 +1,35 @@
-cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-
 python3 - <<'PY'
-import os, subprocess, sys
-from urllib.parse import urlsplit
+import numpy as np
+from pathlib import Path
 
-p = subprocess.run(
-    [sys.executable, "-m", "pip", "config", "list"],
-    capture_output=True, text=True
-)
+b = Path("artifacts/v1.168-max/cta_max")
+max_file = b / "real_sanity_max_branches.npz"
+pt_file = b / "real_sanity_pytorch_same_input_verified.npz"
 
-entries = []
-for line in p.stdout.splitlines():
-    if "index-url" in line.lower() and "=" in line:
-        entries.append(line.split("=", 1)[1].strip().strip("'\""))
+with np.load(max_file, allow_pickle=False) as m, \
+     np.load(pt_file, allow_pickle=False) as p:
 
-for key in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
-    if os.getenv(key):
-        entries.append(os.environ[key])
+    for name in ("sequence", "sibling"):
+        print(f"\n=== {name.upper()} ===")
+        if name not in m or name not in p:
+            print("Missing saved key")
+            print("MAX keys:", m.files)
+            print("PT keys:", p.files)
+            continue
 
-print("CONFIGURED PACKAGE REPOSITORIES:")
-if entries:
-    for value in sorted(set(entries)):
-        print(urlsplit(value).hostname or "Non-URL configuration")
-else:
-    print("NONE — internal repository needed")
+        a = np.asarray(m[name], dtype=np.float64)
+        e = np.asarray(p[name], dtype=np.float64)
 
-print("NO FILES MODIFIED")
+        print("Shapes:", a.shape, e.shape)
+        if a.size != e.size:
+            print("SIZE MISMATCH")
+            continue
+
+        a, e = a.ravel(), e.ravel()
+        d = np.abs(a - e)
+        print("Max difference:", d.max())
+        print("Mean difference:", d.mean())
+        print("Worst 8 indices:")
+        for i in np.argsort(d)[-8:][::-1]:
+            print(f"  {i}: PT={e[i]:.6f}, MAX={a[i]:.6f}, diff={d[i]:.6f}")
 PY

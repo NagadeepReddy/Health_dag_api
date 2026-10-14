@@ -20,41 +20,42 @@ state = torch.load(
 )
 state = state.get("state_dict", state)
 
-def weight(name):
+def w(name):
     return state["sequence_transformer." + name].float()
 
 norm1 = RMSNorm(256).eval()
 norm2 = RMSNorm(256).eval()
 dense = torch.nn.Linear(512, 256).eval()
 
-norm1.load_state_dict({"g": weight("out_norm1.g")})
-norm2.load_state_dict({"g": weight("out_norm2.g")})
+norm1.load_state_dict({"g": w("out_norm1.g")})
+norm2.load_state_dict({"g": w("out_norm2.g")})
 dense.load_state_dict({
-    "weight": weight("seq_dense.weight"),
-    "bias": weight("seq_dense.bias")
+    "weight": w("seq_dense.weight"),
+    "bias": w("seq_dense.bias")
 })
 
 with torch.no_grad():
-    x = norm1(x)
+    normalized = norm1(x)
     pooled = torch.cat(
-        [x.mean(dim=1), x.max(dim=1).values],
-        dim=-1
+        [normalized.mean(1), normalized.max(1).values], dim=-1
     )
-    pt_sequence = norm2(dense(pooled)).numpy()
+    pt = norm2(dense(pooled)).numpy()
+
+max_final = np.load(base / "real_sanity_max_2048_full_runner.npy")
+assert max_final.shape == (1, 2048), max_final.shape
+mx = max_final[:, :256]
 
 with np.load(base / "real_sanity_pytorch_same_input_verified.npz") as data:
-    expected = data["sequence"]
+    reference = data["sequence"].copy()
 
-assert pt_sequence.shape == expected.shape
-
-diff = np.abs(
-    pt_sequence.astype(np.float64) -
-    expected.astype(np.float64)
-)
-
-print("PYTORCH POSTPROCESS MAX_DIFF:", diff.max())
-print("PYTORCH POSTPROCESS MEAN_DIFF:", diff.mean())
-print("PYTORCH POSTPROCESS MATCH:", np.allclose(
-    pt_sequence, expected, rtol=1e-3, atol=1e-3
-))
+for label, a, b in [
+    ("PYTORCH POSTPROCESS vs MAX", pt, mx),
+    ("PYTORCH POSTPROCESS vs SAVED REFERENCE", pt, reference),
+    ("MAX vs SAVED REFERENCE", mx, reference)
+]:
+    d = np.abs(a.astype(np.float64) - b.astype(np.float64))
+    print("\n" + label)
+    print("MAX_DIFF:", d.max())
+    print("MEAN_DIFF:", d.mean())
+    print("MATCH:", np.allclose(a, b, rtol=1e-3, atol=1e-3))
 PY

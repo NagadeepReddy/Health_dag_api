@@ -2,44 +2,30 @@ podman run --rm -i --pull=never \
   -v "$PWD:/workspace:ro" -w /workspace \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import torch
-import numpy as np
+import sys, torch, numpy as np
 from pathlib import Path
 
 base = Path("artifacts/v1.168-max/cta_max")
-folder = base / "sibling_context_weights"
+sys.path.insert(0, str(base))
 
-state = torch.load(
-    "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu",
-    weights_only=True
-)
-state = state.get("state_dict", state)
+from run_real_sanity_input_adapter import build_real_inputs
 
-print("=== SIBLING WEIGHT AUDIT ===")
-matched = missing = mismatched = 0
+data = torch.load(base/"real_sanity_model_in.pt",
+                  map_location="cpu", weights_only=True)
+labels, arrays = build_real_inputs(model_in=data)
 
-for path in sorted(folder.glob("*.npy")):
-    key = path.stem
-    if key not in state:
-        print("CHECKPOINT KEY MISSING:", key)
-        missing += 1
-        continue
+print("=== ORIGINAL FIRST VALID SIBLING ===")
+for key in ("sibling_deep_in", "sibling_wide_in", "sibling_v1_in"):
+    x = data[key].detach().cpu().numpy()
+    print(key, "shape:", x.shape,
+          "first:", x[..., 0].ravel()[:8].tolist())
 
-    actual = np.load(path, allow_pickle=False)
-    expected = state[key].detach().cpu().numpy()
+print("\n=== MAX MAPPED SIBLING INPUTS ===")
+matches = [(i, str(label), np.asarray(arr))
+           for i, (label, arr) in enumerate(zip(labels, arrays))
+           if "sibling" in str(label).lower()]
 
-    if actual.shape != expected.shape:
-        print("SHAPE MISMATCH:", key, actual.shape, expected.shape)
-        mismatched += 1
-    elif not np.array_equal(actual, expected):
-        print("VALUE MISMATCH:", key,
-              float(np.max(np.abs(actual - expected))))
-        mismatched += 1
-    else:
-        matched += 1
-
-print("EXACT MATCH:", matched)
-print("MISSING KEYS:", missing)
-print("MISMATCHED:", mismatched)
+print("Mapped sibling entries:", len(matches))
+for i, label, arr in matches[:8]:
+    print(i, label, arr.shape, arr.ravel()[:8].tolist())
 PY

@@ -1,12 +1,18 @@
 podman run --rm -i --entrypoint python \
   -v "$PWD:/workspace:Z" -w /workspace \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import torch
-import torch.nn.functional as F
+import sys
 import numpy as np
+import torch
 from pathlib import Path
 
+sys.path.insert(0, "artifacts/v1.168/utils/dependency-utils")
+from models import ParallelTransformerBlock
+
 p = Path("artifacts/v1.168-max/cta_max")
+with np.load(p / "max_sequence_stages_diag.npz") as saved:
+    features = torch.from_numpy(saved["features"].copy())
+    max_block0 = saved["after_block0"].copy()
 
 real = torch.load(p / "real_sanity_model_in.pt",
                   map_location="cpu", weights_only=True)
@@ -14,44 +20,29 @@ state = torch.load("artifacts/v1.168/core-artifact/model_0_base.pt",
                    map_location="cpu", weights_only=True)
 state = state.get("state_dict", state)
 
-def w(name):
-    return state["sequence_transformer." + name].float()
+prefix = "sequence_transformer.ptransformer.0.fn."
+weights = {k[len(prefix):]: v for k, v in state.items()
+           if k.startswith(prefix)}
+assert weights, "Block 0 checkpoint weights not found"
 
-page_ids = real["page_in"].long()
-item_ids = real["item_in"].long()
-meta_ids = real["item_meta_in"].long()
+block = ParallelTransformerBlock(
+    dim=256, dim_head=64, heads=4, ff_mult=4
+).eval()
 
-page = F.embedding(page_ids, w("page_embedding.weight"))
-item = F.embedding(item_ids, w("item_embedding.weight"))
-meta = F.embedding(meta_ids, w("item_meta_embedding.weight"))
-pre = F.embedding(item_ids, w("item_pre_embedding.weight"))
+block.load_state_dict(weights, strict=True)
 
-wide = torch.as_tensor(real["page_meta_wide_in"][0]).float()
-wide = wide.reshape(1, 50, 1)
+with torch.no_grad():
+    pt_block0 = (
+        features + block(features, real["vl_in"])
+    ).numpy()
 
-page_wide = F.leaky_relu(
-    F.linear(wide, w("page_meta_wide_dense.weight"),
-             w("page_meta_wide_dense.bias")),
-    negative_slope=0.2
-)
+assert pt_block0.shape == max_block0.shape
+diff = np.abs(pt_block0.astype(np.float64) -
+              max_block0.astype(np.float64))
 
-pt_features = (
-    torch.cat([page, page_wide], dim=-1) *
-    torch.cat([item, meta, pre], dim=-1)
-).detach().numpy()
-
-with np.load(p / "max_sequence_stages_diag.npz") as data:
-    mx_features = data["features"]
-
-print("PYTORCH:", pt_features.shape)
-print("MAX:", mx_features.shape)
-
-assert pt_features.shape == mx_features.shape
-diff = np.abs(pt_features.astype(np.float64) -
-              mx_features.astype(np.float64))
-
+print("BLOCK 0 PYTORCH vs MAX")
 print("MAX_DIFF:", diff.max())
 print("MEAN_DIFF:", diff.mean())
 print("MATCH:", np.allclose(
-    pt_features, mx_features, rtol=1e-3, atol=1e-3))
+    pt_block0, max_block0, rtol=1e-3, atol=1e-3))
 PY

@@ -1,29 +1,28 @@
 python3 - <<'PY'
 from pathlib import Path
 import ast
-import shutil
 
 p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
-s = p.read_text()
+backup = p.with_suffix(".py.before_mask_direction_fix.bak")
+
+assert backup.is_file(), "STOP: original backup missing"
+
+current = p.read_text()
+original = backup.read_text()
 
 old = "scores = ops.where(positions >= valid, negative, scores)"
 new = "scores = ops.where(positions < valid, negative, scores)"
 
-assert s.count(old) == 1, (
-    f"STOP: Expected exactly one mask expression; found {s.count(old)}. No changes."
+assert original.count(old) == 1, "STOP: backup differs"
+assert current.count(new) == 1, "STOP: current mask differs"
+assert current.replace(new, old, 1) == original, (
+    "STOP: other changes detected; no restoration"
 )
 
-updated = s.replace(old, new, 1)
-ast.parse(updated)
+ast.parse(original)
+p.write_text(original)
 
-backup = p.with_suffix(".py.before_mask_direction_fix.bak")
-assert not backup.exists(), "STOP: backup already exists; no changes."
-
-shutil.copy2(p, backup)
-p.write_text(updated)
-
-print("MAX mask direction aligned with original PyTorch")
-print("Python syntax: PASS")
-print("Original DS code: UNCHANGED")
-print("Backup:", backup)
+print("Previous MAX mask RESTORED")
+print("Python syntax PASS")
+print("Original DS code UNCHANGED")
 PY

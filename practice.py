@@ -1,69 +1,39 @@
 python3 - <<'PY'
 from pathlib import Path
-import ast, shutil
+import ast
+import shutil
+import re
 
 p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
-source = p.read_text()
-tree = ast.parse(source)
-matches = []
+s = p.read_text()
 
-def assigns(node, name):
-    return (
-        isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == name
-    )
+start = re.search(r'(?m)^[ \t]*causal = np\.triu\(', s)
+assert start, "STOP: causal mask not found"
 
-for parent in ast.walk(tree):
-    body = getattr(parent, "body", None)
-    if not isinstance(body, list):
-        continue
+end = re.search(
+    r'(?m)^[ \t]*attn = ops\.softmax\(scores\)',
+    s[start.end():]
+)
+assert end, "STOP: attention statement not found"
 
-    for i, node in enumerate(body):
-        if not assigns(node, "causal"):
-            continue
-        if not any(
-            isinstance(x, ast.Call)
-            and isinstance(x.func, ast.Attribute)
-            and x.func.attr == "triu"
-            for x in ast.walk(node.value)
-        ):
-            continue
+end_pos = start.end() + end.start()
+block = s[start.start():end_pos]
 
-        additions = [
-            later for later in body[i+1:]
-            if assigns(later, "scores")
-            and isinstance(later.value, ast.BinOp)
-            and isinstance(later.value.op, ast.Add)
-            and isinstance(later.value.left, ast.Name)
-            and later.value.left.id == "scores"
-            and any(
-                isinstance(x, ast.Name) and x.id == "causal"
-                for x in ast.walk(later.value)
-            )
-        ]
-        if len(additions) == 1:
-            matches.append((node, additions[0]))
+assert block.count("scores = scores + ops.constant(") == 1
+assert block.count("causal.reshape(") == 1
+assert block.count("np.ones(") == 1
 
-assert len(matches) == 1, f"STOP: found {len(matches)} blocks; no changes"
-
-a, b = matches[0]
-lines = source.splitlines(keepends=True)
-
-for node in sorted((a, b), key=lambda n: n.lineno, reverse=True):
-    del lines[node.lineno-1:node.end_lineno]
-
-updated = "".join(lines)
+updated = s[:start.start()] + s[end_pos:]
 ast.parse(updated)
 
-backup = p.with_suffix(".py.before_causal_removal.bak")
-assert not backup.exists(), "STOP: backup exists; no changes"
+backup = p.with_suffix(".py.before_causal_alignment.bak")
+assert not backup.exists(), "STOP: backup already exists"
+
 shutil.copy2(p, backup)
 p.write_text(updated)
 
-print("MAX causal mask removed")
-print("Python syntax PASS")
-print("Original DS code UNCHANGED")
+print("MAX causal mask removed: PASS")
+print("Python syntax: PASS")
+print("Original DS code: UNCHANGED")
 print("Backup:", backup)
 PY

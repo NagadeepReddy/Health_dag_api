@@ -1,33 +1,38 @@
-python3 - <<'PY'
+podman run --rm -i --pull=never \
+  -v "$PWD:/workspace:ro" -w /workspace \
+  verizon/modular/max-full:latest python3 - <<'PY'
 import torch
 import numpy as np
 from pathlib import Path
 
 base = Path("artifacts/v1.168")
-ckpt = torch.load(base/"core-artifact/model_0_base.pt",
-                  map_location="cpu", weights_only=True)
-state = ckpt.get("state_dict", ckpt)
-weights = base.parent/"v1.168-max/cta_max/sequence_weights"
+maxdir = Path("artifacts/v1.168-max/cta_max")
+state = torch.load(
+    base / "core-artifact/model_0_base.pt",
+    map_location="cpu",
+    weights_only=True
+)
+state = state.get("state_dict", state)
 
-for name in ("seq_dense.weight", "seq_dense.bias",
-             "sequence_transformer.seq_dense.weight",
-             "sequence_transformer.seq_dense.bias"):
-    print("\n", name)
-    if name not in state:
-        print("CHECKPOINT KEY MISSING")
+checks = {
+    "seq_dense.weight": maxdir/"sequence_weights/seq_dense.weight.npy",
+    "seq_dense.bias": maxdir/"sequence_weights/seq_dense.bias.npy",
+    "sequence_transformer.seq_dense.weight": maxdir/"sequence_weights/seq_dense.weight.npy",
+    "sequence_transformer.seq_dense.bias": maxdir/"sequence_weights/seq_dense.bias.npy",
+}
+
+for key, path in checks.items():
+    print("\nCHECK:", key)
+    if key not in state:
+        print("Checkpoint key missing")
         continue
-    original = state[name].detach().cpu().numpy()
-    print("Checkpoint shape:", original.shape)
-    exported = weights/(name.split(".")[-2]+"."+name.split(".")[-1]+".npy")
-    if name.startswith("sequence_transformer."):
-        print("Internal layer uses checkpoint registration")
+    if not path.exists():
+        print("Export missing")
         continue
-    if exported.exists():
-        actual = np.load(exported, allow_pickle=False)
-        print("MAX export shape:", actual.shape)
-        print("MATCH:", np.array_equal(original, actual))
-        if original.shape == actual.shape:
-            print("MAX DIFF:", np.max(np.abs(original-actual)))
-    else:
-        print("MAX export MISSING:", exported)
+    pt = state[key].detach().cpu().numpy()
+    mx = np.load(path, allow_pickle=False)
+    print("Shapes:", pt.shape, mx.shape)
+    print("Exact match:", np.array_equal(pt, mx))
+    if pt.shape == mx.shape:
+        print("Max difference:", float(np.max(np.abs(pt-mx))))
 PY

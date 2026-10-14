@@ -1,44 +1,43 @@
 python3 - <<'PY'
-import ast
+import numpy as np
+import torch
 from pathlib import Path
 
-cases = [
-    ("ORIGINAL PYTORCH",
-     "artifacts/v1.168/utils/dependency-utils/models.py",
-     "ParallelTransformerBlock",
-     {"forward", "create_key_padding_mask", "get_mask"}),
-    ("ACTIVE MAX",
-     "artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py",
-     "ParallelTransformerBlockMAX",
-     {"__call__"}),
-]
+base = Path("artifacts/v1.168-max/cta_max")
+ckpt = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
 
-terms = ("mask", "valid", "score", "softmax", "attn",
-         "norm", "ff", "rotary", "residual", "position")
+state = torch.load(ckpt, map_location="cpu", weights_only=True)
+if "state_dict" in state:
+    state = state["state_dict"]
 
-for label, filename, classname, methods in cases:
-    p = Path(filename)
-    lines = p.read_text().splitlines()
-    tree = ast.parse("\n".join(lines))
-    classes = [n for n in ast.walk(tree)
-               if isinstance(n, ast.ClassDef) and n.name == classname]
+for i in (0, 1):
+    key = f"sequence_transformer.ptransformer.{i}.fn.norm2.weight"
+    file = base / "sequence_weights" / (
+        "fn_norm2_g.npy" if i == 0 else "fn_norm2_g_layer1.npy"
+    )
 
-    print("\n===", label, "===")
-    if not classes:
-        print("CLASS NOT FOUND:", classname)
+    print(f"\n=== TRANSFORMER LAYER {i} ===")
+    print("Checkpoint key exists:", key in state)
+    print("MAX weight file exists:", file.is_file())
+
+    if key not in state or not file.is_file():
+        print("STOP: cannot verify this layer")
+        print("Available checkpoint Norm2 keys:",
+              [k for k in state if "norm2" in k and "ptransformer" in k])
         continue
 
-    for cls in classes:
-        for fn in cls.body:
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if fn.name not in methods:
-                continue
-            print("METHOD:", fn.name)
-            for i in range(fn.lineno, fn.end_lineno + 1):
-                line = lines[i - 1]
-                if any(term in line.lower() for term in terms):
-                    print(f"{i}: {line}")
+    pt = state[key].detach().cpu().numpy()
+    mx = np.load(file, allow_pickle=False)
 
-print("\nREAD-ONLY COMPARISON COMPLETE")
+    print("PyTorch shape:", pt.shape)
+    print("MAX shape:", mx.shape)
+
+    if pt.shape != mx.shape:
+        print("SHAPE MISMATCH")
+        continue
+
+    print("MAX_DIFF:", float(np.max(np.abs(pt.astype(np.float64) - mx.astype(np.float64)))))
+    print("EXACT MATCH:", bool(np.array_equal(pt, mx)))
+
+print("\nREAD-ONLY VERIFICATION COMPLETE")
 PY

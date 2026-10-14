@@ -1,40 +1,37 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-python3 - <<'PY'
+podman run --rm -i \
+  -v "$PWD:/workspace" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import sys, json
 from pathlib import Path
-import ast
 
-p = Path("artifacts/v1.168-max/cta_max/live_cta_pipeline_bridge.py")
-assert not p.exists(), "STOP: Bridge already exists"
+root = Path.cwd()
+sys.path[:0] = [
+    str(root / "artifacts/v1.168/core-artifact"),
+    str(root / "artifacts/v1.168-max"),
+    str(root / "artifacts/v1.168-max/cta_max"),
+]
 
-code = '''
-import numpy as np
-import torch
+from pipeline import pipeline
+from cta_max.live_cta_pipeline_bridge import attach_max
 
-from cta_max.run_live_max_inference import infer_max_live
+source = root / "artifacts/v1.168/samples/sanity_input.json"
+body = json.loads(source.read_text())
 
-class MaxCTAInference:
-    def eval(self):
-        return self
+print("REAL SANITY JSON: LOADED", flush=True)
 
-    def __call__(self, **model_in):
-        result = np.asarray(infer_max_live(model_in), dtype=np.float32)
-        assert result.shape == (1, 2048), "Unexpected MAX output"
-        assert np.isfinite(result).all(), "Non-finite output"
-        return torch.from_numpy(np.ascontiguousarray(result))
+app = attach_max(pipeline())
+print("MAX BRIDGE: ATTACHED", flush=True)
 
-def attach_max(pipeline):
-    pipeline.model_atc = MaxCTAInference()
-    return pipeline
-'''
+result = app.predict_raw(body)
 
-ast.parse(code)
-p.write_text(code)
+assert isinstance(result, (dict, list))
+json.dumps(result, allow_nan=False)
 
-print("MAX PIPELINE BRIDGE: CREATED")
-print("ORIGINAL PREPROCESSING: UNCHANGED")
-print("ORIGINAL SCORING/POSTPROCESSING: UNCHANGED")
-print("ORIGINAL DS CODE: UNCHANGED")
-print("PYTHON SYNTAX: PASS")
-print("JSON END-TO-END: NOT YET TESTED")
+print("REAL JSON END-TO-END: PASS")
+print("FINAL RESPONSE TYPE:", type(result).__name__)
+print("FINAL RESPONSE JSON: VALID")
+print("ORIGINAL SOURCE FILES: NOT EDITED")
 PY

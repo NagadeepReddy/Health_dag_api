@@ -1,83 +1,78 @@
 podman run --rm -i --entrypoint python \
   -v "$PWD:/workspace:Z" -w /workspace \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import sys
+import runpy
+import numpy as np
+import torch
 from pathlib import Path
-import re
-import textwrap
 
-runner = Path("artifacts/v1.168-max/cta_max/run_real_sanity_max_branch_diag.py")
-source = runner.read_text()
+base = Path("artifacts/v1.168-max/cta_max").resolve()
 
-match = re.search(r"(?m)^([ \t]*)branches\s*=", source)
-if not match:
-    raise SystemExit("STOP: runner insertion point not found")
+# Required paths for the existing runner and its imports
+sys.path.insert(0, str(base.parent))
+sys.path.insert(0, str(base))
 
-diagnostic = '''
-import sys as _sys
-import numpy as _np
-import torch as _torch
+# Run existing MAX implementation, without editing it
+result = runpy.run_path(
+    str(base / "run_real_sanity_max_branch_diag.py"),
+    run_name="__main__"
+)
 
-_sys.path.insert(0, "artifacts/v1.168/utils/dependency-utils")
-from models import RMSNorm as _RMSNorm
+outputs = result["outputs"]
+mx = np.asarray(outputs[1].to_numpy(), dtype=np.float32)
 
-_p = Path("artifacts/v1.168-max/cta_max")
+# Previously captured Block 1 result
+with np.load(base / "max_sequence_stages_diag.npz") as data:
+    x = torch.from_numpy(data["after_block1"].copy())
 
-with _np.load(_p / "max_sequence_stages_diag.npz") as _data:
-    _x = _torch.from_numpy(_data["after_block1"].copy())
-
-_state = _torch.load(
+state = torch.load(
     "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu", weights_only=True
+    map_location="cpu",
+    weights_only=True
 )
-_state = _state.get("state_dict", _state)
+state = state.get("state_dict", state)
 
-def _w(name):
-    return _state["sequence_transformer." + name].float()
+sys.path.insert(
+    0, "artifacts/v1.168/utils/dependency-utils"
+)
+from models import RMSNorm
 
-_n1 = _RMSNorm(256).eval()
-_n2 = _RMSNorm(256).eval()
-_dense = _torch.nn.Linear(512, 256).eval()
+def w(name):
+    return state["sequence_transformer." + name].float()
 
-_n1.load_state_dict({"g": _w("out_norm1.g")})
-_n2.load_state_dict({"g": _w("out_norm2.g")})
-_dense.load_state_dict({
-    "weight": _w("seq_dense.weight"),
-    "bias": _w("seq_dense.bias")
+n1 = RMSNorm(256).eval()
+n2 = RMSNorm(256).eval()
+dense = torch.nn.Linear(512, 256).eval()
+
+n1.load_state_dict({"g": w("out_norm1.g")})
+n2.load_state_dict({"g": w("out_norm2.g")})
+dense.load_state_dict({
+    "weight": w("seq_dense.weight"),
+    "bias": w("seq_dense.bias")
 })
 
-with _torch.no_grad():
-    _x = _n1(_x)
-    _pooled = _torch.cat(
-        [_x.mean(1), _x.max(1).values], dim=-1
+with torch.no_grad():
+    x = n1(x)
+    pooled = torch.cat(
+        [x.mean(1), x.max(1).values], dim=-1
     )
-    _pt = _n2(_dense(_pooled)).numpy()
+    pt = n2(dense(pooled)).numpy()
 
-_mx = _np.asarray(outputs[1].to_numpy(), dtype=_np.float32)
+print("\n=== PYTORCH POSTPROCESS vs CURRENT MAX ===")
+print("PT SHAPE:", pt.shape)
+print("MAX SHAPE:", mx.shape)
 
-print("\\n=== FRESH PYTORCH vs CURRENT MAX SEQUENCE ===")
-print("PYTORCH SHAPE:", _pt.shape)
-print("MAX SHAPE:", _mx.shape)
+assert pt.shape == mx.shape
 
-if _pt.shape != _mx.shape:
-    raise RuntimeError("Sequence shape mismatch")
-
-_diff = _np.abs(_pt.astype(_np.float64) -
-                _mx.astype(_np.float64))
-print("MAX_DIFF:", float(_diff.max()))
-print("MEAN_DIFF:", float(_diff.mean()))
-print("MATCH:", bool(_np.allclose(
-    _pt, _mx, rtol=1e-3, atol=1e-3
-)))
-'''
-
-source = (
-    source[:match.start()]
-    + textwrap.indent(diagnostic, match.group(1))
-    + source[match.start():]
+diff = np.abs(
+    pt.astype(np.float64) - mx.astype(np.float64)
 )
 
-exec(compile(source, str(runner), "exec"), {
-    "__name__": "__main__",
-    "__file__": str(runner),
-})
+print("MAX_DIFF:", float(diff.max()))
+print("MEAN_DIFF:", float(diff.mean()))
+print("MATCH:", bool(np.allclose(
+    pt, mx, rtol=1e-3, atol=1e-3
+)))
+print("NOTE: PyTorch uses the previously saved Block 1 tensor.")
 PY

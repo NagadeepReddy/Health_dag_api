@@ -9,33 +9,48 @@ files = {
     "OLD_71": base / "grecbase_fusion_seq_isolation_trial.py",
 }
 
-blocks = {}
-
-for label, path in files.items():
+def extract(path):
     source = path.read_text()
     tree = ast.parse(source)
-    nodes = [
-        node for node in ast.walk(tree)
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-        and any(
-            isinstance(t, ast.Name) and t.id == "input_types"
-            for t in (node.targets if isinstance(node, ast.Assign) else [node.target])
-        )
-    ]
-    if len(nodes) != 1:
-        raise SystemExit(f"{label}: expected one input_types assignment, found {len(nodes)}")
-    blocks[label] = ast.unparse(nodes[0]).splitlines()
+    found = []
 
-print("=== EXACT INPUT DECLARATION DIFFERENCE ===")
-difference = list(difflib.unified_diff(
-    blocks["OLD_71"], blocks["WORKING_72"],
-    fromfile="OLD_71", tofile="WORKING_72", lineterm=""
-))
-print("\n".join(difference) if difference else "Declarations identical; difference is elsewhere.")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        if name != "Graph":
+            continue
+        for kw in node.keywords:
+            if kw.arg == "input_types":
+                found.append((node.lineno, ast.unparse(kw.value)))
 
-print("\n=== REMAINING INPUT ASSERTIONS ===")
-for label, path in files.items():
-    for number, line in enumerate(path.read_text().splitlines(), 1):
-        if "len(remaining)" in line:
-            print(f"{label}:{number}: {line.strip()}")
+    return found
+
+results = {label: extract(path) for label, path in files.items()}
+
+for label, items in results.items():
+    print(f"\n=== {label} ===")
+    print("Graph input_types definitions:", len(items))
+    for line, expr in items:
+        print("Graph starts at line:", line)
+        print("Expression characters:", len(expr))
+
+if all(len(items) == 1 for items in results.values()):
+    old = results["OLD_71"][0][1]
+    new = results["WORKING_72"][0][1]
+
+    old_lines = old.replace(" + [", "\n+ [").splitlines()
+    new_lines = new.replace(" + [", "\n+ [").splitlines()
+
+    print("\n=== EXACT GRAPH INPUT DIFFERENCE ===")
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile="OLD_71", tofile="WORKING_72",
+        lineterm=""
+    ))
+    print("\n".join(diff[:100]) if diff else "Input definitions identical")
+else:
+    print("\nGraph definitions need a different comparison; no changes made.")
+
+print("\nOriginal files: UNCHANGED")
 PY

@@ -1,40 +1,64 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
 python3 - <<'PY'
-import ast
 from pathlib import Path
+from textwrap import indent
+import ast
 
 base = Path("artifacts/v1.168-max/cta_max")
-p = ast.parse(Path("artifacts/v1.168/core-artifact/pipeline.py").read_text())
-a = ast.parse((base / "run_real_sanity_input_adapter.py").read_text())
+src = base / "run_real_sanity_full_head_72.py"
+dst = base / "run_live_max_inference.py"
 
-assignments = [
-    n for n in ast.walk(p)
-    if isinstance(n, ast.Assign)
-    and isinstance(n.value, ast.Dict)
-    and any(isinstance(t, ast.Name) and t.id == "model_in" for t in n.targets)
+assert not dst.exists(), "STOP: Live runner already exists"
+
+lines = src.read_text().splitlines(keepends=True)
+
+starts = [
+    i for i, line in enumerate(lines)
+    if line.strip() == "labels, arrays = build_real_inputs()"
 ]
-assert len(assignments) == 1, "STOP: Unexpected model_in definitions"
-
-keys = {
-    k.value for k in assignments[0].value.keys
-    if isinstance(k, ast.Constant) and isinstance(k.value, str)
-}
-
-fn = next(n for n in ast.walk(a)
-          if isinstance(n, ast.FunctionDef) and n.name == "build_real_inputs")
-
-groups = [
-    [v.value for v in n.args if isinstance(v, ast.Constant) and isinstance(v.value, str)]
-    for n in ast.walk(fn)
-    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "get"
+ends = [
+    i for i, line in enumerate(lines)
+    if line.strip() == "for i, output in enumerate(outputs):"
 ]
 
-missing = [g for g in groups if g and not any(k in keys for k in g)]
+assert len(starts) == len(ends) == 1, "STOP: Runner structure differs"
 
-print("PIPELINE INPUT KEYS:", len(keys))
-print("ADAPTER INPUT LOOKUPS:", len(groups))
-print("MISSING KEY GROUPS:", missing)
-print("KEY CONTRACT:", "PASS" if not missing and groups else "NEEDS FIX")
-print("NO FILES MODIFIED")
+start, end = starts[0], ends[0]
+assert start < end
+
+body = "".join(lines[start:end])
+assert "session.load(" in body
+assert "model.execute(*runtime_inputs)" in body
+
+body = body.replace(
+    "labels, arrays = build_real_inputs()",
+    "labels, arrays = build_real_inputs(model_in=model_in)",
+    1
+)
+
+new_code = (
+    "".join(lines[:start])
+    + "\ndef infer_max_live(model_in):\n"
+    + indent(body, "    ")
+    + """
+    results = [
+        np.asarray(o.to_numpy(), dtype=np.float32)
+        for o in outputs
+    ]
+    assert len(results) == 1, "Unexpected MAX output count"
+    assert np.isfinite(results[0]).all(), "Non-finite MAX output"
+    return results[0]
+"""
+)
+
+ast.parse(new_code)
+dst.write_text(new_code)
+
+print("LIVE MAX RUNNER: CREATED")
+print("EXISTING GRAPH AND WEIGHTS: REUSED")
+print("LIVE 72-INPUT ADAPTER: CONNECTED")
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL RUNNER/DS/PIPELINE: UNCHANGED")
+print("LIVE EXECUTION: NOT YET TESTED")
 PY

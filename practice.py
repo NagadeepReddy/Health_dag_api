@@ -1,30 +1,41 @@
-(
-set -euo pipefail
-
-f="artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py"
-backup="$(mktemp)"
-cp "$f" "$backup"
-trap 'cp "$backup" "$f"; rm -f "$backup"' EXIT
-
 python3 - <<'PY'
+import ast
+import difflib
 from pathlib import Path
 
-p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
-s = p.read_text()
+base = Path("artifacts/v1.168-max/cta_max")
+files = {
+    "WORKING_72": base / "grecbase_fusion_order_correct_max.py",
+    "OLD_71": base / "grecbase_fusion_seq_isolation_trial.py",
+}
 
-old = ") * -1.0e9"
-assert s.count(old) == 1, "STOP: Mask expression differs; no change made"
+blocks = {}
 
-p.write_text(s.replace(old, ") * 0.0", 1))
-print("TEMPORARY CAUSAL-MASK TEST: READY")
+for label, path in files.items():
+    source = path.read_text()
+    tree = ast.parse(source)
+    nodes = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and any(
+            isinstance(t, ast.Name) and t.id == "input_types"
+            for t in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        )
+    ]
+    if len(nodes) != 1:
+        raise SystemExit(f"{label}: expected one input_types assignment, found {len(nodes)}")
+    blocks[label] = ast.unparse(nodes[0]).splitlines()
+
+print("=== EXACT INPUT DECLARATION DIFFERENCE ===")
+difference = list(difflib.unified_diff(
+    blocks["OLD_71"], blocks["WORKING_72"],
+    fromfile="OLD_71", tofile="WORKING_72", lineterm=""
+))
+print("\n".join(difference) if difference else "Declarations identical; difference is elsewhere.")
+
+print("\n=== REMAINING INPUT ASSERTIONS ===")
+for label, path in files.items():
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        if "len(remaining)" in line:
+            print(f"{label}:{number}: {line.strip()}")
 PY
-
-podman run --rm -i --pull=never \
-  -v "$PWD:/workspace:ro" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  artifacts/v1.168-max/cta_max/run_real_sanity_max_branch_diag.py \
-  2>&1 | grep -E 'sequence (PASS|FAIL)|CURRENT BRANCH PARITY|VERIFIED FINAL MAX_DIFF|VERIFIED FINAL MATCH|Traceback|Error|AssertionError'
-
-echo "MAX source automatically restored"
-)

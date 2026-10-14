@@ -2,65 +2,38 @@ set -o pipefail
 
 python3 - <<'PY'
 from pathlib import Path
-import ast
 import shutil
+import ast
 
 p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
-original = p.read_text()
-lines = original.splitlines(keepends=True)
 
-start = next(
-    (i for i, line in enumerate(lines)
-     if "causal = np.triu(" in line),
-    None
-)
+old = "scores = ops.where(positions >= valid, negative, scores)"
+new = "scores = ops.where(positions < valid, negative, scores)"
 
-if start is None:
-    raise SystemExit("STOP: Expected MAX causal mask not found. No changes.")
+s = p.read_text()
 
-end = next(
-    (i for i in range(start + 1, len(lines))
-     if "attn = ops.softmax(scores)" in lines[i]),
-    None
-)
+if s.count(old) != 1:
+    raise SystemExit("STOP: Expected mask expression not found exactly once.")
 
-if end is None or end - start > 12:
-    raise SystemExit("STOP: Unexpected attention layout. No changes.")
+backup = p.with_suffix(".before_valid_mask_fix.bak")
 
-removed = "".join(lines[start:end])
-
-if (
-    "scores = scores + ops.constant(" not in removed
-    or "causal.reshape(" not in removed
-    or "dtype=scores.dtype" not in removed
-):
-    raise SystemExit("STOP: Causal block differs. No changes.")
-
-replacement = (
-    " " * (len(lines[start]) - len(lines[start].lstrip()))
-    + "# Match original PyTorch: no causal mask; retain valid-length masking above.\n"
-)
-
-updated = "".join(lines[:start]) + replacement + "".join(lines[end:])
-ast.parse(updated)
-
-backup = p.with_name(p.stem + ".before_causal_alignment.bak")
 if backup.exists():
-    raise SystemExit("STOP: Backup already exists. No changes.")
+    raise SystemExit("STOP: Backup already exists.")
+
+updated = s.replace(old, new, 1)
+ast.parse(updated)
 
 shutil.copy2(p, backup)
 p.write_text(updated)
 
-print("MAX causal-mask alignment: APPLIED")
+print("MAX valid-length mask aligned with original PyTorch")
 print("Backup:", backup)
-print("Original PyTorch/DS files: UNCHANGED")
-print("MAX Python syntax: PASS")
+print("Original DS files: UNCHANGED")
+print("Python syntax: PASS")
 PY
 
 rc=$?
-if [ "$rc" -ne 0 ]; then
-  exit "$rc"
-fi
+if [ "$rc" -ne 0 ]; then exit "$rc"; fi
 
 podman run --rm -i --pull=never \
   -v "$PWD:/workspace:ro" -w /workspace \

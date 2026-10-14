@@ -1,43 +1,44 @@
 python3 - <<'PY'
-import numpy as np
-import torch
 from pathlib import Path
+import ast
+import shutil
+from datetime import datetime
 
-base = Path("artifacts/v1.168-max/cta_max")
-ckpt = Path("artifacts/v1.168/core-artifact/model_0_base.pt")
+p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max_branch_diag.py")
+post = Path("artifacts/v1.168-max/cta_max/sequence_postprocess_max.py")
 
-state = torch.load(ckpt, map_location="cpu", weights_only=True)
-if "state_dict" in state:
-    state = state["state_dict"]
+s = p.read_text()
+t = post.read_text()
 
-for i in (0, 1):
-    key = f"sequence_transformer.ptransformer.{i}.fn.norm2.weight"
-    file = base / "sequence_weights" / (
-        "fn_norm2_g.npy" if i == 0 else "fn_norm2_g_layer1.npy"
-    )
+assert s.count("seq_raw = postprocess(sx2)") == 1, "STOP: graph changed"
+assert t.count("x = self.seq_dense(x)") == 1, "STOP: postprocess changed"
+assert "return x * ops.rsqrt(variance2 + 1e-6) * g2" in t, "STOP: final norm changed"
 
-    print(f"\n=== TRANSFORMER LAYER {i} ===")
-    print("Checkpoint key exists:", key in state)
-    print("MAX weight file exists:", file.is_file())
+lines = s.splitlines(keepends=True)
+matches = [
+    i for i, line in enumerate(lines)
+    if line.strip().startswith("seq = ops.matmul(seq_raw,")
+    and "seq_w.T" in line
+    and "seq_b" in line
+]
+assert len(matches) == 1, f"STOP: expected one extra dense, found {len(matches)}"
 
-    if key not in state or not file.is_file():
-        print("STOP: cannot verify this layer")
-        print("Available checkpoint Norm2 keys:",
-              [k for k in state if "norm2" in k and "ptransformer" in k])
-        continue
+i = matches[0]
+indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+lines[i] = indent + "seq = seq_raw\n"
 
-    pt = state[key].detach().cpu().numpy()
-    mx = np.load(file, allow_pickle=False)
+updated = "".join(lines)
+ast.parse(updated)
 
-    print("PyTorch shape:", pt.shape)
-    print("MAX shape:", mx.shape)
+backup = p.with_name(
+    p.name + ".before_double_dense_fix_" +
+    datetime.now().strftime("%Y%m%d_%H%M%S") + ".bak"
+)
+shutil.copy2(p, backup)
+p.write_text(updated)
 
-    if pt.shape != mx.shape:
-        print("SHAPE MISMATCH")
-        continue
-
-    print("MAX_DIFF:", float(np.max(np.abs(pt.astype(np.float64) - mx.astype(np.float64)))))
-    print("EXACT MATCH:", bool(np.array_equal(pt, mx)))
-
-print("\nREAD-ONLY VERIFICATION COMPLETE")
+print("EXTRA SEQ_DENSE REMOVED")
+print("PYTHON SYNTAX PASS")
+print("ORIGINAL DS CODE UNCHANGED")
+print("BACKUP:", backup)
 PY

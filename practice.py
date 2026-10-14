@@ -1,4 +1,6 @@
-diff -u \
-  artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max_branch_diag.py \
-  artifacts/v1.168-max/cta_max/grecbase_fusion_seq_isolation_trial.py \
-  | head -160
+{
+  echo "=== ORIGINAL PYTORCH MASK ==="
+  sed -n '655,685p' artifacts/v1.168/utils/dependency-utils/models.py
+  echo "=== CURRENT MAX MASK ==="
+  sed -n '102,130p' artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py
+}

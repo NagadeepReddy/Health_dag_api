@@ -1,31 +1,50 @@
 python3 - <<'PY'
 from pathlib import Path
-import ast, re, shutil
+import ast, shutil
 
 p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
-s = p.read_text()
+src = p.read_text()
+tree = ast.parse(src)
+matches = []
 
-pattern = (
-    r'(?m)^[ \t]*causal = np\.triu\(\n'
-    r'[ \t]*np\.ones\(\(length, length\), dtype=np\.float32\), 1\n'
-    r'[ \t]*\) \* -1\.0e9\n'
-    r'[ \t]*scores = scores \+ ops\.constant\(\n'
-    r'[ \t]*causal\.reshape\(1, 1, length, length\),\n'
-    r'[ \t]*dtype=scores\.dtype, device=DeviceRef\.CPU\(\)\n'
-    r'[ \t]*\)\n'
-)
+def target(n, name):
+    return (isinstance(n, ast.Assign)
+            and len(n.targets) == 1
+            and isinstance(n.targets[0], ast.Name)
+            and n.targets[0].id == name)
 
-matches = list(re.finditer(pattern, s))
-assert len(matches) == 1, "STOP: causal block differs; no changes made"
+for parent in ast.walk(tree):
+    body = getattr(parent, "body", [])
+    if not isinstance(body, list):
+        continue
+    for a, b in zip(body, body[1:]):
+        if not (target(a, "causal") and target(b, "scores")):
+            continue
+        if not (isinstance(a.value, ast.Call)
+                and isinstance(a.value.func, ast.Attribute)
+                and a.value.func.attr == "triu"):
+            continue
+        if not (isinstance(b.value, ast.BinOp)
+                and isinstance(b.value.op, ast.Add)
+                and isinstance(b.value.left, ast.Name)
+                and b.value.left.id == "scores"
+                and any(isinstance(n, ast.Name) and n.id == "causal"
+                        for n in ast.walk(b.value))):
+            continue
+        matches.append((a, b))
 
-updated = s[:matches[0].start()] + s[matches[0].end():]
+assert len(matches) == 1, f"STOP: Found {len(matches)} matching blocks. No changes."
+
+a, b = matches[0]
+lines = src.splitlines(keepends=True)
+updated = "".join(lines[:a.lineno-1] + lines[b.end_lineno:])
 ast.parse(updated)
 
 backup = p.with_suffix(".py.before_causal_removal.bak")
 shutil.copy2(p, backup)
 p.write_text(updated)
 
-print("Extra MAX causal mask removed")
+print("MAX causal mask removed")
 print("Python syntax PASS")
 print("Original DS code UNCHANGED")
 print("Backup:", backup)

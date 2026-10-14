@@ -1,40 +1,26 @@
-python3 - <<'PY'
-import ast
+python - <<'PY'
+import numpy as np
 from pathlib import Path
 
-base = Path("artifacts/v1.168-max/cta_max")
-graph_file = base / "grecbase_fusion_order_correct_max_branch_diag.py"
-block_file = base / "parallel_transformer_block_2layers.py"
+p = Path("artifacts/v1.168-max/cta_max")
 
-for p in (graph_file, block_file):
-    if not p.is_file():
-        raise SystemExit(f"STOP: Missing {p}")
+files = {
+    "Verified PyTorch": "real_sanity_pytorch_same_input_verified.npz",
+    "Original PyTorch": "real_sanity_pytorch_branches.npz",
+    "Saved MAX": "real_sanity_max_branches.npz",
+}
 
-graph = ast.parse(graph_file.read_text())
-block = ast.parse(block_file.read_text())
+arrays = {}
+for label, filename in files.items():
+    with np.load(p / filename, allow_pickle=False) as data:
+        arrays[label] = data["sequence"].copy()
 
-print("=== GRAPH TRANSFORMER IMPORT ===")
-for n in ast.walk(graph):
-    if isinstance(n, ast.ImportFrom):
-        if any(a.name == "ParallelTransformerBlockMAX" for a in n.names):
-            print(n.lineno, "from", n.module)
+reference = arrays["Verified PyTorch"]
 
-print("\n=== GRAPH TRANSFORMER CALLS ===")
-for n in ast.walk(graph):
-    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
-        if n.func.id in ("block0", "block1"):
-            print(n.lineno, ast.unparse(n))
-
-print("\n=== TRANSFORMER SIGNATURE AND ATTENTION ===")
-for cls in ast.walk(block):
-    if isinstance(cls, ast.ClassDef) and cls.name == "ParallelTransformerBlockMAX":
-        for fn in cls.body:
-            if isinstance(fn, ast.FunctionDef) and fn.name == "__call__":
-                print("Arguments:", [a.arg for a in fn.args.args])
-                for n in ast.walk(fn):
-                    if isinstance(n, ast.Call):
-                        expression = ast.unparse(n)
-                        if any(x in expression for x in
-                               ("softmax", "masked_fill", "where(", "valid_length")):
-                            print("Line", n.lineno, expression[:180])
+for label, actual in arrays.items():
+    diff = np.abs(actual.astype(np.float64) - reference.astype(np.float64))
+    print(label)
+    print("  MAX_DIFF:", float(diff.max()))
+    print("  MEAN_DIFF:", float(diff.mean()))
+    print("  MATCH:", bool(np.allclose(actual, reference, rtol=1e-3, atol=1e-3)))
 PY

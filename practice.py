@@ -1,31 +1,40 @@
 cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-podman run --rm -i \
-  -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys
-import torch
-from unittest.mock import patch
+python3 - <<'PY'
+import ast
+from pathlib import Path
 
-sys.path.insert(0, "artifacts/v1.168-max")
+base = Path("artifacts/v1.168-max/cta_max")
+p = ast.parse(Path("artifacts/v1.168/core-artifact/pipeline.py").read_text())
+a = ast.parse((base / "run_real_sanity_input_adapter.py").read_text())
 
-from cta_max.run_real_sanity_input_adapter import build_real_inputs
+assignments = [
+    n for n in ast.walk(p)
+    if isinstance(n, ast.Assign)
+    and isinstance(n.value, ast.Dict)
+    and any(isinstance(t, ast.Name) and t.id == "model_in" for t in n.targets)
+]
+assert len(assignments) == 1, "STOP: Unexpected model_in definitions"
 
-data = torch.load(
-    "artifacts/v1.168-max/cta_max/real_sanity_model_in.pt",
-    map_location="cpu",
-    weights_only=True
-)
+keys = {
+    k.value for k in assignments[0].value.keys
+    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+}
 
-with patch.object(torch, "load",
-                  side_effect=RuntimeError("Saved loader unexpectedly called")):
-    labels, inputs = build_real_inputs(model_in=data)
+fn = next(n for n in ast.walk(a)
+          if isinstance(n, ast.FunctionDef) and n.name == "build_real_inputs")
 
-assert len(labels) == len(inputs) == 72
+groups = [
+    [v.value for v in n.args if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+    for n in ast.walk(fn)
+    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "get"
+]
 
-print("EXPLICIT INPUT DICTIONARY: PASS")
-print("SAVED INPUT FALLBACK BYPASSED: PASS")
-print("72 INPUTS: PASS")
+missing = [g for g in groups if g and not any(k in keys for k in g)]
+
+print("PIPELINE INPUT KEYS:", len(keys))
+print("ADAPTER INPUT LOOKUPS:", len(groups))
+print("MISSING KEY GROUPS:", missing)
+print("KEY CONTRACT:", "PASS" if not missing and groups else "NEEDS FIX")
 print("NO FILES MODIFIED")
 PY

@@ -4,32 +4,43 @@ import numpy as np
 
 b = Path("artifacts/v1.168-max/cta_max")
 files = {
-    "Original Sequence output": b / "sequence_real_full_output.npy",
+    "Original Sequence": b / "sequence_real_full_output.npy",
     "Verified PyTorch": b / "real_sanity_pytorch_same_input_verified.npz",
-    "Saved MAX branches": b / "real_sanity_max_branches.npz",
+    "Saved MAX": b / "real_sanity_max_branches.npz",
 }
+
 arrays = {}
 
-for label, path in files.items():
+for name, path in files.items():
     if not path.exists():
-        print(label, "MISSING")
+        print(name, "MISSING")
         continue
-    with np.load(path, allow_pickle=False) as data:
-        if isinstance(data, np.ndarray):
-            arrays[label] = data
-        elif "sequence" in data.files:
-            arrays[label] = data["sequence"]
-    if label in arrays:
-        print(label, arrays[label].shape)
+
+    if path.suffix == ".npy":
+        arrays[name] = np.load(path, allow_pickle=False)
+    else:
+        with np.load(path, allow_pickle=False) as data:
+            if "sequence" in data.files:
+                arrays[name] = data["sequence"].copy()
+            else:
+                print(name, "Sequence key missing")
+                continue
+
+    print(name, "shape:", arrays[name].shape)
 
 print("\n=== SEQUENCE COMPARISON ===")
+
 names = list(arrays)
 for i in range(len(names)):
     for j in range(i + 1, len(names)):
-        a, c = arrays[names[i]], arrays[names[j]]
+        a = arrays[names[i]]
+        c = arrays[names[j]]
+
         if a.shape == c.shape:
-            print(names[i], "vs", names[j],
-                  "MAX DIFF:", np.max(np.abs(a.astype(np.float64)-c.astype(np.float64))))
+            diff = np.max(np.abs(
+                a.astype(np.float64) - c.astype(np.float64)
+            ))
+            print(names[i], "vs", names[j], "MAX DIFF:", diff)
         else:
-            print(names[i], "vs", names[j], "SHAPE DIFFERS")
+            print(names[i], "vs", names[j], "SHAPE DIFFERENCE")
 PY

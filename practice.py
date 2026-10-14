@@ -6,27 +6,28 @@ import torch
 import numpy as np
 from pathlib import Path
 
-b = Path("artifacts/v1.168-max/cta_max")
-s = torch.load(
+root = Path("artifacts/v1.168-max/cta_max")
+state = torch.load(
     "artifacts/v1.168/core-artifact/model_0_base.pt",
     map_location="cpu", weights_only=True
 )
-s = s.get("state_dict", s)
+state = state.get("state_dict", state)
 
-for suffix in ("weight", "bias"):
-    path = b / "sequence_weights" / f"seq_dense_{suffix}.npy"
-    a = np.load(path, allow_pickle=False)
-    print(f"\n=== EXPORTED {suffix.upper()} ===")
-    print("Export shape:", a.shape)
+path = root / "grecbase_integration_weights/seq_dense.weight.npy"
 
-    for prefix in ("seq_dense", "sequence_transformer.seq_dense"):
-        key = f"{prefix}.{suffix}"
-        if key not in s:
-            print(key, "MISSING")
-            continue
-        p = s[key].detach().cpu().numpy()
-        print(key, "shape:", p.shape)
-        if a.shape == p.shape:
-            print("EXACT MATCH:", np.array_equal(a, p))
-            print("MAX DIFF:", float(np.max(np.abs(a - p))))
+print("=== ACTIVE OUTER SEQUENCE WEIGHT ===")
+print("Export exists:", path.exists())
+
+if path.exists():
+    actual = np.load(path, allow_pickle=False)
+    expected = state["seq_dense.weight"].detach().cpu().numpy()
+    print("MAX shape:", actual.shape)
+    print("PyTorch shape:", expected.shape)
+    print("EXACT MATCH:", np.array_equal(actual, expected))
+    if actual.shape == expected.shape:
+        print("MAX DIFF:", float(np.max(np.abs(actual - expected))))
+
+print("\n=== INTERNAL SEQUENCE WEIGHT ===")
+print("Checkpoint shape:",
+      tuple(state["sequence_transformer.seq_dense.weight"].shape))
 PY

@@ -3,22 +3,30 @@ podman run --rm -i --pull=never \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 import torch
+import numpy as np
 from pathlib import Path
 
-base = Path("artifacts/v1.168")
-maxdir = Path("artifacts/v1.168-max/cta_max")
-checkpoint = base / "core-artifact/model_0_base.pt"
+b = Path("artifacts/v1.168-max/cta_max")
+s = torch.load(
+    "artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu", weights_only=True
+)
+s = s.get("state_dict", s)
 
-state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-state = state.get("state_dict", state)
+for suffix in ("weight", "bias"):
+    path = b / "sequence_weights" / f"seq_dense_{suffix}.npy"
+    a = np.load(path, allow_pickle=False)
+    print(f"\n=== EXPORTED {suffix.upper()} ===")
+    print("Export shape:", a.shape)
 
-print("=== TRAINED SEQUENCE DENSE KEYS ===")
-for key, value in state.items():
-    if "seq_dense" in key:
-        print(key, tuple(value.shape))
-
-print("\n=== EXISTING EXPORTED SEQUENCE WEIGHTS ===")
-folder = maxdir / "sequence_weights"
-for path in sorted(folder.glob("*.npy")):
-    print(path.name)
+    for prefix in ("seq_dense", "sequence_transformer.seq_dense"):
+        key = f"{prefix}.{suffix}"
+        if key not in s:
+            print(key, "MISSING")
+            continue
+        p = s[key].detach().cpu().numpy()
+        print(key, "shape:", p.shape)
+        if a.shape == p.shape:
+            print("EXACT MATCH:", np.array_equal(a, p))
+            print("MAX DIFF:", float(np.max(np.abs(a - p))))
 PY

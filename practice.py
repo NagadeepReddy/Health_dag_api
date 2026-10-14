@@ -1,44 +1,40 @@
 python3 - <<'PY'
-from pathlib import Path
 import ast
-import shutil
-from datetime import datetime
+from pathlib import Path
 
-p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max_branch_diag.py")
-post = Path("artifacts/v1.168-max/cta_max/sequence_postprocess_max.py")
+base = Path("artifacts/v1.168-max/cta_max")
+graph_file = base / "grecbase_fusion_order_correct_max_branch_diag.py"
+block_file = base / "parallel_transformer_block_2layers.py"
 
-s = p.read_text()
-t = post.read_text()
+for p in (graph_file, block_file):
+    if not p.is_file():
+        raise SystemExit(f"STOP: Missing {p}")
 
-assert s.count("seq_raw = postprocess(sx2)") == 1, "STOP: graph changed"
-assert t.count("x = self.seq_dense(x)") == 1, "STOP: postprocess changed"
-assert "return x * ops.rsqrt(variance2 + 1e-6) * g2" in t, "STOP: final norm changed"
+graph = ast.parse(graph_file.read_text())
+block = ast.parse(block_file.read_text())
 
-lines = s.splitlines(keepends=True)
-matches = [
-    i for i, line in enumerate(lines)
-    if line.strip().startswith("seq = ops.matmul(seq_raw,")
-    and "seq_w.T" in line
-    and "seq_b" in line
-]
-assert len(matches) == 1, f"STOP: expected one extra dense, found {len(matches)}"
+print("=== GRAPH TRANSFORMER IMPORT ===")
+for n in ast.walk(graph):
+    if isinstance(n, ast.ImportFrom):
+        if any(a.name == "ParallelTransformerBlockMAX" for a in n.names):
+            print(n.lineno, "from", n.module)
 
-i = matches[0]
-indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
-lines[i] = indent + "seq = seq_raw\n"
+print("\n=== GRAPH TRANSFORMER CALLS ===")
+for n in ast.walk(graph):
+    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+        if n.func.id in ("block0", "block1"):
+            print(n.lineno, ast.unparse(n))
 
-updated = "".join(lines)
-ast.parse(updated)
-
-backup = p.with_name(
-    p.name + ".before_double_dense_fix_" +
-    datetime.now().strftime("%Y%m%d_%H%M%S") + ".bak"
-)
-shutil.copy2(p, backup)
-p.write_text(updated)
-
-print("EXTRA SEQ_DENSE REMOVED")
-print("PYTHON SYNTAX PASS")
-print("ORIGINAL DS CODE UNCHANGED")
-print("BACKUP:", backup)
+print("\n=== TRANSFORMER SIGNATURE AND ATTENTION ===")
+for cls in ast.walk(block):
+    if isinstance(cls, ast.ClassDef) and cls.name == "ParallelTransformerBlockMAX":
+        for fn in cls.body:
+            if isinstance(fn, ast.FunctionDef) and fn.name == "__call__":
+                print("Arguments:", [a.arg for a in fn.args.args])
+                for n in ast.walk(fn):
+                    if isinstance(n, ast.Call):
+                        expression = ast.unparse(n)
+                        if any(x in expression for x in
+                               ("softmax", "masked_fill", "where(", "valid_length")):
+                            print("Line", n.lineno, expression[:180])
 PY

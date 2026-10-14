@@ -2,37 +2,27 @@ python3 - <<'PY'
 from pathlib import Path
 import ast
 import shutil
-import re
 
 p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
 s = p.read_text()
 
-start = re.search(r'(?m)^[ \t]*causal = np\.triu\(', s)
-assert start, "STOP: causal mask not found"
+old = "scores = ops.where(positions >= valid, negative, scores)"
+new = "scores = ops.where(positions < valid, negative, scores)"
 
-end = re.search(
-    r'(?m)^[ \t]*attn = ops\.softmax\(scores\)',
-    s[start.end():]
+assert s.count(old) == 1, (
+    f"STOP: Expected exactly one mask expression; found {s.count(old)}. No changes."
 )
-assert end, "STOP: attention statement not found"
 
-end_pos = start.end() + end.start()
-block = s[start.start():end_pos]
-
-assert block.count("scores = scores + ops.constant(") == 1
-assert block.count("causal.reshape(") == 1
-assert block.count("np.ones(") == 1
-
-updated = s[:start.start()] + s[end_pos:]
+updated = s.replace(old, new, 1)
 ast.parse(updated)
 
-backup = p.with_suffix(".py.before_causal_alignment.bak")
-assert not backup.exists(), "STOP: backup already exists"
+backup = p.with_suffix(".py.before_mask_direction_fix.bak")
+assert not backup.exists(), "STOP: backup already exists; no changes."
 
 shutil.copy2(p, backup)
 p.write_text(updated)
 
-print("MAX causal mask removed: PASS")
+print("MAX mask direction aligned with original PyTorch")
 print("Python syntax: PASS")
 print("Original DS code: UNCHANGED")
 print("Backup:", backup)

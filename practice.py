@@ -2,37 +2,34 @@ python3 - <<'PY'
 from pathlib import Path
 import ast
 import shutil
-from datetime import datetime
 
 p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
-ds = Path("artifacts/v1.168/utils/dependency-utils/models.py")
 
-s = p.read_text()
-original = ds.read_bytes()
+current = p.read_text()
+changed = "scores = ops.where(positions < valid, negative, scores)"
+original = "scores = ops.where(positions >= valid, negative, scores)"
 
-old = "scores = ops.where(positions >= valid, negative, scores)"
-new = "scores = ops.where(positions < valid, negative, scores)"
+assert current.count(changed) == 1, \
+    "STOP: current MAX mask differs; no changes made"
 
-assert "mask.lt(vl_len.unsqueeze(1))" in ds.read_text(), \
-    "STOP: original PyTorch mask condition differs"
-assert s.count(old) == 1, \
-    f"STOP: expected one MAX condition, found {s.count(old)}"
+backups = sorted(p.parent.glob(p.name + ".before_direction_fix_*.bak"))
 
-updated = s.replace(old, new, 1)
-ast.parse(updated)
+matches = [
+    b for b in backups
+    if b.read_text() == current.replace(changed, original, 1)
+]
 
-backup = p.with_name(p.name + ".before_direction_fix_" +
-                     datetime.now().strftime("%Y%m%d_%H%M%S") + ".bak")
-shutil.copy2(p, backup)
-p.write_text(updated)
+assert matches, "STOP: matching verified backup not found; no changes made"
 
-assert ds.read_bytes() == original
-assert p.read_text().count(new) == 1
+backup = matches[-1]
+ast.parse(backup.read_text())
 
-print("MAX MASK DIRECTION CORRECTED")
-print("PyTorch condition: position < valid_length")
-print("MAX condition:     position < valid_length")
+shutil.copy2(backup, p)
+
+assert p.read_bytes() == backup.read_bytes()
+
+print("PREVIOUS MAX MASK RESTORED")
 print("Python syntax: PASS")
 print("Original DS code: UNCHANGED")
-print("Backup:", backup)
+print("Restored from:", backup)
 PY

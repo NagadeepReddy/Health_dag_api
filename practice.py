@@ -2,8 +2,13 @@ cd /application/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
 podman run --rm -i \
   -v "$PWD:/workspace" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+  --entrypoint sh \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest -s <<'SH'
+set -e
+
+python -m pip install --no-cache-dir --no-deps faiss-cpu
+
+python - <<'PY'
 import sys, json
 from pathlib import Path
 
@@ -17,21 +22,21 @@ sys.path[:0] = [
 from pipeline import pipeline
 from cta_max.live_cta_pipeline_bridge import attach_max
 
-source = root / "artifacts/v1.168/samples/sanity_input.json"
-body = json.loads(source.read_text())
+body = json.loads(
+    (root / "artifacts/v1.168/samples/sanity_input.json").read_text()
+)
 
-print("REAL SANITY JSON: LOADED", flush=True)
+print("REAL JSON: LOADED", flush=True)
 
 app = attach_max(pipeline())
 print("MAX BRIDGE: ATTACHED", flush=True)
 
 result = app.predict_raw(body)
-
 assert isinstance(result, (dict, list))
 json.dumps(result, allow_nan=False)
 
-print("REAL JSON END-TO-END: PASS")
-print("FINAL RESPONSE TYPE:", type(result).__name__)
-print("FINAL RESPONSE JSON: VALID")
-print("ORIGINAL SOURCE FILES: NOT EDITED")
+print("REAL JSON E2E: PASS")
+print("FINAL RESPONSE: VALID JSON")
+print("ORIGINAL FILES: UNCHANGED")
 PY
+SH

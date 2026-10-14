@@ -3,44 +3,62 @@ from pathlib import Path
 import ast, shutil
 
 p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
-src = p.read_text()
-tree = ast.parse(src)
+source = p.read_text()
+tree = ast.parse(source)
 matches = []
 
-def target(n, name):
-    return (isinstance(n, ast.Assign)
-            and len(n.targets) == 1
-            and isinstance(n.targets[0], ast.Name)
-            and n.targets[0].id == name)
+def assigns(node, name):
+    return (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == name
+    )
 
 for parent in ast.walk(tree):
-    body = getattr(parent, "body", [])
+    body = getattr(parent, "body", None)
     if not isinstance(body, list):
         continue
-    for a, b in zip(body, body[1:]):
-        if not (target(a, "causal") and target(b, "scores")):
-            continue
-        if not (isinstance(a.value, ast.Call)
-                and isinstance(a.value.func, ast.Attribute)
-                and a.value.func.attr == "triu"):
-            continue
-        if not (isinstance(b.value, ast.BinOp)
-                and isinstance(b.value.op, ast.Add)
-                and isinstance(b.value.left, ast.Name)
-                and b.value.left.id == "scores"
-                and any(isinstance(n, ast.Name) and n.id == "causal"
-                        for n in ast.walk(b.value))):
-            continue
-        matches.append((a, b))
 
-assert len(matches) == 1, f"STOP: Found {len(matches)} matching blocks. No changes."
+    for i, node in enumerate(body):
+        if not assigns(node, "causal"):
+            continue
+        if not any(
+            isinstance(x, ast.Call)
+            and isinstance(x.func, ast.Attribute)
+            and x.func.attr == "triu"
+            for x in ast.walk(node.value)
+        ):
+            continue
+
+        additions = [
+            later for later in body[i+1:]
+            if assigns(later, "scores")
+            and isinstance(later.value, ast.BinOp)
+            and isinstance(later.value.op, ast.Add)
+            and isinstance(later.value.left, ast.Name)
+            and later.value.left.id == "scores"
+            and any(
+                isinstance(x, ast.Name) and x.id == "causal"
+                for x in ast.walk(later.value)
+            )
+        ]
+        if len(additions) == 1:
+            matches.append((node, additions[0]))
+
+assert len(matches) == 1, f"STOP: found {len(matches)} blocks; no changes"
 
 a, b = matches[0]
-lines = src.splitlines(keepends=True)
-updated = "".join(lines[:a.lineno-1] + lines[b.end_lineno:])
+lines = source.splitlines(keepends=True)
+
+for node in sorted((a, b), key=lambda n: n.lineno, reverse=True):
+    del lines[node.lineno-1:node.end_lineno]
+
+updated = "".join(lines)
 ast.parse(updated)
 
 backup = p.with_suffix(".py.before_causal_removal.bak")
+assert not backup.exists(), "STOP: backup exists; no changes"
 shutil.copy2(p, backup)
 p.write_text(updated)
 

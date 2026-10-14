@@ -1,28 +1,28 @@
-python3 - <<'PY'
+set -o pipefail
+python3 - <<'PY' && podman run --rm -i --pull=never \
+  -v "$PWD:/workspace:ro" -w /workspace \
+  --entrypoint python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  artifacts/v1.168-max/cta_max/run_real_sanity_max_branch_diag.py \
+  2>&1 | tail -65
 from pathlib import Path
 import ast
 import shutil
 
 p = Path("artifacts/v1.168-max/cta_max/grecbase_fusion_order_correct_max_branch_diag.py")
-
-old = "+ [TensorType(DType.int64, [1], device=device)])"
-new = "+ [TensorType(DType.int64, [1], device=device) for _ in range(2)])"
-
 code = p.read_text()
+old = "assert len(remaining) == 66"
+new = "assert len(remaining) == 67"
 
 if code.count(old) != 1:
-    raise SystemExit("STOP: Expected pattern not found exactly once. No changes made.")
+    raise SystemExit("STOP: Expected assertion not found exactly once.")
 
 updated = code.replace(old, new, 1)
 ast.parse(updated)
-
-backup = p.with_suffix(".py.before_72_input_fix.bak")
-shutil.copy2(p, backup)
+shutil.copy2(p, str(p) + ".before_assert_fix.bak")
 p.write_text(updated)
 
-print("DIAGNOSTIC GRAPH FIX: APPLIED")
-print("Added missing Sibling valid-length input")
+print("Diagnostic assertion corrected: 66 -> 67")
 print("Python syntax: PASS")
-print("Backup:", backup)
-print("Original DS files: UNCHANGED")
+print("Original DS code: UNCHANGED")
 PY

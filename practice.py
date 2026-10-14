@@ -1,35 +1,44 @@
 python3 - <<'PY'
-from pathlib import Path
 import ast
-import shutil
+from pathlib import Path
 
-p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
-
-current = p.read_text()
-changed = "scores = ops.where(positions < valid, negative, scores)"
-original = "scores = ops.where(positions >= valid, negative, scores)"
-
-assert current.count(changed) == 1, \
-    "STOP: current MAX mask differs; no changes made"
-
-backups = sorted(p.parent.glob(p.name + ".before_direction_fix_*.bak"))
-
-matches = [
-    b for b in backups
-    if b.read_text() == current.replace(changed, original, 1)
+cases = [
+    ("ORIGINAL PYTORCH",
+     "artifacts/v1.168/utils/dependency-utils/models.py",
+     "ParallelTransformerBlock",
+     {"forward", "create_key_padding_mask", "get_mask"}),
+    ("ACTIVE MAX",
+     "artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py",
+     "ParallelTransformerBlockMAX",
+     {"__call__"}),
 ]
 
-assert matches, "STOP: matching verified backup not found; no changes made"
+terms = ("mask", "valid", "score", "softmax", "attn",
+         "norm", "ff", "rotary", "residual", "position")
 
-backup = matches[-1]
-ast.parse(backup.read_text())
+for label, filename, classname, methods in cases:
+    p = Path(filename)
+    lines = p.read_text().splitlines()
+    tree = ast.parse("\n".join(lines))
+    classes = [n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == classname]
 
-shutil.copy2(backup, p)
+    print("\n===", label, "===")
+    if not classes:
+        print("CLASS NOT FOUND:", classname)
+        continue
 
-assert p.read_bytes() == backup.read_bytes()
+    for cls in classes:
+        for fn in cls.body:
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if fn.name not in methods:
+                continue
+            print("METHOD:", fn.name)
+            for i in range(fn.lineno, fn.end_lineno + 1):
+                line = lines[i - 1]
+                if any(term in line.lower() for term in terms):
+                    print(f"{i}: {line}")
 
-print("PREVIOUS MAX MASK RESTORED")
-print("Python syntax: PASS")
-print("Original DS code: UNCHANGED")
-print("Restored from:", backup)
+print("\nREAD-ONLY COMPARISON COMPLETE")
 PY

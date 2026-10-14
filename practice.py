@@ -16,35 +16,30 @@ with np.load(base + "max_sequence_stages_diag.npz") as saved:
 
 real = torch.load(base + "real_sanity_model_in.pt",
                   map_location="cpu", weights_only=True)
-
-state = torch.load(
-    "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu", weights_only=True)
+state = torch.load("artifacts/v1.168/core-artifact/model_0_base.pt",
+                   map_location="cpu", weights_only=True)
 state = state.get("state_dict", state)
 
 prefix = "sequence_transformer.ptransformer.0.fn."
 weights = {
-    k[len(prefix):]: v
-    for k, v in state.items() if k.startswith(prefix)
+    k[len(prefix):]: v for k, v in state.items()
+    if k.startswith(prefix)
 }
 
 block = ParallelTransformerBlock(
-    dim=256, dim_head=256, heads=6, ff_mult=4
+    dim=256, dim_head=256, heads=2, ff_mult=4
 ).eval()
 
 block.load_state_dict(weights, strict=True)
+print("BLOCK 0 CHECKPOINT LOAD: PASS")
 
 with torch.no_grad():
-    pt_block0 = (
-        features + block(features, real["vl_in"])
-    ).numpy()
+    pt_block0 = (features + block(features, real["vl_in"])).numpy()
 
 assert pt_block0.shape == max_block0.shape
 
-diff = np.abs(
-    pt_block0.astype(np.float64) -
-    max_block0.astype(np.float64)
-)
+diff = np.abs(pt_block0.astype(np.float64) -
+              max_block0.astype(np.float64))
 
 print("BLOCK 0 MAX_DIFF:", diff.max())
 print("BLOCK 0 MEAN_DIFF:", diff.mean())

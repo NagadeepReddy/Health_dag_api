@@ -1,46 +1,33 @@
 python3 - <<'PY'
-from pathlib import Path
+import torch
 import numpy as np
+from pathlib import Path
 
-b = Path("artifacts/v1.168-max/cta_max")
-files = {
-    "Original Sequence": b / "sequence_real_full_output.npy",
-    "Verified PyTorch": b / "real_sanity_pytorch_same_input_verified.npz",
-    "Saved MAX": b / "real_sanity_max_branches.npz",
-}
+base = Path("artifacts/v1.168")
+ckpt = torch.load(base/"core-artifact/model_0_base.pt",
+                  map_location="cpu", weights_only=True)
+state = ckpt.get("state_dict", ckpt)
+weights = base.parent/"v1.168-max/cta_max/sequence_weights"
 
-arrays = {}
-
-for name, path in files.items():
-    if not path.exists():
-        print(name, "MISSING")
+for name in ("seq_dense.weight", "seq_dense.bias",
+             "sequence_transformer.seq_dense.weight",
+             "sequence_transformer.seq_dense.bias"):
+    print("\n", name)
+    if name not in state:
+        print("CHECKPOINT KEY MISSING")
         continue
-
-    if path.suffix == ".npy":
-        arrays[name] = np.load(path, allow_pickle=False)
+    original = state[name].detach().cpu().numpy()
+    print("Checkpoint shape:", original.shape)
+    exported = weights/(name.split(".")[-2]+"."+name.split(".")[-1]+".npy")
+    if name.startswith("sequence_transformer."):
+        print("Internal layer uses checkpoint registration")
+        continue
+    if exported.exists():
+        actual = np.load(exported, allow_pickle=False)
+        print("MAX export shape:", actual.shape)
+        print("MATCH:", np.array_equal(original, actual))
+        if original.shape == actual.shape:
+            print("MAX DIFF:", np.max(np.abs(original-actual)))
     else:
-        with np.load(path, allow_pickle=False) as data:
-            if "sequence" in data.files:
-                arrays[name] = data["sequence"].copy()
-            else:
-                print(name, "Sequence key missing")
-                continue
-
-    print(name, "shape:", arrays[name].shape)
-
-print("\n=== SEQUENCE COMPARISON ===")
-
-names = list(arrays)
-for i in range(len(names)):
-    for j in range(i + 1, len(names)):
-        a = arrays[names[i]]
-        c = arrays[names[j]]
-
-        if a.shape == c.shape:
-            diff = np.max(np.abs(
-                a.astype(np.float64) - c.astype(np.float64)
-            ))
-            print(names[i], "vs", names[j], "MAX DIFF:", diff)
-        else:
-            print(names[i], "vs", names[j], "SHAPE DIFFERENCE")
+        print("MAX export MISSING:", exported)
 PY

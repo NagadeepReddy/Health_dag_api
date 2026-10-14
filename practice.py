@@ -1,15 +1,22 @@
-podman run --rm -i --pull=never \
-  -v "$PWD:/workspace:ro" -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys
-import numpy as np
-sys.path.insert(0, "artifacts/v1.168-max")
-from cta_max.run_real_sanity_input_adapter import build_real_inputs
+python3 - <<'PY'
+from pathlib import Path
+import ast, shutil
 
-labels, arrays = build_real_inputs()
-for i, (label, value) in enumerate(zip(labels, arrays)):
-    if "valid" in label.lower() or "length" in label.lower() or "v1" in label.lower():
-        a = np.asarray(value)
-        print(i, label, "shape:", a.shape, "values:", a.ravel()[:20].tolist())
+p = Path("artifacts/v1.168-max/cta_max/parallel_transformer_block_2layers.py")
+old = "-1.0e9, dtype=scores.dtype"
+new = 'float("-inf"), dtype=scores.dtype'
+
+s = p.read_text()
+assert s.count(old) == 1, "STOP: expected exactly one mask value"
+updated = s.replace(old, new, 1)
+ast.parse(updated)
+
+backup = p.with_suffix(".py.before_mask_alignment.bak")
+shutil.copy2(p, backup)
+p.write_text(updated)
+
+print("MAX padding mask aligned with PyTorch")
+print("Python syntax: PASS")
+print("Backup:", backup)
+print("Original DS code: UNCHANGED")
 PY

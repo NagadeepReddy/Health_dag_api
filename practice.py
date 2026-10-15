@@ -1,23 +1,17 @@
 python3 - <<'PY'
-import subprocess
 from pathlib import Path
+from collections import defaultdict
 
-files = subprocess.check_output(
-    ["git", "ls-files", "--others", "--exclude-standard",
-     "artifacts/v1.168-max"],
-    text=True
-).splitlines()
+root = Path("artifacts/v1.168-max")
+groups = defaultdict(lambda: [0, 0])
 
-for label, selected in [
-    ("PYTHON FILES", [f for f in files if f.endswith(".py")]),
-    ("MODEL WEIGHTS", [f for f in files if f.endswith((".npy", ".npz", ".pt"))]),
-    ("OTHER FILES", [f for f in files if not f.endswith((".py", ".npy", ".npz", ".pt"))])
-]:
-    print(f"\n{label}: {len(selected)}")
-    for f in selected[:12]:
-        print(" ", f)
-    if len(selected) > 12:
-        print(f"  ... and {len(selected)-12} more")
+for p in root.rglob("*"):
+    if p.is_file() and p.suffix in (".npy", ".npz", ".pt"):
+        groups[str(p.parent)][0] += 1
+        groups[str(p.parent)][1] += p.stat().st_size
 
-print("\nNO FILES MODIFIED OR STAGED")
+for folder, (count, size) in sorted(groups.items()):
+    print(f"{count:4} files | {size/1048576:7.1f} MB | {folder}")
+
+print("NO FILES CHANGED")
 PY

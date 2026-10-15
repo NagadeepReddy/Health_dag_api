@@ -1,27 +1,20 @@
-python3 - <<'PY'
-import json
-from pathlib import Path
+podman run --rm -i --pull=never \
+  -v "$PWD:/work:ro" \
+  -v /vzwhome/sajjna8:/wheels:ro \
+  -w /work \
+  --entrypoint /bin/sh \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest -c '
+python3 -m pip install --quiet --no-index --no-deps \
+  --target /tmp/cta-deps /wheels/faiss_cpu-1.15.1-*.whl &&
+PYTHONPATH="/tmp/cta-deps:/work/artifacts/v1.168/core-artifact:/work/artifacts/v1.168-max" \
+python3 - <<'"'"'PY'"'"'
+from pipeline import pipeline as CTA
+from cta_max.live_cta_pipeline_bridge import attach_max
 
-for version in ("v1.167", "v1.168"):
-    p = Path(f"artifacts/{version}/samples/sanity_input.json")
-    data = json.loads(p.read_text())
-    events = data.get("Events", {}).get("eventValues", [])
+p = CTA()
+p.load()
+attach_max(p)
 
-    matches = [
-        (i, e) for i, e in enumerate(events)
-        if isinstance(e, dict)
-        and isinstance(e.get("page"), dict)
-        and str(e["page"].get("name", "")).lower() == "gridwall_smartphones"
-    ]
-    valid = [
-        i for i, e in matches
-        if isinstance(e.get("webinteraction_name"), str)
-        and len(e["webinteraction_name"].split("|")) > 7
-    ]
-
-    print(version, "MATCHING EVENTS:", len(matches),
-          "VALID:", len(valid),
-          "INVALID/MISSING:", len(matches) - len(valid))
-    if matches:
-        print("EVENT FIELDS:", sorted(matches[0][1].keys()))
+print("CTA PIPELINE + MAX BRIDGE: READY")
 PY
+'

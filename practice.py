@@ -1,24 +1,39 @@
 python3 - <<'PY'
+import ast
 from pathlib import Path
-from collections import defaultdict
-import hashlib
 
 root = Path("../cta-max-release-review/artifacts/v1.168-max/cta_max")
-files = sorted(root.glob("*.py"))
+files = {p.stem: p for p in root.glob("*.py")}
+deps = {}
 
-print("RELEASE DIRECTORY EXISTS:", root.is_dir())
-print("PYTHON FILES:", len(files))
+for name, path in files.items():
+    tree = ast.parse(path.read_text())
+    refs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            refs.update(a.name.split(".")[-1] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                refs.add(node.module.split(".")[-1])
+            refs.update(a.name for a in node.names)
+    deps[name] = refs & files.keys()
 
-groups = defaultdict(list)
-for p in files:
-    digest = hashlib.sha256(p.read_bytes()).hexdigest()
-    groups[digest].append(p.name)
+used = set()
+def visit(name):
+    if name in used or name not in files:
+        return
+    used.add(name)
+    for dep in deps[name]:
+        visit(dep)
 
-duplicates = [names for names in groups.values() if len(names) > 1]
+for entry in ["serve_max", "live_cta_pipeline_bridge"]:
+    visit(entry)
 
-print("EXACT DUPLICATES:", len(duplicates))
-for names in duplicates:
-    print("DUPLICATE:", names)
+print("RELEASE FILES:", len(files))
+print("STATICALLY REFERENCED:", len(used))
+print("\nFILES REQUIRING REVIEW:")
+for name in sorted(files.keys() - used):
+    print(" -", files[name].name)
 
-print("NO FILES MODIFIED OR DELETED")
+print("\nNO FILES CHANGED OR DELETED")
 PY

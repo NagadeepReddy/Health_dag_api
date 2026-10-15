@@ -1,12 +1,31 @@
-BUILD_DIR=/tmp/cta-max-faiss-build
-mkdir -p "$BUILD_DIR" &&
-cp /vzwhome/sajjna8/faiss_cpu-1.15.1-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl "$BUILD_DIR/" &&
-cat > "$BUILD_DIR/Containerfile" <<'EOF'
-FROM docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest
-USER 0
-COPY faiss_cpu*.whl /tmp/
-RUN python3 -m pip install --no-index --no-deps /tmp/faiss_cpu*.whl \
- && python3 -c "import faiss; print('FAISS IMPORT: PASS', faiss.__version__)" \
- && rm /tmp/faiss_cpu*.whl
-EOF
-podman build --pull=never -t cta-max-faiss:local "$BUILD_DIR"
+podman run --rm -i --pull=never \
+  -v "$PWD:/work:ro" -w /work \
+  --entrypoint python3 cta-max-faiss:local - <<'PY'
+import sys, json
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path[:0] = [
+    "/work/artifacts/v1.168/core-artifact",
+    "/work/artifacts/v1.168-max",
+    "/work/artifacts/v1.168-max/cta_max",
+]
+
+from pipeline import pipeline as CTA
+from cta_max.live_cta_pipeline_bridge import attach_max
+
+print("LOADING ORIGINAL CTA PIPELINE...", flush=True)
+p = CTA()
+p.load()
+
+print("ATTACHING MODULAR MAX...", flush=True)
+attach_max(p)
+
+sample = Path("artifacts/v1.168/samples/sanity_input.json")
+print("RUNNING FULL CTA JSON...", flush=True)
+result = p.predict_raw(sample.read_text())
+
+print("FINAL RESPONSE TYPE:", type(result).__name__)
+print("FINAL RESPONSE:", json.dumps(result, default=str)[:2000])
+print("CTA JSON E2E: PASS")
+PY

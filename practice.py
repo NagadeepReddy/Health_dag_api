@@ -2,30 +2,28 @@ python3 - <<'PY'
 import json, re
 from pathlib import Path
 
-pt_path = Path("/tmp/cta_pytorch_tiles_response.json")
-mx_path = Path("/tmp/cta_max_tiles_response.json")
-
-text = pt_path.read_text()
+text = Path("/tmp/cta_pytorch_tiles_response.json").read_text()
 decoder = json.JSONDecoder()
-pt = None
 
+pt = None
 for match in re.finditer(r'\{\s*"jsonData"\s*:', text):
     try:
         pt, _ = decoder.raw_decode(text[match.start():])
         break
     except json.JSONDecodeError:
-        continue
+        pass
 
 if pt is None:
-    raise SystemExit("PYTORCH JSON NOT FOUND — no files changed")
+    raise SystemExit("PyTorch response not found")
 
-mx = json.loads(mx_path.read_text())
+mx = json.loads(Path("/tmp/cta_max_tiles_response.json").read_text())
 
 p = pt["jsonData"]["prediction"]
 m = mx["jsonData"]["prediction"]
 
-print("PYTORCH OFFERS:", len(p.get("offerList", [])))
-print("MAX OFFERS:", len(m.get("offerList", [])))
-print("OFFER LIST EXACT MATCH:", p.get("offerList") == m.get("offerList"))
-print("RECOMMENDATION FLAG MATCH:", p.get("isNewRcmd") == m.get("isNewRcmd"))
+print("FULL PREDICTION EXACT MATCH:", p == m)
+print("MATCHING FIELDS:", sorted(k for k in p.keys() & m.keys() if p[k] == m[k]))
+print("DIFFERENT FIELDS:", sorted(k for k in p.keys() & m.keys() if p[k] != m[k]))
+print("MISSING IN MAX:", sorted(p.keys() - m.keys()))
+print("EXTRA IN MAX:", sorted(m.keys() - p.keys()))
 PY

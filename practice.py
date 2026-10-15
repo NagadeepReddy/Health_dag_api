@@ -1,22 +1,27 @@
 python3 - <<'PY'
 import json
-p = "artifacts/v1.168/samples/sanity_input.json"
-data = json.load(open(p))
+from pathlib import Path
 
-def check(x, path="$"):
-    if isinstance(x, dict):
-        page = x.get("page")
-        if isinstance(page, dict) and str(page.get("name", "")).lower() == "gridwall_smartphones":
-            print("MATCHING PAGE:", path)
-            print("webinteraction_name:", repr(x.get("webinteraction_name")))
-        if "webinteraction_name" in x:
-            print("FIELD FOUND:", path, "TYPE:", type(x["webinteraction_name"]).__name__)
-        for k, v in x.items():
-            check(v, path + "." + k)
-    elif isinstance(x, list):
-        for i, v in enumerate(x):
-            check(v, f"{path}[{i}]")
+for version in ("v1.167", "v1.168"):
+    p = Path(f"artifacts/{version}/samples/sanity_input.json")
+    data = json.loads(p.read_text())
+    events = data.get("Events", {}).get("eventValues", [])
 
-print("ROOT TYPE:", type(data).__name__)
-check(data)
+    matches = [
+        (i, e) for i, e in enumerate(events)
+        if isinstance(e, dict)
+        and isinstance(e.get("page"), dict)
+        and str(e["page"].get("name", "")).lower() == "gridwall_smartphones"
+    ]
+    valid = [
+        i for i, e in matches
+        if isinstance(e.get("webinteraction_name"), str)
+        and len(e["webinteraction_name"].split("|")) > 7
+    ]
+
+    print(version, "MATCHING EVENTS:", len(matches),
+          "VALID:", len(valid),
+          "INVALID/MISSING:", len(matches) - len(valid))
+    if matches:
+        print("EVENT FIELDS:", sorted(matches[0][1].keys()))
 PY

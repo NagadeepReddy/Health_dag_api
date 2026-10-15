@@ -1,31 +1,23 @@
 python3 - <<'PY'
 from pathlib import Path
+import subprocess
 
-p = Path("artifacts/v1.168-max/.gitignore")
+root = Path("artifacts/v1.168-max")
+manifest = root / "RELEASE_CANDIDATE.txt"
 
-rules = [
-    "# Generated model assets - do not commit",
-    "*.npy",
-    "*.npz",
-    "*.pt",
-    "*.pth",
-    "*.onnx",
-    "*.safetensors",
-    "*.whl",
-    "*.swp",
-    "*.swo",
-    "*.log",
-    "/cta_max/*weights/",
+files = [
+    line.strip()
+    for line in manifest.read_text().splitlines()
+    if line.strip() and not line.startswith("#")
 ]
 
-existing = p.read_text() if p.exists() else ""
-missing = [r for r in rules if r not in existing.splitlines()]
+files.append(str(root / ".gitignore"))
 
-if missing:
-    p.write_text(existing.rstrip("\n") + "\n\n" + "\n".join(missing) + "\n")
-
-print("MAX GIT IGNORE: READY")
-print("NEW RULES:", len(missing))
-print("ORIGINAL DS CODE: UNCHANGED")
-print("NO FILES DELETED, COMMITTED OR PUSHED")
+if not all(Path(f).is_file() for f in files):
+    print("MISSING FILES — STOP")
+else:
+    print("FILES SELECTED:", len(files))
+    print("GIT DRY RUN:")
+    subprocess.run(["git", "add", "--dry-run", "--", *files], check=True)
+    print("NOTHING STAGED OR COMMITTED")
 PY

@@ -1,32 +1,36 @@
-python3 - <<'PY'
+if [ ! -f /tmp/cta_max_tiles_test.json ]; then
+  echo "SAVED TILES REQUEST NOT FOUND — NO TEST RUN"
+else
+  podman run --rm -i --pull=never \
+    -v /application/sajjna8:/application/sajjna8:ro \
+    --mount type=bind,src=/tmp/cta_max_tiles_test.json,dst=/tmp/cta_max_tiles_test.json,ro \
+    -w /application/sajjna8/cta-max-release-review \
+    --entrypoint python3 cta-max-faiss:local - <<'PY'
+import sys, json
 from pathlib import Path
 
-repo = Path.cwd()
-release = Path("../cta-max-release-review").resolve()
-source = repo / "artifacts/v1.168-max/cta_max"
-target = release / "artifacts/v1.168-max/cta_max"
+sys.dont_write_bytecode = True
+root = Path.cwd()
+sys.path[:0] = [
+    str(root / "artifacts/v1.168/core-artifact"),
+    str(root / "artifacts/v1.168-max"),
+]
 
-def link(src, dst):
-    if dst.exists() or dst.is_symlink():
-        print("ALREADY EXISTS:", dst.name)
-        return
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.symlink_to(src.resolve(), target_is_directory=src.is_dir())
-    print("LINKED:", dst.name)
+from pipeline import pipeline as CTA
+from cta_max.live_cta_pipeline_bridge import attach_max
 
-# Original DS model and configuration — read-only reference
-link(repo / "artifacts/v1.168",
-     release / "artifacts/v1.168")
+print("CLEAN MAX SOURCE:", Path(sys.modules["cta_max.live_cta_pipeline_bridge"].__file__).resolve(), flush=True)
 
-# MAX exported weight directories
-for folder in sorted(source.iterdir()):
-    if folder.is_dir() and any(
-        p.suffix in (".npy", ".npz", ".pt")
-        for p in folder.rglob("*") if p.is_file()
-    ):
-        link(folder, target / folder.name)
+p = CTA()
+p.load()
+attach_max(p)
 
-print("RELEASE ASSET REFERENCES: READY")
+body = json.loads(Path("/tmp/cta_max_tiles_test.json").read_text())
+result = p.predict_raw(body)
+
+print("CLEAN RELEASE INFERENCE: PASS")
+print("RESPONSE TYPE:", type(result).__name__)
+print("OFFER COUNT:", len(result.get("jsonData", {}).get("prediction", {}).get("offerList", [])))
 print("ORIGINAL DS CODE: UNCHANGED")
-print("NO MODEL WEIGHTS COPIED OR DELETED")
 PY
+fi

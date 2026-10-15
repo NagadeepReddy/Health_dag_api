@@ -1,17 +1,31 @@
 python3 - <<'PY'
-import json
+import json, re
 from pathlib import Path
 
-for name in ["cta_pytorch_tiles_response.json", "cta_max_tiles_response.json"]:
-    p = Path("/tmp") / name
-    text = p.read_text() if p.exists() else ""
-    print("\nFILE:", name)
-    print("SIZE:", len(text))
+pt_path = Path("/tmp/cta_pytorch_tiles_response.json")
+mx_path = Path("/tmp/cta_max_tiles_response.json")
+
+text = pt_path.read_text()
+decoder = json.JSONDecoder()
+pt = None
+
+for match in re.finditer(r'\{\s*"jsonData"\s*:', text):
     try:
-        data = json.loads(text)
-        print("JSON: VALID")
-        print("TOP-LEVEL KEYS:", list(data) if isinstance(data, dict) else type(data).__name__)
-    except Exception as e:
-        print("JSON: INVALID —", str(e))
-        print("START:", repr(text[:200]))
+        pt, _ = decoder.raw_decode(text[match.start():])
+        break
+    except json.JSONDecodeError:
+        continue
+
+if pt is None:
+    raise SystemExit("PYTORCH JSON NOT FOUND — no files changed")
+
+mx = json.loads(mx_path.read_text())
+
+p = pt["jsonData"]["prediction"]
+m = mx["jsonData"]["prediction"]
+
+print("PYTORCH OFFERS:", len(p.get("offerList", [])))
+print("MAX OFFERS:", len(m.get("offerList", [])))
+print("OFFER LIST EXACT MATCH:", p.get("offerList") == m.get("offerList"))
+print("RECOMMENDATION FLAG MATCH:", p.get("isNewRcmd") == m.get("isNewRcmd"))
 PY

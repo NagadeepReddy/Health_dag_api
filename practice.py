@@ -1,17 +1,19 @@
 python3 - <<'PY'
 import json
+from pathlib import Path
 
-data = json.load(open("/tmp/cta_max_smoketest.json"))
+src = Path("/tmp/cta_max_smoketest.json")
+dst = Path("/tmp/cta_max_tiles_test.json")
 
-def check(obj, path="$"):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k.lower() in ("category", "contextinfo"):
-                print(path + "." + k, repr(v)[:300])
-            check(v, path + "." + k)
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            check(v, f"{path}[{i}]")
+data = json.loads(src.read_text())
+print("Original category:", data["ClientFeature"]["contextInfo"]["category"])
 
-check(data)
+data["ClientFeature"]["contextInfo"]["category"] = "Tiles"
+
+dst.write_text(json.dumps(data))
+dst.chmod(0o600)
+
+print("Test category:", data["ClientFeature"]["contextInfo"]["category"])
+print("INFERENCE ROUTE TEST JSON: READY")
+print("Original files unchanged")
 PY

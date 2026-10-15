@@ -1,19 +1,15 @@
-python3 - <<'PY'
-import json
-from pathlib import Path
+status=$(curl -sS \
+  -o /tmp/cta_max_tiles_response.json \
+  -w '%{http_code}' \
+  -H 'Content-Type: application/json' \
+  --data-binary @/tmp/cta_max_tiles_test.json \
+  http://127.0.0.1:18080/predict)
 
-src = Path("/tmp/cta_max_smoketest.json")
-dst = Path("/tmp/cta_max_tiles_test.json")
+echo "HTTP STATUS: $status"
 
-data = json.loads(src.read_text())
-print("Original category:", data["ClientFeature"]["contextInfo"]["category"])
-
-data["ClientFeature"]["contextInfo"]["category"] = "Tiles"
-
-dst.write_text(json.dumps(data))
-dst.chmod(0o600)
-
-print("Test category:", data["ClientFeature"]["contextInfo"]["category"])
-print("INFERENCE ROUTE TEST JSON: READY")
-print("Original files unchanged")
-PY
+if [ "$status" = "200" ]; then
+  head -c 1000 /tmp/cta_max_tiles_response.json
+  echo
+else
+  podman logs --tail 25 cta-max-serving-poc 2>&1
+fi

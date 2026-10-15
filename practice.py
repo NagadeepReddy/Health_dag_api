@@ -1,32 +1,40 @@
 python3 - <<'PY'
-import json, re
+import ast
 from pathlib import Path
 
-out = Path("artifacts/v1.168-max/test-results")
-text = Path("/tmp/cta_pytorch_tiles_response.json").read_text()
-decoder = json.JSONDecoder()
+root = Path("artifacts/v1.168-max")
+start = [
+    "cta_max/serve_max.py",
+    "cta_max/live_cta_pipeline_bridge.py",
+    "cta_max/run_live_max_inference.py",
+    "cta_max/run_real_sanity_input_adapter.py",
+    "cta_max/grecbase_fusion_full_head_72_max.py",
+]
 
-pt = None
-for m in re.finditer(r'\{\s*"jsonData"\s*:', text):
-    try:
-        pt, _ = decoder.raw_decode(text[m.start():])
-        break
-    except json.JSONDecodeError:
-        pass
+seen = set()
+pending = [root / p for p in start]
 
-if pt is None:
-    raise SystemExit("PyTorch response not found")
+while pending:
+    p = pending.pop()
+    if p in seen or not p.is_file():
+        continue
+    seen.add(p)
+    tree = ast.parse(p.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            names = [node.module]
+        elif isinstance(node, ast.Import):
+            names = [x.name for x in node.names]
+        else:
+            continue
+        for name in names:
+            if name.startswith("cta_max."):
+                candidate = root / (name.replace(".", "/") + ".py")
+                if candidate.is_file():
+                    pending.append(candidate)
 
-mx = json.loads((out / "cta_max_tiles_response.json").read_text())
-match = pt["jsonData"]["prediction"] == mx["jsonData"]["prediction"]
-
-(out / "cta_pytorch_tiles_response.json").write_text(json.dumps(pt, indent=2))
-(out / "cta_parity_result.txt").write_text(
-    f"Modified Tiles smoke test\n"
-    f"MAX vs PyTorch full prediction exact match: {match}\n"
-)
-
-print("PYTORCH BASELINE SAVED")
-print("FULL PREDICTION EXACT MATCH:", match)
-print("COMPARISON EVIDENCE SAVED")
+print("RUNTIME PYTHON DEPENDENCIES:", len(seen))
+for p in sorted(seen):
+    print(p)
+print("NO FILES MODIFIED")
 PY

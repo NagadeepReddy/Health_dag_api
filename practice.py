@@ -1,17 +1,23 @@
 python3 - <<'PY'
 from pathlib import Path
 from collections import defaultdict
+import hashlib
 
 root = Path("artifacts/v1.168-max")
-groups = defaultdict(lambda: [0, 0])
+groups = defaultdict(list)
 
 for p in root.rglob("*"):
     if p.is_file() and p.suffix in (".npy", ".npz", ".pt"):
-        groups[str(p.parent)][0] += 1
-        groups[str(p.parent)][1] += p.stat().st_size
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        groups[digest].append(p)
 
-for folder, (count, size) in sorted(groups.items()):
-    print(f"{count:4} files | {size/1048576:7.1f} MB | {folder}")
+duplicates = [v for v in groups.values() if len(v) > 1]
 
-print("NO FILES CHANGED")
+print("DUPLICATE WEIGHT GROUPS:", len(duplicates))
+for group in duplicates[:10]:
+    print("\nEXACT DUPLICATES:")
+    for p in group:
+        print(" ", p)
+
+print("\nNO FILES CHANGED OR DELETED")
 PY

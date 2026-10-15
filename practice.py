@@ -1,32 +1,29 @@
 python3 - <<'PY'
 from pathlib import Path
+import re
 
 root = Path("artifacts/v1.168-max")
-runtime = {
-    Path(line.strip()).name
+runtime = [
+    Path(line.strip())
     for line in (root / "RELEASE_CANDIDATE.txt").read_text().splitlines()
     if line.strip() and not line.startswith("#")
-}
+]
 
-files = sorted((root / "cta_max").glob("*.py"))
-remaining = [p for p in files if p.name not in runtime]
-
-keywords = (
-    "diag", "trial", "test", "parity",
-    "before", "backup", "debug", "compare",
-    "validate", "check"
+source = "\n".join(p.read_text() for p in runtime)
+other = sorted(
+    p for p in (root / "cta_max").glob("*.py")
+    if p not in runtime
 )
 
-experimental = [p for p in remaining if any(k in p.name.lower() for k in keywords)]
-review = [p for p in remaining if p not in experimental]
+print("ADDITIONAL FILES REFERENCED BY RUNTIME:")
+found = 0
+for p in other:
+    if p.name == "__init__.py":
+        continue
+    if re.search(r"\b" + re.escape(p.stem) + r"\b", source):
+        print(p.name)
+        found += 1
 
-print("REQUIRED RUNTIME:", len(runtime))
-print("POSSIBLE DIAGNOSTICS:", len(experimental))
-print("OTHER FILES TO REVIEW:", len(review))
-
-print("\nOTHER FILES TO REVIEW:")
-for p in review:
-    print(" ", p.name)
-
-print("\nNO FILES MOVED OR DELETED")
+print("REFERENCED FILES:", found)
+print("NO FILES MODIFIED OR DELETED")
 PY

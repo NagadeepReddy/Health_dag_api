@@ -1,10 +1,11 @@
-podman run -d --rm --pull=never \
+podman stop cta-max-serving-poc && podman run -d --rm --pull=never \
   --name cta-max-serving-poc \
   -p 127.0.0.1:18080:8000 \
   -v "$PWD:/work:ro" \
   -v /vzwhome/sajjna8:/wheels:ro \
   -w /work \
   -e modelId=rt-pzaas-cta-offers-v1 \
+  -e expThrottleLabel=T \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e PYTHONPATH=/tmp/cta-deps:/work/artifacts/v1.168/core-artifact:/work/artifacts/v1.168-max:/work/artifacts/v1.168-max/cta_max \
   --entrypoint /bin/sh \

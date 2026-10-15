@@ -1,31 +1,24 @@
-sample=/tmp/cta_max_tiles_postman.json
-[ -f "$sample" ] || sample=/tmp/cta_max_tiles_test.json
-
-podman run --rm -i --pull=never \
-  -e modelId=rt-pzaas-cta-offers-v1 \
-  -e expThrottleLabel=T \
-  -v /application/sajjna8:/application/sajjna8:ro \
-  -v "$sample:/request.json:ro" \
-  -w /application/sajjna8/cta-max-release-review \
-  --entrypoint python3 cta-max-faiss:local - <<'PY'
-import sys, json
+python3 - <<'PY'
 from pathlib import Path
+from collections import defaultdict
+import hashlib
 
-sys.dont_write_bytecode = True
-sys.path[:0] = [
-    str(Path.cwd() / "artifacts/v1.168/core-artifact"),
-    str(Path.cwd() / "artifacts/v1.168-max"),
-]
+root = Path("../cta-max-release-review/cta_max")
+groups = defaultdict(list)
+files = sorted(root.glob("*.py"))
 
-from pipeline import pipeline as CTA
-from cta_max.live_cta_pipeline_bridge import attach_max
+for p in files:
+    digest = hashlib.sha256(p.read_bytes()).hexdigest()
+    groups[digest].append(p.name)
 
-p = CTA()
-p.load()
-attach_max(p)
+print("RELEASE PYTHON FILES:", len(files))
+print("\nEXACT DUPLICATES:")
+duplicates = [v for v in groups.values() if len(v) > 1]
+if duplicates:
+    for group in duplicates:
+        print(group)
+else:
+    print("NONE")
 
-result = p.predict_raw(json.loads(Path("/request.json").read_text()))
-
-print("CLEAN RELEASE E2E: PASS")
-print("FINAL RESPONSE:", json.dumps(result, default=str)[:1500])
+print("\nNO FILES CHANGED OR DELETED")
 PY

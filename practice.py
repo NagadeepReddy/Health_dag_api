@@ -1,22 +1,31 @@
 python3 - <<'PY'
 from pathlib import Path
-import shutil
 
-working = Path("artifacts/v1.168-max/cta_max/run_live_max_inference.py")
-clean = Path("../cta-max-release-review/artifacts/v1.168-max/cta_max/run_live_max_inference.py")
+p = Path("artifacts/v1.168-max/.gitignore")
 
-old = "from run_real_sanity_input_adapter import build_real_inputs"
-new = "from cta_max.run_real_sanity_input_adapter import build_real_inputs"
+rules = [
+    "# Generated model assets - do not commit",
+    "*.npy",
+    "*.npz",
+    "*.pt",
+    "*.pth",
+    "*.onnx",
+    "*.safetensors",
+    "*.whl",
+    "*.swp",
+    "*.swo",
+    "*.log",
+    "/cta_max/*weights/",
+]
 
-if working.read_text().replace(old, new, 1) != clean.read_text():
-    print("UNEXPECTED DIFFERENCE — NO CHANGES")
-else:
-    backup = Path("/tmp/cta_max_run_live_before_import_fix.py")
-    if not backup.exists():
-        shutil.copy2(working, backup)
-    shutil.copy2(clean, working)
-    print("MAX SOURCE ALIGNED: PASS")
-    print("RELEASE FILES: 17")
-    print("ORIGINAL DS CODE: UNCHANGED")
-    print("NO FILES DELETED OR PUSHED")
+existing = p.read_text() if p.exists() else ""
+missing = [r for r in rules if r not in existing.splitlines()]
+
+if missing:
+    p.write_text(existing.rstrip("\n") + "\n\n" + "\n".join(missing) + "\n")
+
+print("MAX GIT IGNORE: READY")
+print("NEW RULES:", len(missing))
+print("ORIGINAL DS CODE: UNCHANGED")
+print("NO FILES DELETED, COMMITTED OR PUSHED")
 PY

@@ -1,29 +1,36 @@
 python3 - <<'PY'
 from pathlib import Path
-import shutil
+import ast
+import hashlib
 
-root = Path("artifacts/v1.168-max")
-destination = Path("../cta-max-release-review/cta_max")
+src = Path("artifacts/v1.168-max/cta_max")
+release = Path("../cta-max-release-review/cta_max")
+files = sorted(release.glob("*.py"))
+missing = set()
+changed = []
 
-files = [
-    Path(line.strip())
-    for line in (root / "RELEASE_CANDIDATE.txt").read_text().splitlines()
-    if line.strip() and not line.startswith("#")
-]
-files.append(root / "cta_max/__init__.py")
+for p in files:
+    original = src / p.name
+    if not original.exists() or hashlib.sha256(p.read_bytes()).digest() != hashlib.sha256(original.read_bytes()).digest():
+        changed.append(p.name)
 
-if destination.parent.exists():
-    print("REVIEW FOLDER ALREADY EXISTS — NO CHANGES")
-elif any(not p.is_file() for p in files):
-    print("MISSING FILES — NO CHANGES")
-else:
-    destination.mkdir(parents=True)
-    for p in files:
-        shutil.copy2(p, destination / p.name)
+    tree = ast.parse(p.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        elif isinstance(node, ast.Import):
+            modules = [a.name for a in node.names]
+        else:
+            continue
 
-    print("CLEAN MAX SOURCE PACKAGE: READY")
-    print("FILES COPIED:", len(files))
-    print("ORIGINAL FILES: UNCHANGED")
-    print("MODEL WEIGHTS: UNCHANGED")
-    print("NOT COMMITTED OR PUSHED")
+        for module in modules:
+            name = module.removeprefix("cta_max.").split(".")[0]
+            if (src / (name + ".py")).exists() and not (release / (name + ".py")).exists():
+                missing.add(name + ".py")
+
+print("COPIED PYTHON FILES:", len(files))
+print("CHANGED COPIES:", changed)
+print("MISSING LOCAL IMPORTS:", sorted(missing))
+print("ORIGINAL FILES UNCHANGED")
+print("NO FILES MODIFIED OR DELETED")
 PY

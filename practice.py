@@ -1,15 +1,23 @@
-status=$(curl -sS \
-  -o /tmp/cta_max_tiles_response.json \
-  -w '%{http_code}' \
-  -H 'Content-Type: application/json' \
-  --data-binary @/tmp/cta_max_tiles_test.json \
-  http://127.0.0.1:18080/predict)
+python3 - <<'PY'
+from pathlib import Path
 
-echo "HTTP STATUS: $status"
+p = Path("artifacts/v1.168-max/cta_max/live_cta_pipeline_bridge.py")
+s = p.read_text()
+target = "result = np.asarray(infer_max_live(model_in),dtype=np.float32)"
 
-if [ "$status" = "200" ]; then
-  head -c 1000 /tmp/cta_max_tiles_response.json
-  echo
-else
-  podman logs --tail 25 cta-max-serving-poc 2>&1
-fi
+if target not in s:
+    print("EXACT LINE NOT FOUND — no changes made")
+elif "MAX INFERENCE EXECUTED:" in s:
+    print("MARKER ALREADY EXISTS")
+else:
+    backup = p.with_suffix(".py.before_marker")
+    backup.write_text(s)
+    s = s.replace(
+        target,
+        target + '\n        print("MAX INFERENCE EXECUTED:", result.shape, flush=True)',
+        1
+    )
+    compile(s, str(p), "exec")
+    p.write_text(s)
+    print("MAX EXECUTION MARKER: READY")
+PY

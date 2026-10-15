@@ -1,24 +1,12 @@
-python3 - <<'PY'
-import json
-from pathlib import Path
-
-src = Path("artifacts/v1.168/samples/sanity_input.json")
-dst = Path("/tmp/cta_max_smoketest.json")
-
-data = json.loads(src.read_text())
-count = 0
-
-for event in data["Events"]["eventValues"]:
-    if (isinstance(event, dict)
-        and isinstance(event.get("page"), dict)
-        and str(event["page"].get("name", "")).lower() == "gridwall_smartphones"
-        and event.get("webinteraction_name") is None):
-        event["webinteraction_name"] = ""
-        count += 1
-
-dst.write_text(json.dumps(data))
-dst.chmod(0o600)
-print("TEMPORARY TEST JSON READY")
-print("Missing fields normalized:", count)
-print("Original JSON unchanged")
-PY
+podman run -d --rm --pull=never \
+  --name cta-max-serving-poc \
+  -p 127.0.0.1:18080:8000 \
+  -v "$PWD:/work:ro" \
+  -v /vzwhome/sajjna8:/wheels:ro \
+  -w /work \
+  -e modelId=rt-pzaas-cta-offers-v1 \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONPATH=/tmp/cta-deps:/work/artifacts/v1.168/core-artifact:/work/artifacts/v1.168-max:/work/artifacts/v1.168-max/cta_max \
+  --entrypoint /bin/sh \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  -c 'python3 -m pip install --quiet --no-index --no-deps --target /tmp/cta-deps /wheels/faiss_cpu-1.15.1-*.whl && exec python3 -m uvicorn cta_max.serve_max:app --host 0.0.0.0 --port 8000'

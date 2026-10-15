@@ -1,29 +1,37 @@
 python3 - <<'PY'
+import ast
 from pathlib import Path
-import re
 
 root = Path("artifacts/v1.168-max")
+names = {
+    "context_head", "graph", "model",
+    "nlp_bert_max", "sequence_pooling_max"
+}
+
 runtime = [
     Path(line.strip())
     for line in (root / "RELEASE_CANDIDATE.txt").read_text().splitlines()
     if line.strip() and not line.startswith("#")
 ]
 
-source = "\n".join(p.read_text() for p in runtime)
-other = sorted(
-    p for p in (root / "cta_max").glob("*.py")
-    if p not in runtime
-)
+print("ACTUAL IMPORT REFERENCES:")
+count = 0
 
-print("ADDITIONAL FILES REFERENCED BY RUNTIME:")
-found = 0
-for p in other:
-    if p.name == "__init__.py":
-        continue
-    if re.search(r"\b" + re.escape(p.stem) + r"\b", source):
-        print(p.name)
-        found += 1
+for p in runtime:
+    tree = ast.parse(p.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        elif isinstance(node, ast.Import):
+            modules = [x.name for x in node.names]
+        else:
+            continue
 
-print("REFERENCED FILES:", found)
-print("NO FILES MODIFIED OR DELETED")
+        for module in modules:
+            if module.split(".")[-1] in names:
+                print(f"{p.name}:{node.lineno} -> {module}")
+                count += 1
+
+print("MATCHES:", count)
+print("NO FILES CHANGED")
 PY

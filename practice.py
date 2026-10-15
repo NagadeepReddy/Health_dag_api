@@ -1,14 +1,17 @@
-status=$(curl -sS -o /tmp/cta_max_smoketest_response.json \
-  -w '%{http_code}' \
-  -H 'Content-Type: application/json' \
-  --data-binary @/tmp/cta_max_smoketest.json \
-  http://127.0.0.1:18080/predict)
+python3 - <<'PY'
+import json
 
-echo "HTTP STATUS: $status"
+data = json.load(open("/tmp/cta_max_smoketest.json"))
 
-if [ "$status" = "200" ]; then
-  head -c 1000 /tmp/cta_max_smoketest_response.json
-  echo
-else
-  podman logs --tail 20 cta-max-serving-poc 2>&1
-fi
+def check(obj, path="$"):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k.lower() in ("category", "contextinfo"):
+                print(path + "." + k, repr(v)[:300])
+            check(v, path + "." + k)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            check(v, f"{path}[{i}]")
+
+check(data)
+PY

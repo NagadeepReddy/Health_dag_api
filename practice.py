@@ -1,11 +1,8 @@
-if [ ! -f /tmp/cta_max_tiles_test.json ]; then
-  echo "SAVED TILES REQUEST NOT FOUND — NO TEST RUN"
-else
-  podman run --rm -i --pull=never \
-    -v /application/sajjna8:/application/sajjna8:ro \
-    --mount type=bind,src=/tmp/cta_max_tiles_test.json,dst=/tmp/cta_max_tiles_test.json,ro \
-    -w /application/sajjna8/cta-max-release-review \
-    --entrypoint python3 cta-max-faiss:local - <<'PY'
+podman run --rm -i --pull=never \
+  -v /application/sajjna8:/application/sajjna8:ro \
+  -v /tmp:/tmp:ro \
+  -w /application/sajjna8/cta-max-release-review \
+  --entrypoint python3 cta-max-faiss:local - <<'PY'
 import sys, json
 from pathlib import Path
 
@@ -19,18 +16,27 @@ sys.path[:0] = [
 from pipeline import pipeline as CTA
 from cta_max.live_cta_pipeline_bridge import attach_max
 
-print("CLEAN MAX SOURCE:", Path(sys.modules["cta_max.live_cta_pipeline_bridge"].__file__).resolve(), flush=True)
+print("MAX SOURCE:", Path(sys.modules[
+    "cta_max.live_cta_pipeline_bridge"
+].__file__).absolute(), flush=True)
+
+samples = [
+    Path("/tmp/cta_max_tiles_test.json"),
+    Path("/tmp/cta_max_tiles_postman.json"),
+]
+sample = next((p for p in samples if p.is_file()), None)
+if sample is None:
+    raise FileNotFoundError("Saved Tiles test JSON not found")
 
 p = CTA()
 p.load()
 attach_max(p)
 
-body = json.loads(Path("/tmp/cta_max_tiles_test.json").read_text())
-result = p.predict_raw(body)
+result = p.predict_raw(json.loads(sample.read_text()))
 
 print("CLEAN RELEASE INFERENCE: PASS")
 print("RESPONSE TYPE:", type(result).__name__)
-print("OFFER COUNT:", len(result.get("jsonData", {}).get("prediction", {}).get("offerList", [])))
-print("ORIGINAL DS CODE: UNCHANGED")
+print("OFFER COUNT:", len(result.get(
+    "jsonData", {}
+).get("prediction", {}).get("offerList", [])))
 PY
-fi

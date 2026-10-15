@@ -1,129 +1,138 @@
 podman run --rm -i --entrypoint python \
   -v "$PWD:/workspace:Z" -w /workspace \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys, runpy, io, contextlib
+import sys
+import tempfile
 from pathlib import Path
 import numpy as np
+import torch
+import torch.nn.functional as F
 
 BASE = Path("artifacts/v1.168-max/cta_max").resolve()
-sys.path[:0] = [str(BASE), str(BASE.parent)]
-WDIR = BASE / "grecbase_integration_weights"
-
-def weight(name):
-    p = WDIR / (name + ".npy")
-    if not p.is_file():
-        matches = list(BASE.rglob(name + ".npy"))
-        if len(matches) != 1:
-            print("WEIGHT NOT UNIQUELY FOUND:", name)
-            print("CANDIDATES:", [str(x) for x in matches])
-            raise SystemExit(1)
-        p = matches[0]
-    return np.load(p).astype(np.float32)
-
-def norm(x, g):
-    variance = np.mean(x * x, axis=-1, keepdims=True)
-    return x * np.reciprocal(
-        np.sqrt(variance + np.float32(1e-6))
-    ) * g
-
-def linear(x, w):
-    assert x.shape[-1] == w.shape[1], (x.shape, w.shape)
-    return x @ w.T
-
-def rotate_half(x):
-    half = x.shape[-1] // 2
-    return np.concatenate(
-        [-x[..., half:], x[..., :half]], axis=-1
-    )
-
-print("Running existing MAX graph...", flush=True)
-
-with contextlib.redirect_stdout(io.StringIO()):
-    env = runpy.run_path(
-        str(BASE / "run_real_sanity_max_branch_diag.py"),
-        run_name="__main__"
-    )
-
-outputs = env["outputs"]
-assert len(outputs) == 9
-
-actual = np.asarray(
-    outputs[0].to_numpy(), dtype=np.float32
-)
-assert actual.shape == (1, 2048)
-
-parts = [
-    np.asarray(o.to_numpy(), dtype=np.float32).reshape(1, 256)
-    for o in outputs[1:]
+sys.path[:0] = [
+    str(BASE),
+    str(BASE.parent),
+    str(Path("artifacts/v1.168/utils/dependency-utils").resolve())
 ]
 
-x = np.stack(parts, axis=1)
-assert x.shape == (1, 8, 256)
+from models import ParallelTransformerBlock, RMSNorm
 
-# Original graph: moe_norm1
-x = norm(x, weight("moe_norm1.g"))
-
-# Attention pooling: first normalization and fused Q/K/V/FF
-x_norm = norm(x, weight("att_pooling.norm1.g"))
-fused = linear(
-    x_norm,
-    weight("att_pooling.fused_attn_ff_proj.weight")
-)
-assert fused.shape == (1, 8, 2816)
-
-q, k, v, ff = np.split(fused, [256, 512, 768], axis=-1)
-
-# Original rotary position embedding
-inv = weight("att_pooling.rotary_emb.inv_freq").reshape(-1)
-assert inv.size == 128, inv.shape
-
-angles = np.arange(8, dtype=np.float32)[:, None] * inv[None, :]
-pos = np.concatenate([angles, angles], axis=-1)[None, :, :]
-
-c = np.cos(pos)
-s = np.sin(pos)
-
-q = q * c + rotate_half(q) * s
-k = k * c + rotate_half(k) * s
-
-# Attention
-q = q * np.float32(256 ** -0.5)
-scores = q @ np.swapaxes(k, -1, -2)
-scores = scores - scores.max(axis=-1, keepdims=True)
-prob = np.exp(scores)
-prob = prob / prob.sum(axis=-1, keepdims=True)
-
-attn_out = linear(
-    prob @ v,
-    weight("att_pooling.attn_out.weight")
+real = torch.load(
+    BASE / "real_sanity_model_in.pt",
+    map_location="cpu",
+    weights_only=True
 )
 
-# Feedforward
-ff = norm(ff, weight("att_pooling.norm2.g"))
-ff1, ff3 = np.split(ff, 2, axis=-1)
-silu = ff3 / (1.0 + np.exp(-ff3))
-ff_out = linear(
-    silu * ff1,
-    weight("att_pooling.ff_out.1.weight")
+state = torch.load(
+    "artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu",
+    weights_only=True
 )
+state = state.get("state_dict", state)
 
-# Original graph: moe_norm2 and reshape
-candidate = norm(
-    attn_out + ff_out,
-    weight("moe_norm2.g")
-).reshape(1, 2048)
+def w(name):
+    return state["sequence_transformer." + name].float()
 
-diff = np.abs(
-    candidate.astype(np.float64) -
-    actual.astype(np.float64)
-)
+def make_block(i):
+    block = ParallelTransformerBlock(
+        dim=256, dim_head=256, heads=2, ff_mult=4
+    ).eval()
+    prefix = f"sequence_transformer.ptransformer.{i}.fn."
+    block.load_state_dict({
+        k[len(prefix):]: v
+        for k, v in state.items()
+        if k.startswith(prefix)
+    }, strict=True)
+    return block
 
-print("\n=== COMPLETE FINAL ATTENTION-POOLING PARITY ===")
-print("MAX SHAPE:", actual.shape)
-print("RECONSTRUCTED SHAPE:", candidate.shape)
-print("MAX_DIFF:", float(diff.max()))
-print("MEAN_DIFF:", float(diff.mean()))
-print("MATCH:", bool(np.allclose(
-    candidate, actual, rtol=1e-3, atol=1e-3
-)))
+b0, b1 = make_block(0), make_block(1)
+
+n1 = RMSNorm(256).eval()
+n2 = RMSNorm(256).eval()
+dense = torch.nn.Linear(512, 256).eval()
+
+n1.load_state_dict({"g": w("out_norm1.g")})
+n2.load_state_dict({"g": w("out_norm2.g")})
+dense.load_state_dict({
+    "weight": w("seq_dense.weight"),
+    "bias": w("seq_dense.bias")
+})
+
+with torch.no_grad():
+    page = F.embedding(
+        real["page_in"].long(), w("page_embedding.weight"))
+    item = F.embedding(
+        real["item_in"].long(), w("item_embedding.weight"))
+    meta = F.embedding(
+        real["item_meta_in"].long(), w("item_meta_embedding.weight"))
+    pre = F.embedding(
+        real["item_in"].long(), w("item_pre_embedding.weight"))
+
+    wide = real["page_meta_wide_in"]
+    if isinstance(wide, (list, tuple)):
+        assert len(wide) == 1
+        wide = wide[0]
+
+    wide = torch.as_tensor(wide).float()
+    assert wide.shape == (1, 50), wide.shape
+
+    wide = F.leaky_relu(
+        F.linear(
+            wide.unsqueeze(-1),
+            w("page_meta_wide_dense.weight"),
+            w("page_meta_wide_dense.bias")
+        ),
+        negative_slope=0.2
+    )
+
+    x = torch.cat([page, wide], dim=-1) * \
+        torch.cat([item, meta, pre], dim=-1)
+
+    assert x.shape == (1, 50, 256)
+
+    x = x + b0(x, real["vl_in"])
+    x = x + b1(x, real["vl_in"])
+    x = n1(x)
+
+    pooled = torch.cat(
+        [x.mean(1), x.max(1).values], dim=-1
+    )
+    pt_sequence = n2(dense(pooled)).numpy().astype(np.float32)
+
+assert pt_sequence.shape == (1, 256)
+
+original_ref = BASE / "real_sanity_pytorch_same_input_verified.npz"
+runner = BASE / "run_real_sanity_max_branch_diag.py"
+
+with np.load(original_ref, allow_pickle=False) as old:
+    refs = {k: old[k].copy() for k in old.files}
+
+assert "sequence" in refs
+assert refs["sequence"].shape == pt_sequence.shape
+refs["sequence"] = pt_sequence
+
+with tempfile.TemporaryDirectory() as tmp:
+    fresh_ref = Path(tmp) / "fresh_pytorch_reference.npz"
+    np.savez(fresh_ref, **refs)
+
+    source = runner.read_text()
+    old_name = "real_sanity_pytorch_same_input_verified.npz"
+
+    assert old_name in source, "STOP: Reference location changed"
+
+    source = source.replace(old_name, str(fresh_ref))
+
+    print("=== FRESH PYTORCH EIGHT-BRANCH VALIDATION ===", flush=True)
+    print("Original checkpoint: unchanged")
+    print("MAX code: unchanged")
+    print("Old reference: unchanged")
+    print("Sequence reference: independently rebuilt from PyTorch",
+          flush=True)
+
+    scope = {
+        "__name__": "__main__",
+        "__file__": str(runner),
+        "__package__": None
+    }
+    exec(compile(source, str(runner), "exec"), scope)
 PY

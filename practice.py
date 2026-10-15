@@ -14,16 +14,15 @@ sys.path[:0] = [
 from pipeline import pipeline as CTA
 from cta_max.live_cta_pipeline_bridge import attach_max
 
-print("LOADING ORIGINAL CTA PIPELINE...", flush=True)
 p = CTA()
 p.load()
-
-print("ATTACHING MODULAR MAX...", flush=True)
 attach_max(p)
 
 sample = Path("artifacts/v1.168/samples/sanity_input.json")
+body = json.loads(sample.read_text())
+
 print("RUNNING FULL CTA JSON...", flush=True)
-result = p.predict_raw(sample.read_text())
+result = p.predict_raw(body)
 
 print("FINAL RESPONSE TYPE:", type(result).__name__)
 print("FINAL RESPONSE:", json.dumps(result, default=str)[:2000])

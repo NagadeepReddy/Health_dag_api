@@ -1,123 +1,51 @@
 podman run --rm -i --entrypoint python \
   -v "$PWD:/workspace:Z" -w /workspace \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys, runpy
+import sys, runpy, io, contextlib
 from pathlib import Path
 import numpy as np
-import torch
-import torch.nn.functional as F
 
 base = Path("artifacts/v1.168-max/cta_max").resolve()
-sys.path[:0] = [
-    str(base), str(base.parent),
-    str(Path("artifacts/v1.168/utils/dependency-utils").resolve())
+sys.path[:0] = [str(base), str(base.parent)]
+
+print("Running current MAX graph...", flush=True)
+
+with contextlib.redirect_stdout(io.StringIO()):
+    result = runpy.run_path(
+        str(base / "run_real_sanity_max_branch_diag.py"),
+        run_name="__main__"
+    )
+
+outputs = result["outputs"]
+assert len(outputs) == 9, len(outputs)
+
+final = np.asarray(outputs[0].to_numpy()).reshape(1, 2048)
+names = [
+    "sequence", "context", "search0", "search1",
+    "task", "jet", "ihq", "sibling"
 ]
-from models import ParallelTransformerBlock, RMSNorm
 
-# Current MAX execution
-env = runpy.run_path(
-    str(base / "run_real_sanity_max_branch_diag.py"),
-    run_name="__main__"
-)
-outputs = env["outputs"]
-assert len(outputs) == 9, f"Expected 9 outputs, got {len(outputs)}"
-mx = np.asarray(outputs[1].to_numpy(), dtype=np.float32)
+branches = [
+    np.asarray(out.to_numpy()).reshape(1, 256)
+    for out in outputs[1:]
+]
 
-# Independent PyTorch inputs and checkpoint
-real = torch.load(
-    base / "real_sanity_model_in.pt",
-    map_location="cpu", weights_only=True
-)
-state = torch.load(
-    "artifacts/v1.168/core-artifact/model_0_base.pt",
-    map_location="cpu", weights_only=True
-)
-state = state.get("state_dict", state)
+combined = np.concatenate(branches, axis=1)
+diff = np.abs(final.astype(np.float64) -
+              combined.astype(np.float64))
 
-def w(name):
-    return state["sequence_transformer." + name].float()
+print("\n=== CURRENT FINAL OUTPUT ASSEMBLY ===")
+print("FINAL SHAPE:", final.shape)
+print("COMBINED SHAPE:", combined.shape)
+print("MAX_DIFF:", float(diff.max()))
+print("MEAN_DIFF:", float(diff.mean()))
+print("RAW CONCAT MATCH:", bool(np.allclose(
+    final, combined, rtol=1e-3, atol=1e-3
+)))
 
-def make_block(i):
-    block = ParallelTransformerBlock(
-        dim=256, dim_head=256, heads=2, ff_mult=4
-    ).eval()
-    prefix = f"sequence_transformer.ptransformer.{i}.fn."
-    block.load_state_dict({
-        k[len(prefix):]: v
-        for k, v in state.items() if k.startswith(prefix)
-    }, strict=True)
-    return block
-
-b0, b1 = make_block(0), make_block(1)
-
-n1, n2 = RMSNorm(256).eval(), RMSNorm(256).eval()
-dense = torch.nn.Linear(512, 256).eval()
-
-n1.load_state_dict({"g": w("out_norm1.g")})
-n2.load_state_dict({"g": w("out_norm2.g")})
-dense.load_state_dict({
-    "weight": w("seq_dense.weight"),
-    "bias": w("seq_dense.bias")
-})
-
-with torch.no_grad():
-    page = F.embedding(
-        real["page_in"].long(), w("page_embedding.weight"))
-    item = F.embedding(
-        real["item_in"].long(), w("item_embedding.weight"))
-    meta = F.embedding(
-        real["item_meta_in"].long(), w("item_meta_embedding.weight"))
-    pre = F.embedding(
-        real["item_in"].long(), w("item_pre_embedding.weight"))
-
-    wide_input = real["page_meta_wide_in"]
-    if isinstance(wide_input, (list, tuple)):
-        assert len(wide_input) == 1
-        wide_input = wide_input[0]
-    wide_input = torch.as_tensor(wide_input).float()
-    assert wide_input.shape == (1, 50), wide_input.shape
-    wide_input = wide_input.unsqueeze(-1)
-
-    wide = F.leaky_relu(
-        F.linear(
-            wide_input,
-            w("page_meta_wide_dense.weight"),
-            w("page_meta_wide_dense.bias")
-        ),
-        negative_slope=0.2
-    )
-
-    x = torch.cat([page, wide], dim=-1) * \
-        torch.cat([item, meta, pre], dim=-1)
-
-    assert x.shape == (1, 50, 256), x.shape
-
-    x = x + b0(x, real["vl_in"])
-    x = x + b1(x, real["vl_in"])
-    x = n1(x)
-    pooled = torch.cat(
-        [x.mean(1), x.max(1).values], dim=-1
-    )
-    pt = n2(dense(pooled)).numpy()
-
-with np.load(
-    base / "real_sanity_pytorch_same_input_verified.npz",
-    allow_pickle=False
-) as saved:
-    old = np.asarray(saved["sequence"], dtype=np.float32)
-
-def compare(label, a, b):
-    assert a.shape == b.shape, (label, a.shape, b.shape)
-    d = np.abs(a.astype(np.float64) - b.astype(np.float64))
-    print(label)
-    print("  MAX_DIFF:", float(d.max()))
-    print("  MEAN_DIFF:", float(d.mean()))
-    print("  MATCH:", bool(np.allclose(
-        a, b, rtol=1e-3, atol=1e-3
-    )))
-
-print("\n=== INDEPENDENT COMPLETE SEQUENCE CHECK ===")
-compare("PYTORCH vs CURRENT MAX", pt, mx)
-compare("PYTORCH vs OLD REFERENCE", pt, old)
-compare("CURRENT MAX vs OLD REFERENCE", mx, old)
+for i, name in enumerate(names):
+    part = final[:, i*256:(i+1)*256]
+    d = np.abs(part.astype(np.float64) -
+               branches[i].astype(np.float64))
+    print(name, "FINAL SEGMENT MAX_DIFF:", float(d.max()))
 PY

@@ -1,35 +1,11 @@
-cat > artifacts/v1.168-max/cta_max/serve_max.py <<'PY'
-import sys
-from pathlib import Path
-from fastapi import FastAPI
-
-root = Path(__file__).resolve().parents[3]
-sys.path[:0] = [
-    str(root / "artifacts/v1.168/core-artifact"),
-    str(root / "artifacts/v1.168-max"),
-    str(root / "artifacts/v1.168-max/cta_max"),
-]
-
-from pipeline import pipeline as CTA
-from cta_max.live_cta_pipeline_bridge import attach_max
-
-app = FastAPI()
-model = None
-
-@app.on_event("startup")
-def startup():
-    global model
-    p = CTA()
-    p.load()
-    model = attach_max(p)
-
-@app.get("/health")
-def health():
-    return {"status": "ready" if model is not None else "loading"}
-
-@app.post("/predict")
-def predict(body: dict):
-    return model.predict_raw(body)
-PY
-
-python3 -m py_compile artifacts/v1.168-max/cta_max/serve_max.py && echo "MAX SERVING ADAPTER: CREATED"
+podman run -d --rm --pull=never \
+  --name cta-max-serving-poc \
+  -p 127.0.0.1:18080:8000 \
+  -v "$PWD:/work:ro" \
+  -v /vzwhome/sajjna8:/wheels:ro \
+  -w /work \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONPATH=/tmp/cta-deps:/work/artifacts/v1.168/core-artifact:/work/artifacts/v1.168-max:/work/artifacts/v1.168-max/cta_max \
+  --entrypoint /bin/sh \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  -c 'python3 -m pip install --quiet --no-index --no-deps --target /tmp/cta-deps /wheels/faiss_cpu-1.15.1-*.whl && exec python3 -m uvicorn cta_max.serve_max:app --host 0.0.0.0 --port 8000'

@@ -1,37 +1,37 @@
 python3 - <<'PY'
-import ast
 from pathlib import Path
+import ast
 
 root = Path("artifacts/v1.168-max")
-names = {
-    "context_head", "graph", "model",
-    "nlp_bert_max", "sequence_pooling_max"
-}
+manifest = root / "RELEASE_CANDIDATE.txt"
+existing = manifest.read_text()
 
-runtime = [
-    Path(line.strip())
-    for line in (root / "RELEASE_CANDIDATE.txt").read_text().splitlines()
-    if line.strip() and not line.startswith("#")
-]
+names = ["nlp_bert_max.py", "sequence_pooling_max.py"]
 
-print("ACTUAL IMPORT REFERENCES:")
-count = 0
+for name in names:
+    p = root / "cta_max" / name
+    if not p.is_file():
+        print("MISSING:", name)
+        continue
+    if str(p) not in existing:
+        with manifest.open("a") as f:
+            f.write(str(p) + "\n")
+        print("ADDED:", name)
 
-for p in runtime:
+    print("\nLOCAL IMPORTS IN", name)
     tree = ast.parse(p.read_text())
     for node in ast.walk(tree):
+        modules = []
         if isinstance(node, ast.ImportFrom):
             modules = [node.module or ""]
         elif isinstance(node, ast.Import):
             modules = [x.name for x in node.names]
-        else:
-            continue
 
         for module in modules:
-            if module.split(".")[-1] in names:
-                print(f"{p.name}:{node.lineno} -> {module}")
-                count += 1
+            short = module.removeprefix("cta_max.")
+            candidate = root / "cta_max" / (short.replace(".", "/") + ".py")
+            if candidate.is_file():
+                print(" ", module)
 
-print("MATCHES:", count)
-print("NO FILES CHANGED")
+print("\nRELEASE LIST UPDATED — NO FILES DELETED")
 PY

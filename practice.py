@@ -1,18 +1,32 @@
 python3 - <<'PY'
 from pathlib import Path
 
-root = Path("artifacts/v1.168/core-artifact")
+repo = Path.cwd()
+release = Path("../cta-max-release-review").resolve()
+source = repo / "artifacts/v1.168-max/cta_max"
+target = release / "artifacts/v1.168-max/cta_max"
 
-print("ORIGINAL CTA MODEL ASSETS:")
-for p in sorted(root.glob("model_0_*.pt")):
-    print(f"{p.name}: {p.stat().st_size / 1048576:.1f} MB")
-    config = root / "model_0_" / "config.json"
-    print("  Associated config:", config.exists())
+def link(src, dst):
+    if dst.exists() or dst.is_symlink():
+        print("ALREADY EXISTS:", dst.name)
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.symlink_to(src.resolve(), target_is_directory=src.is_dir())
+    print("LINKED:", dst.name)
 
-print("\nOTHER REQUIRED SOURCE ASSETS:")
-for name in ["pipeline.py", "config.py", "tokenizer.json"]:
-    matches = list(root.rglob(name))
-    print(name, ":", len(matches), "found")
+# Original DS model and configuration — read-only reference
+link(repo / "artifacts/v1.168",
+     release / "artifacts/v1.168")
 
-print("\nNO FILES CHANGED OR COPIED")
+# MAX exported weight directories
+for folder in sorted(source.iterdir()):
+    if folder.is_dir() and any(
+        p.suffix in (".npy", ".npz", ".pt")
+        for p in folder.rglob("*") if p.is_file()
+    ):
+        link(folder, target / folder.name)
+
+print("RELEASE ASSET REFERENCES: READY")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("NO MODEL WEIGHTS COPIED OR DELETED")
 PY

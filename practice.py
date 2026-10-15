@@ -1,30 +1,22 @@
-podman run --rm -i --pull=never \
-  -v "$PWD:/work:ro" -w /work \
-  --entrypoint python3 cta-max-faiss:local - <<'PY'
-import sys, json
-from pathlib import Path
+python3 - <<'PY'
+import json
+p = "artifacts/v1.168/samples/sanity_input.json"
+data = json.load(open(p))
 
-sys.dont_write_bytecode = True
-sys.path[:0] = [
-    "/work/artifacts/v1.168/core-artifact",
-    "/work/artifacts/v1.168-max",
-    "/work/artifacts/v1.168-max/cta_max",
-]
+def check(x, path="$"):
+    if isinstance(x, dict):
+        page = x.get("page")
+        if isinstance(page, dict) and str(page.get("name", "")).lower() == "gridwall_smartphones":
+            print("MATCHING PAGE:", path)
+            print("webinteraction_name:", repr(x.get("webinteraction_name")))
+        if "webinteraction_name" in x:
+            print("FIELD FOUND:", path, "TYPE:", type(x["webinteraction_name"]).__name__)
+        for k, v in x.items():
+            check(v, path + "." + k)
+    elif isinstance(x, list):
+        for i, v in enumerate(x):
+            check(v, f"{path}[{i}]")
 
-from pipeline import pipeline as CTA
-from cta_max.live_cta_pipeline_bridge import attach_max
-
-p = CTA()
-p.load()
-attach_max(p)
-
-sample = Path("artifacts/v1.168/samples/sanity_input.json")
-body = json.loads(sample.read_text())
-
-print("RUNNING FULL CTA JSON...", flush=True)
-result = p.predict_raw(body)
-
-print("FINAL RESPONSE TYPE:", type(result).__name__)
-print("FINAL RESPONSE:", json.dumps(result, default=str)[:2000])
-print("CTA JSON E2E: PASS")
+print("ROOT TYPE:", type(data).__name__)
+check(data)
 PY

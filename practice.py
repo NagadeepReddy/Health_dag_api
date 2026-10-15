@@ -1,10 +1,15 @@
-status=$(curl -sS \
-  -o /tmp/cta_max_tiles_response.json \
-  -w '%{http_code}' \
-  -H 'Content-Type: application/json' \
-  --data-binary @/tmp/cta_max_tiles_test.json \
-  http://127.0.0.1:18080/predict)
+python3 - <<'PY'
+import json
 
-echo "HTTP STATUS: $status"
-echo "MAX EXECUTION:"
-podman logs --tail 35 cta-max-serving-poc 2>&1 | grep -E 'MAX INFERENCE EXECUTED:|KeyError:|RuntimeError:|ValueError:|AssertionError:|Traceback' || true
+p = "/tmp/cta_max_tiles_response.json"
+r = json.load(open(p))
+
+print("RESPONSE TYPE:", type(r).__name__)
+print("TOP-LEVEL KEYS:", list(r.keys()))
+prediction = r.get("jsonData", {}).get("prediction", r.get("prediction", {}))
+print("PREDICTION TYPE:", type(prediction).__name__)
+if isinstance(prediction, dict):
+    print("PREDICTION KEYS:", list(prediction.keys()))
+    print("OFFER COUNT:", len(prediction.get("offerList", [])))
+    print("IS NEW RECOMMENDATION:", prediction.get("isNewRcmd"))
+PY

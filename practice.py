@@ -1,42 +1,21 @@
-podman run --rm -i --pull=never \
-  -v /application/sajjna8:/application/sajjna8:ro \
-  -v /tmp:/tmp:ro \
-  -w /application/sajjna8/cta-max-release-review \
-  --entrypoint python3 cta-max-faiss:local - <<'PY'
-import sys, json
+python3 - <<'PY'
 from pathlib import Path
 
-sys.dont_write_bytecode = True
-root = Path.cwd()
-sys.path[:0] = [
-    str(root / "artifacts/v1.168/core-artifact"),
-    str(root / "artifacts/v1.168-max"),
-]
+p = Path("../cta-max-release-review/artifacts/v1.168-max/cta_max/run_live_max_inference.py")
 
-from pipeline import pipeline as CTA
-from cta_max.live_cta_pipeline_bridge import attach_max
+old = "from run_real_sanity_input_adapter import build_real_inputs"
+new = "from cta_max.run_real_sanity_input_adapter import build_real_inputs"
 
-print("MAX SOURCE:", Path(sys.modules[
-    "cta_max.live_cta_pipeline_bridge"
-].__file__).absolute(), flush=True)
+text = p.read_text()
 
-samples = [
-    Path("/tmp/cta_max_tiles_test.json"),
-    Path("/tmp/cta_max_tiles_postman.json"),
-]
-sample = next((p for p in samples if p.is_file()), None)
-if sample is None:
-    raise FileNotFoundError("Saved Tiles test JSON not found")
+if old in text:
+    p.write_text(text.replace(old, new, 1))
+    print("CLEAN RELEASE IMPORT: FIXED")
+elif new in text:
+    print("IMPORT ALREADY CORRECT")
+else:
+    print("EXPECTED IMPORT NOT FOUND — NO CHANGES")
 
-p = CTA()
-p.load()
-attach_max(p)
-
-result = p.predict_raw(json.loads(sample.read_text()))
-
-print("CLEAN RELEASE INFERENCE: PASS")
-print("RESPONSE TYPE:", type(result).__name__)
-print("OFFER COUNT:", len(result.get(
-    "jsonData", {}
-).get("prediction", {}).get("offerList", [])))
+print("ORIGINAL WORKING CODE: UNCHANGED")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY

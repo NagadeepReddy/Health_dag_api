@@ -1,24 +1,12 @@
-podman run --rm -i --pull=never --user 0:0 \
-  --entrypoint python3 8a501d7e7a40 - <<'PY'
-import os, configparser
-from pathlib import Path
-from urllib.parse import urlsplit
-
-paths = [Path("/root/.pip/pip.conf"),
-         Path("/etc/pip.conf"),
-         Path("/root/.config/pip/pip.conf")]
-
-for p in paths:
-    if p.is_file():
-        print("CONFIG:", p)
-        c = configparser.ConfigParser(interpolation=None)
-        c.read(p)
-        for section in c.sections():
-            for key, value in c.items(section):
-                if "index-url" in key:
-                    print(key, "HOST:", urlsplit(value).hostname)
-
-for key in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
-    if os.environ.get(key):
-        print(key, "HOST:", urlsplit(os.environ[key]).hostname)
-PY
+BUILD_DIR=/tmp/cta-max-faiss-build
+mkdir -p "$BUILD_DIR" &&
+cp /vzwhome/sajjna8/faiss_cpu-1.15.1-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl "$BUILD_DIR/" &&
+cat > "$BUILD_DIR/Containerfile" <<'EOF'
+FROM docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest
+USER 0
+COPY faiss_cpu*.whl /tmp/
+RUN python3 -m pip install --no-index --no-deps /tmp/faiss_cpu*.whl \
+ && python3 -c "import faiss; print('FAISS IMPORT: PASS', faiss.__version__)" \
+ && rm /tmp/faiss_cpu*.whl
+EOF
+podman build --pull=never -t cta-max-faiss:local "$BUILD_DIR"

@@ -1,32 +1,35 @@
 python3 - <<'PY'
-import ast
 from pathlib import Path
 
-pipeline = ast.parse(Path("artifacts/v1.168/core-artifact/pipeline.py").read_text())
-adapter = ast.parse(Path("artifacts/v1.168-max/cta_max/run_real_sanity_input_adapter.py").read_text())
+p = Path("artifacts/v1.168-max/cta_max/live_cta_pipeline_bridge.py")
+s = p.read_text()
+lines = s.splitlines(keepends=True)
 
-for node in ast.walk(pipeline):
-    if (isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "model_base"):
-        actual = {k.arg for k in node.keywords if k.arg}
-        break
+if 'model_in["task_in"] = model_in["tasks_in"]' in s:
+    print("TASK INPUT MAPPING ALREADY EXISTS")
 else:
-    raise RuntimeError("model_base call not found")
+    matches = [
+        i for i, line in enumerate(lines)
+        if "result = np.asarray(infer_max_live(model_in)" in line
+    ]
+    if len(matches) != 1:
+        print("INFERENCE CALL NOT FOUND — NO CHANGES")
+    else:
+        i = matches[0]
+        indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+        lines.insert(i,
+            indent + 'if "task_in" not in model_in and "tasks_in" in model_in:\n'
+            + indent + '    model_in["task_in"] = model_in["tasks_in"]\n'
+        )
+        updated = "".join(lines)
+        compile(updated, str(p), "exec")
 
-required = {
-    n.args[0].value
-    for n in ast.walk(adapter)
-    if isinstance(n, ast.Call)
-    and isinstance(n.func, ast.Name)
-    and n.func.id == "get"
-    and n.args
-    and isinstance(n.args[0], ast.Constant)
-    and isinstance(n.args[0].value, str)
-}
-
-print("PIPELINE INPUTS:", sorted(actual))
-print("MAX EXPECTS:", sorted(required))
-print("MISSING IN PIPELINE:", sorted(required - actual))
-print("ADDITIONAL PIPELINE INPUTS:", sorted(actual - required))
+        backup = p.with_suffix(".py.before_task_mapping")
+        if backup.exists():
+            print("BACKUP EXISTS — NO CHANGES")
+        else:
+            backup.write_text(s)
+            p.write_text(updated)
+            print("MAX TASK INPUT MAPPING: READY")
+            print("ORIGINAL DS CODE: UNCHANGED")
 PY

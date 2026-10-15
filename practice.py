@@ -1,20 +1,19 @@
 python3 - <<'PY'
 from pathlib import Path
 
-files = {
-    "WORKING": Path("artifacts/v1.168-max/cta_max/serve_max.py"),
-    "CLEAN": Path("../cta-max-release-review/cta_max/serve_max.py"),
-}
+release = Path("../cta-max-release-review")
+source = release / "cta_max"
+target = release / "artifacts/v1.168-max/cta_max"
 
-for label, file in files.items():
-    root = file.resolve().parents[3]
-    checkpoint = root / "artifacts/v1.168/core-artifact/model_0_base.pt"
-    weights = root / "artifacts/v1.168-max/cta_max/grecbase_integration_weights"
-
-    print(f"\n{label} PACKAGE")
-    print("ROOT:", root)
-    print("CHECKPOINT:", checkpoint.exists())
-    print("EXPORTED WEIGHTS:", weights.exists())
-
-print("\nNO FILES CHANGED")
+if target.exists():
+    print("TARGET ALREADY EXISTS — NO CHANGES")
+elif not source.is_dir():
+    print("SOURCE NOT FOUND — NO CHANGES")
+else:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(target)
+    print("RELEASE FOLDER STRUCTURE: CORRECTED")
+    print("PYTHON FILES:", len(list(target.glob("*.py"))))
+    print("ORIGINAL WORKING CODE: UNCHANGED")
+    print("NO FILES DELETED")
 PY

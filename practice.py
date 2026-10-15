@@ -1,21 +1,23 @@
 python3 - <<'PY'
+import subprocess
 from pathlib import Path
 
-p = Path("artifacts/v1.168-max/.gitignore")
+files = subprocess.check_output(
+    ["git", "ls-files", "--others", "--exclude-standard",
+     "artifacts/v1.168-max"],
+    text=True
+).splitlines()
 
-if p.exists():
-    print("GITIGNORE ALREADY EXISTS — NO CHANGES")
-else:
-    p.write_text(
-        "__pycache__/\n"
-        "*.pyc\n"
-        ".pytest_cache/\n"
-        "test-results/\n"
-        "*.bak\n"
-        "*.before_*\n"
-    )
-    print("MAX GITIGNORE: READY")
-    print("MODEL WEIGHTS: UNCHANGED")
-    print("ORIGINAL DS CODE: UNCHANGED")
-    print("NO FILES DELETED")
+for label, selected in [
+    ("PYTHON FILES", [f for f in files if f.endswith(".py")]),
+    ("MODEL WEIGHTS", [f for f in files if f.endswith((".npy", ".npz", ".pt"))]),
+    ("OTHER FILES", [f for f in files if not f.endswith((".py", ".npy", ".npz", ".pt"))])
+]:
+    print(f"\n{label}: {len(selected)}")
+    for f in selected[:12]:
+        print(" ", f)
+    if len(selected) > 12:
+        print(f"  ... and {len(selected)-12} more")
+
+print("\nNO FILES MODIFIED OR STAGED")
 PY

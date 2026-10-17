@@ -3,29 +3,35 @@ from pathlib import Path
 import shutil
 
 p = Path("artifacts/v1.168-max/cta_max/run_live_max_inference.py")
-s = p.read_text()
+backup = p.with_name(p.name + ".before_buffer_api")
 
-assert s.count("from max.driver import CPU, Buffer") == 1
-assert s.count("Buffer.from_numpy(value)") == 1
-assert "_max_model" in s, "STOP: Persistent cache missing"
+current = p.read_text()
+original = backup.read_text()
 
-backup = p.with_name(p.name + ".before_local_image_restore")
-assert not backup.exists(), "STOP: Backup already exists"
+assert "from max.driver import CPU, Tensor" in original
+assert "Tensor.from_numpy(value)" in original
+assert "_max_model" in original, "STOP: Cache missing from backup"
 
-updated = s.replace(
-    "from max.driver import CPU, Buffer",
-    "from max.driver import CPU, Tensor"
+expected = original.replace(
+    "from max.driver import CPU, Tensor",
+    "from max.driver import CPU, Buffer"
 ).replace(
-    "Buffer.from_numpy(value)",
-    "Tensor.from_numpy(value)"
+    "Tensor.from_numpy(value)",
+    "Buffer.from_numpy(value)"
 )
 
-compile(updated, str(p), "exec")
-shutil.copy2(p, backup)
-p.write_text(updated)
+assert current == expected, "STOP: Other changes detected"
 
-print("PASS: Compatible MAX Tensor API restored")
-print("PASS: Persistent cache retained")
-print("PASS: Backup created; syntax valid")
+compile(original, str(p), "exec")
+
+safety = p.with_name(p.name + ".before_approved_base_restore")
+assert not safety.exists(), "STOP: Safety backup already exists"
+
+shutil.copy2(p, safety)
+p.write_text(original)
+
+print("PASS: MAX Tensor API restored")
+print("PASS: Persistent cache preserved")
+print("PASS: Safety backup created")
 print("DS CODE: UNCHANGED")
 PY

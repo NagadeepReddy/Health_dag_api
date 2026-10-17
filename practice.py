@@ -1,41 +1,33 @@
 
-python3 - <<'PY'
-from pathlib import Path
-import ast
+podman run --rm \
+  -v "$PWD:/workspace:ro" \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  -c '
+import sys
+import pickle
+sys.path.insert(0, "artifacts/v1.168-max")
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_context.py")
-
-code = '''
 from max.interfaces.context import BaseContext, GenerationStatus
+from maxserve_cta_extension.cta_context import CTAContext
 
+ctx = CTAContext("cta-check-001", {"offers": []})
 
-class CTAContext(BaseContext):
-    """Native MAX Serve request context carrying real CTA JSON."""
+assert isinstance(ctx, BaseContext)
+assert ctx.request_id == "cta-check-001"
+assert ctx.status == GenerationStatus.ACTIVE
+assert ctx.body == {"offers": []}
 
-    def __init__(self, request_id, body):
-        if not isinstance(body, dict):
-            raise TypeError("CTA request must be a JSON object")
-        self._request_id = request_id
-        self.body = body
-        self._status = GenerationStatus.ACTIVE
+restored = pickle.loads(pickle.dumps(ctx))
+assert restored.request_id == ctx.request_id
+assert restored.body == ctx.body
 
-    @property
-    def request_id(self):
-        return self._request_id
+ctx.status = GenerationStatus.END_OF_SEQUENCE
+assert ctx.is_done
 
-    @property
-    def status(self):
-        return self._status
-
-    @status.setter
-    def status(self, value):
-        self._status = value
-'''
-
-ast.parse(code)
-with p.open("x") as f:
-    f.write(code)
-
-print("CTA NATIVE REQUEST CONTEXT CREATED — SYNTAX PASS")
-print("Original DS and MAX inference files unchanged")
-PY
+print("CTA NATIVE CONTEXT RUNTIME: PASS")
+print("MAX BASE CONTEXT: PASS")
+print("SERIALIZATION: PASS")
+print("STATUS LIFECYCLE: PASS")
+'

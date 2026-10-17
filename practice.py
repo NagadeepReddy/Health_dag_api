@@ -1,19 +1,29 @@
 
-podman run --rm --entrypoint /bin/bash \
+podman run --rm -i --entrypoint /bin/bash \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -lc '/opt/venv/bin/python -c "
-from max.serve.api_server import ROUTES
+  -lc '/opt/venv/bin/python -' <<'PY'
+from max.serve.api_server import (
+    fastapi_app, Settings,
+    ServingTokenGeneratorSettings, ROUTES
+)
 from max.serve.config import APIType
 
-router = ROUTES[APIType.KSERVE].router
-before = len(router.routes)
-
 async def cta_probe():
-    return {\"status\": \"CTA route registered\"}
+    return {"status": "ok"}
 
-router.add_api_route(\"/cta/probe\", cta_probe, methods=[\"POST\"])
+ROUTES[APIType.KSERVE].router.add_api_route(
+    "/cta/probe", cta_probe, methods=["POST"]
+)
 
-assert len(router.routes) == before + 1
-print(\"NATIVE ROUTER EXTENSION: PASS\")
-print(\"CTA route:\", router.routes[-1].path)
-"'
+settings = Settings(values={"api_types": [APIType.KSERVE]})
+serving = ServingTokenGeneratorSettings(
+    model_factory=lambda: None,
+    pipeline_config=None,
+    tokenizer=None
+)
+
+app = fastapi_app(settings, serving)
+routes = [r.path for r in app.routes]
+print("CTA ROUTE IN MAX APP:", "/v2/cta/probe" in routes)
+print("MATCHING ROUTES:", [r for r in routes if "cta" in r])
+PY

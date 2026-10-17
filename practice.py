@@ -1,38 +1,33 @@
 
 python3 - <<'PY'
-from pathlib import Path
-import ast
+from runpy import run_path
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py")
+path = "artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py"
+CTAWorkerAdapter = run_path(path)["CTAWorkerAdapter"]
 
-if p.exists():
-    raise SystemExit("STOP — adapter already exists; not overwriting")
+calls = {"created": 0, "loaded": 0, "attached": 0}
 
-code = '''
-class CTAWorkerAdapter:
-    """Runtime adapter for the existing CTA + MAX pipeline."""
+class MockPipeline:
+    def load(self):
+        calls["loaded"] += 1
 
-    def __init__(self, pipeline_factory, attach_max):
-        self.pipeline_factory = pipeline_factory
-        self.attach_max = attach_max
-        self.pipeline = None
+    def predict_raw(self, body):
+        return {"received": body}
 
-    def initialize(self):
-        if self.pipeline is None:
-            pipeline = self.pipeline_factory()
-            pipeline.load()
-            self.attach_max(pipeline)
-            self.pipeline = pipeline
-        return self.pipeline
+def factory():
+    calls["created"] += 1
+    return MockPipeline()
 
-    def predict(self, body):
-        if not isinstance(body, dict):
-            raise TypeError("CTA request must be a JSON object")
-        return self.initialize().predict_raw(body)
-'''
+def attach(pipeline):
+    calls["attached"] += 1
 
-ast.parse(code)
-p.write_text(code)
-print("CTA WORKER ADAPTER CREATED — SYNTAX PASS")
-print("Original DS files unchanged")
+adapter = CTAWorkerAdapter(factory, attach)
+
+assert adapter.predict({"request": 1}) == {"received": {"request": 1}}
+assert adapter.predict({"request": 2}) == {"received": {"request": 2}}
+assert calls == {"created": 1, "loaded": 1, "attached": 1}
+
+print("CTA ADAPTER CONTRACT: PASS")
+print("ONE-TIME INITIALIZATION: PASS")
+print("JSON FORWARDING: PASS")
 PY

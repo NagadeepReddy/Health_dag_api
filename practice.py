@@ -1,31 +1,18 @@
-python3 - <<'PY'
-from pathlib import Path
+podman run --rm --entrypoint /bin/bash \
+  -v "$PWD":/workspace:ro -w /workspace \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-nvidia-full:latest \
+  -lc 'PYTHONPATH=artifacts/v1.168-max python - <<'"'"'PY'"'"'
+import numpy as np
+from cta_max.run_live_max_inference import infer_max_live
 
-p = Path("artifacts/v1.168-max/cta_max/run_live_max_inference.py")
-s = p.read_text()
+print("FIRST MAX INFERENCE", flush=True)
+a = np.array(infer_max_live(None), copy=True)
+cached_model = infer_max_live._max_model
 
-old_session = "session = InferenceSession(devices=[device])"
-new_session = """session = getattr(infer_max_live, "_max_session", None)
-    if session is None:
-        session = InferenceSession(devices=[device])"""
+print("SECOND MAX INFERENCE", flush=True)
+b = infer_max_live(None)
 
-old_load = """model = session.load(
-        graph, weights_registry=weights_registry
-    )"""
-new_load = """model = getattr(infer_max_live, "_max_model", None)
-    if model is None:
-        model = session.load(
-            graph, weights_registry=weights_registry
-        )
-        infer_max_live._max_session = session
-        infer_max_live._max_model = model"""
-
-assert s.count(old_session) == 1, "STOP: session code differs"
-assert s.count(old_load) == 1, "STOP: load code differs"
-assert p.with_name(p.name + ".before_persistent_max").exists(), "STOP: backup missing"
-
-updated = s.replace(old_session, new_session).replace(old_load, new_load)
-compile(updated, str(p), "exec")
-p.write_text(updated)
-print("PASS: Persistent MAX model caching added; syntax valid")
-PY
+assert infer_max_live._max_model is cached_model, "Model cache not reused"
+np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-5)
+print("PASS: Native MAX inference and cached model reuse", flush=True)
+PY'

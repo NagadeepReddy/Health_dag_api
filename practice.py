@@ -1,38 +1,29 @@
 
-python3 - <<'PY'
-from pathlib import Path
-import ast
+podman run --rm \
+  -v "$PWD:/workspace:ro" \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  -c '
+import sys
+import inspect
+sys.path.insert(0, "artifacts/v1.168-max")
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_scheduler_factory.py")
+from maxserve_cta_extension.cta_scheduler_factory import create_cta_scheduler
+from maxserve_cta_extension.cta_native_scheduler import CTANativeScheduler
+from max.serve.scheduler import load_scheduler
 
-code = '''
-from .cta_native_scheduler import CTANativeScheduler
+cfg = load_scheduler.__globals__["SchedulerZmqConfigs"]
 
+assert callable(create_cta_scheduler)
+assert hasattr(cfg, "model_worker_queues")
 
-def create_cta_scheduler(
-    adapter,
-    scheduler_zmq_configs,
-    max_items_per_iteration=1,
-):
-    """Connect CTA inference to native MAX Serve worker queues."""
+params = inspect.signature(CTANativeScheduler).parameters
+for name in ("adapter", "request_queue", "response_queue", "cancel_queue"):
+    assert name in params
 
-    request_queue, response_queue, cancel_queue = (
-        scheduler_zmq_configs.model_worker_queues()
-    )
-
-    return CTANativeScheduler(
-        adapter=adapter,
-        request_queue=request_queue,
-        response_queue=response_queue,
-        cancel_queue=cancel_queue,
-        max_items_per_iteration=max_items_per_iteration,
-    )
-'''
-
-ast.parse(code)
-with p.open("x") as f:
-    f.write(code)
-
-print("CTA NATIVE SCHEDULER FACTORY CREATED — SYNTAX PASS")
-print("Existing MAX, DS and inference files unchanged")
-PY
+print("CTA SCHEDULER FACTORY IMPORT: PASS")
+print("NATIVE WORKER QUEUE API: PASS")
+print("SCHEDULER FACTORY CONTRACT: PASS")
+print("WORKER REGISTRATION: NOT YET IMPLEMENTED")
+'

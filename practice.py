@@ -1,29 +1,50 @@
 
-podman run --rm \
-  -v "$PWD:/workspace:ro" \
-  -w /workspace \
-  --entrypoint /opt/venv/bin/python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -c '
-import sys
-import inspect
-sys.path.insert(0, "artifacts/v1.168-max")
+python3 - <<'PY'
+from pathlib import Path
+import ast
 
-from maxserve_cta_extension.cta_scheduler_factory import create_cta_scheduler
-from maxserve_cta_extension.cta_native_scheduler import CTANativeScheduler
-from max.serve.scheduler import load_scheduler
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_worker_registration.py")
 
-cfg = load_scheduler.__globals__["SchedulerZmqConfigs"]
+code = '''
+from .cta_scheduler_factory import create_cta_scheduler
 
-assert callable(create_cta_scheduler)
-assert hasattr(cfg, "model_worker_queues")
 
-params = inspect.signature(CTANativeScheduler).parameters
-for name in ("adapter", "request_queue", "response_queue", "cancel_queue"):
-    assert name in params
+def install_cta_scheduler_hook():
+    """Install CTA scheduler selection inside the MAX worker process."""
+    from max.serve.pipelines.model_worker import ModelWorker
 
-print("CTA SCHEDULER FACTORY IMPORT: PASS")
-print("NATIVE WORKER QUEUE API: PASS")
-print("SCHEDULER FACTORY CONTRACT: PASS")
-print("WORKER REGISTRATION: NOT YET IMPLEMENTED")
-'
+    worker_globals = ModelWorker.run.__globals__
+    original = worker_globals["load_scheduler"]
+
+    if getattr(original, "_cta_hook", False):
+        return False
+
+    def select_scheduler(
+        pipeline, pipeline_config, settings, scheduler_zmq_configs
+    ):
+        if not getattr(pipeline, "_cta_native_pipeline", False):
+            return original(
+                pipeline, pipeline_config, settings, scheduler_zmq_configs
+            )
+
+        adapter = getattr(pipeline, "cta_adapter", None)
+        if adapter is None:
+            raise RuntimeError("CTA pipeline adapter not registered")
+
+        return create_cta_scheduler(
+            adapter=adapter,
+            scheduler_zmq_configs=scheduler_zmq_configs,
+        )
+
+    select_scheduler._cta_hook = True
+    worker_globals["load_scheduler"] = select_scheduler
+    return True
+'''
+
+ast.parse(code)
+with p.open("x") as f:
+    f.write(code)
+
+print("CTA WORKER REGISTRATION HOOK CREATED — SYNTAX PASS")
+print("Existing DS, MAX and inference files unchanged")
+PY

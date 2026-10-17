@@ -1,18 +1,31 @@
-podman run --rm --entrypoint /bin/bash \
-  -v "$PWD":/workspace:ro -w /workspace \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-nvidia-full:latest \
-  -lc 'PYTHONPATH=artifacts/v1.168-max python - <<'"'"'PY'"'"'
-import numpy as np
-from cta_max.run_live_max_inference import infer_max_live
+python3 - <<'PY'
+from pathlib import Path
+import shutil
 
-print("FIRST MAX INFERENCE", flush=True)
-a = np.array(infer_max_live(None), copy=True)
-cached_model = infer_max_live._max_model
+p = Path("artifacts/v1.168-max/cta_max/run_live_max_inference.py")
+s = p.read_text()
 
-print("SECOND MAX INFERENCE", flush=True)
-b = infer_max_live(None)
+old_import = "from max.driver import CPU, Tensor"
+old_input = "Tensor.from_numpy(value)"
 
-assert infer_max_live._max_model is cached_model, "Model cache not reused"
-np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-5)
-print("PASS: Native MAX inference and cached model reuse", flush=True)
-PY'
+assert s.count(old_import) == 1, "STOP: Driver import differs"
+assert s.count(old_input) == 1, "STOP: Input conversion differs"
+
+backup = p.with_name(p.name + ".before_buffer_api")
+assert not backup.exists(), "STOP: Backup already exists"
+
+updated = s.replace(
+    old_import, "from max.driver import CPU, Buffer"
+).replace(
+    old_input, "Buffer.from_numpy(value)"
+)
+
+compile(updated, str(p), "exec")
+shutil.copy2(p, backup)
+p.write_text(updated)
+
+print("PASS: NVIDIA Buffer API adapter updated")
+print("PASS: Python syntax valid")
+print("PASS: Original runtime backed up")
+print("DS CODE: UNCHANGED")
+PY

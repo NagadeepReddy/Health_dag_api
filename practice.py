@@ -1,25 +1,21 @@
 
-podman run --rm \
-  -v "$PWD/artifacts/v1.168-max/maxserve_cta_extension:/cta_extension:ro" \
-  --entrypoint /opt/venv/bin/python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -c '
-import importlib.util
-from max.interfaces.scheduler import Scheduler
-from max.serve.scheduler.base import SchedulerProgress
+python3 - <<'PY'
+import ast
+from pathlib import Path
 
-p = "/cta_extension/cta_scheduler.py"
-spec = importlib.util.spec_from_file_location("cta_scheduler", p)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+base = Path("artifacts/v1.168-max/cta_max")
 
-cls = module.CTAScheduler
-assert issubclass(cls, Scheduler)
-assert not cls.__abstractmethods__
-assert module.SchedulerProgress is SchedulerProgress
+for filename in ["live_cta_pipeline_bridge.py", "serve_max.py"]:
+    p = base / filename
+    print(f"\n=== {filename} ===")
+    if not p.is_file():
+        print("NOT FOUND")
+        continue
 
-print("CTA SCHEDULER IMPORT: PASS")
-print("NATIVE MAX INTERFACE: PASS")
-print("REQUIRED METHODS: PASS")
-print("SCHEDULER PROGRESS TYPE: PASS")
-'
+    tree = ast.parse(p.read_text())
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            print(f"FUNCTION line {node.lineno}: {node.name}")
+        elif isinstance(node, ast.ClassDef):
+            print(f"CLASS line {node.lineno}: {node.name}")
+PY

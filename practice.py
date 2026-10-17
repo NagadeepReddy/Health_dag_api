@@ -1,26 +1,34 @@
 
-podman run --rm -i \
-  -v "$PWD:/cta:ro" -w /cta \
-  --entrypoint /opt/venv/bin/python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import importlib.util
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from max.serve.api_server import ROUTES
-from max.serve.config import APIType
+f=artifacts/v1.168-max/maxserve_cta_extension/PROGRESS.md
+if [ -e "$f" ]; then
+  echo "TRACKER EXISTS — NOT OVERWRITTEN"
+else
+  cat > "$f" <<'EOF'
+# CTA Modular MAX Serve POC
 
-path = "/cta/artifacts/v1.168-max/maxserve_cta_extension/cta_router.py"
-spec = importlib.util.spec_from_file_location("cta_router", path)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-module.register_cta_routes()
+DONE:
+- MAX CPU, 72 inputs, 8/8 parity, 2048 output
+- Compiled model caching
+- Valid CTA JSON E2E via development FastAPI
+- Original tracked DS code unchanged in checked paths
+- MAX inference backup verified
+- CTA router registration, HTTP probe, CLI preload PASS
+- MAX 25.7 Serve internals investigated
 
-app = FastAPI()
-app.include_router(ROUTES[APIType.KSERVE].router)
+PENDING:
+P1 Native MAX Serve CTA model/worker integration
+P2 Real CTA request through native worker
+P3 Native scheduling and batching
+P4 Native JSON response validation
+P5 CPU/GPU performance
+P6 Approved MAX + FAISS image
+P7 Original sanity_input.json and final validation
 
-response = TestClient(app).post("/v2/cta/probe")
-print("HTTP STATUS:", response.status_code)
-print("RESPONSE:", response.json())
-assert response.status_code == 200
-print("CTA ROUTER HTTP TEST: PASS")
-PY
+RULES:
+- No original DS code changes
+- No separate FastAPI as final serving solution
+- Preserve completed tests and backups
+- Do not repeat completed checks
+EOF
+  echo "PROGRESS TRACKER CREATED"
+fi

@@ -1,32 +1,30 @@
 
-python3 - <<'PY'
+podman run --rm -i \
+  -v "$PWD:/cta:ro" -w /cta \
+  --entrypoint /opt/venv/bin/python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import importlib.util
 from pathlib import Path
-
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_router.py")
-
-if p.exists():
-    raise SystemExit("STOP: Extension file already exists")
-
-p.write_text('''from max.serve.api_server import ROUTES
+from max.serve.api_server import ROUTES
 from max.serve.config import APIType
 
-async def cta_probe():
-    return {"status": "CTA MAX Serve extension ready"}
+path = Path("/cta/artifacts/v1.168-max/maxserve_cta_extension/cta_router.py")
+spec = importlib.util.spec_from_file_location("cta_router", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 
-def register_cta_routes():
-    router = ROUTES[APIType.KSERVE].router
+router = ROUTES[APIType.KSERVE].router
 
-    if any(r.path == "/v2/cta/probe" for r in router.routes):
-        return False
+first = module.register_cta_routes()
+second = module.register_cta_routes()
 
-    router.add_api_route(
-        "/cta/probe",
-        cta_probe,
-        methods=["POST"],
-    )
-    return True
-''')
+matches = [r for r in router.routes if r.path == "/v2/cta/probe"]
 
-print("ISOLATED CTA ROUTER MODULE CREATED")
-print(p)
+assert first is True
+assert second is False
+assert len(matches) == 1
+
+print("CTA ROUTER MODULE: PASS")
+print("CTA ROUTE:", matches[0].path)
+print("DUPLICATE REGISTRATION: PREVENTED")
 PY

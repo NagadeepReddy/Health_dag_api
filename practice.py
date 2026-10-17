@@ -1,33 +1,32 @@
 
-podman run --rm -i --entrypoint /bin/bash \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -lc '/opt/venv/bin/python -' <<'PY'
-from max.serve.api_server import (
-    fastapi_app, Settings,
-    ServingTokenGeneratorSettings, ROUTES
-)
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_router.py")
+
+if p.exists():
+    raise SystemExit("STOP: Extension file already exists")
+
+p.write_text('''from max.serve.api_server import ROUTES
 from max.serve.config import APIType
-from max.pipelines import PipelineConfig
 
 async def cta_probe():
-    return {"status": "ok"}
+    return {"status": "CTA MAX Serve extension ready"}
 
-ROUTES[APIType.KSERVE].router.add_api_route(
-    "/cta/probe", cta_probe, methods=["POST"]
-)
+def register_cta_routes():
+    router = ROUTES[APIType.KSERVE].router
 
-config = PipelineConfig()
-print("ZMQ CONFIG:", config.zmq_endpoint_base)
+    if any(r.path == "/v2/cta/probe" for r in router.routes):
+        return False
 
-settings = Settings(values={"api_types": [APIType.KSERVE]})
-serving = ServingTokenGeneratorSettings(
-    model_factory=lambda: None,
-    pipeline_config=config,
-    tokenizer=None
-)
+    router.add_api_route(
+        "/cta/probe",
+        cta_probe,
+        methods=["POST"],
+    )
+    return True
+''')
 
-app = fastapi_app(settings, serving)
-matches = [r.path for r in app.routes if "cta" in r.path]
-print("CTA ROUTES:", matches)
-print("CTA IN MAX APP:", "/v2/cta/probe" in matches)
+print("ISOLATED CTA ROUTER MODULE CREATED")
+print(p)
 PY

@@ -1,14 +1,20 @@
 
-podman run --rm --entrypoint /opt/venv/bin/python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -c '
-from max.serve.scheduler import load_scheduler
+python3 - <<'PY'
+from pathlib import Path
+import ast
 
-cls = load_scheduler.__globals__["EmbeddingsScheduler"]
-progress = cls.run_iteration.__globals__["SchedulerProgress"]
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_scheduler.py")
+old = "from max.interfaces.scheduler import Scheduler, SchedulerProgress"
+new = "from max.interfaces.scheduler import Scheduler\nfrom max.serve.scheduler.base import SchedulerProgress"
 
-print("CORRECT IMPORT MODULE:", progress.__module__)
-print("SYMBOL:", progress.__name__)
-print("MADE_PROGRESS:", progress.MADE_PROGRESS)
-print("NO_PROGRESS:", progress.NO_PROGRESS)
-'
+text = p.read_text()
+if old not in text:
+    raise SystemExit("STOP: Expected import not found; file unchanged")
+
+updated = text.replace(old, new, 1)
+ast.parse(updated)
+p.write_text(updated)
+
+print("CTA SCHEDULER IMPORT FIXED — SYNTAX PASS")
+print("DS AND MAX INFERENCE FILES UNCHANGED")
+PY

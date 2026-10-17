@@ -1,23 +1,19 @@
+
 podman run --rm --entrypoint /bin/bash \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -lc 'python - <<'"'"'PY'"'"'
-from pathlib import Path
+  -lc '/opt/venv/bin/python -c "
+from max.serve.api_server import ROUTES
+from max.serve.config import APIType
 
-root = Path("/opt/venv/lib/python3.12/site-packages/max")
-files = [
-    root / "serve/api_server.py",
-    root / "serve/config.py",
-    root / "pipelines/lib/config.py",
-]
+router = ROUTES[APIType.KSERVE].router
+before = len(router.routes)
 
-for p in files:
-    print("\nFILE:", p, "EXISTS:", p.exists())
-    if not p.exists():
-        continue
-    for number, line in enumerate(p.read_text().splitlines(), 1):
-        if any(x in line for x in (
-            "PipelineTask.", "APIType.", "custom_architectures",
-            "_import_custom_architectures", "predict_raw"
-        )):
-            print(f"{number}: {line.strip()[:160]}")
-PY'
+async def cta_probe():
+    return {\"status\": \"CTA route registered\"}
+
+router.add_api_route(\"/cta/probe\", cta_probe, methods=[\"POST\"])
+
+assert len(router.routes) == before + 1
+print(\"NATIVE ROUTER EXTENSION: PASS\")
+print(\"CTA route:\", router.routes[-1].path)
+"'

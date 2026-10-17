@@ -1,37 +1,18 @@
-python3 - <<'PY'
-from pathlib import Path
-import shutil
+podman run --rm --entrypoint /bin/bash \
+  -v "$PWD":/workspace:ro -w /workspace \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  -lc 'PYTHONPATH=artifacts/v1.168-max python -u - <<'"'"'PY'"'"'
+import numpy as np
+from cta_max.run_live_max_inference import infer_max_live
 
-p = Path("artifacts/v1.168-max/cta_max/run_live_max_inference.py")
-backup = p.with_name(p.name + ".before_buffer_api")
+a = np.asarray(infer_max_live(None))
+assert a.shape == (1, 2048)
+assert np.isfinite(a).all()
+print("FIRST MAX INFERENCE: PASS", flush=True)
 
-current = p.read_text()
-original = backup.read_text()
-
-assert "from max.driver import CPU, Tensor" in original
-assert "Tensor.from_numpy(value)" in original
-assert "_max_model" in original, "STOP: Cache missing from backup"
-
-expected = original.replace(
-    "from max.driver import CPU, Tensor",
-    "from max.driver import CPU, Buffer"
-).replace(
-    "Tensor.from_numpy(value)",
-    "Buffer.from_numpy(value)"
-)
-
-assert current == expected, "STOP: Other changes detected"
-
-compile(original, str(p), "exec")
-
-safety = p.with_name(p.name + ".before_approved_base_restore")
-assert not safety.exists(), "STOP: Safety backup already exists"
-
-shutil.copy2(p, safety)
-p.write_text(original)
-
-print("PASS: MAX Tensor API restored")
-print("PASS: Persistent cache preserved")
-print("PASS: Safety backup created")
-print("DS CODE: UNCHANGED")
-PY
+cached = infer_max_live._max_model
+b = np.asarray(infer_max_live(None))
+assert infer_max_live._max_model is cached
+np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-5)
+print("PERSISTENT MAX CACHE: PASS", flush=True)
+PY'

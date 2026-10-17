@@ -1,30 +1,30 @@
 
-podman run --rm \
-  -v "$PWD:/workspace:ro" \
-  -w /workspace \
-  --entrypoint /opt/venv/bin/python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -c '
-import sys
-import inspect
-sys.path.insert(0, "artifacts/v1.168-max")
+python3 - <<'PY'
+from pathlib import Path
+import ast
+import shutil
 
-from max.serve.pipelines.model_worker import ModelWorker
-from maxserve_cta_extension.cta_worker_registration import install_cta_scheduler_hook
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_worker_registration.py")
+backup = p.with_suffix(".py.before_unwrap_fix")
 
-fn = ModelWorker.run
-real_fn = inspect.unwrap(fn)
+source = p.read_text()
+old = 'worker_globals = ModelWorker.run.__globals__'
+new = 'worker_globals = inspect.unwrap(ModelWorker.run).__globals__'
 
-print("DIRECT SCHEDULER GLOBAL:", "load_scheduler" in fn.__globals__)
-print("UNWRAPPED SCHEDULER GLOBAL:", "load_scheduler" in real_fn.__globals__)
+assert source.count(old) == 1, "STOP: Unexpected source structure"
+assert not backup.exists(), "STOP: Backup already exists"
 
-try:
-    result = install_cta_scheduler_hook()
-    print("CTA HOOK INSTALL:", "PASS" if result else "ALREADY INSTALLED")
-    print("CTA HOOK ACTIVE:", getattr(
-        real_fn.__globals__.get("load_scheduler"), "_cta_hook", False
-    ))
-except Exception as exc:
-    print("CTA HOOK INSTALL: FAIL")
-    print(type(exc).__name__, str(exc))
-'
+updated = source.replace(
+    'from .cta_scheduler_factory import create_cta_scheduler',
+    'import inspect\n\nfrom .cta_scheduler_factory import create_cta_scheduler',
+    1
+).replace(old, new, 1)
+
+ast.parse(updated)
+shutil.copy2(p, backup)
+p.write_text(updated)
+
+print("CTA WORKER HOOK TARGET FIXED — SYNTAX PASS")
+print("BACKUP CREATED:", backup)
+print("Original DS and MAX inference files unchanged")
+PY

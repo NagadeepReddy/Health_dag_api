@@ -1,21 +1,29 @@
 
-python3 - <<'PY'
-import ast
-from pathlib import Path
+podman run --rm --entrypoint /opt/venv/bin/python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  -c '
+import inspect
+from max.serve.pipelines.model_worker import ModelWorker
 
-base = Path("artifacts/v1.168-max/cta_max")
-
-for filename in ["live_cta_pipeline_bridge.py", "serve_max.py"]:
-    p = base / filename
-    print(f"\n=== {filename} ===")
-    if not p.is_file():
-        print("NOT FOUND")
-        continue
-
-    tree = ast.parse(p.read_text())
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            print(f"FUNCTION line {node.lineno}: {node.name}")
-        elif isinstance(node, ast.ClassDef):
-            print(f"CLASS line {node.lineno}: {node.name}")
-PY
+for name, method in inspect.getmembers(ModelWorker, inspect.isfunction):
+    source = inspect.getsource(method)
+    lines = source.splitlines()
+    matches = [
+        i for i, line in enumerate(lines)
+        if any(x in line for x in (
+            "load_scheduler(",
+            "run_iteration(",
+            "SchedulerResult",
+            "scheduler.run",
+            "scheduler_task",
+        ))
+    ]
+    if matches:
+        print("\nMETHOD:", name)
+        shown = set()
+        for i in matches:
+            for j in range(max(0, i-5), min(len(lines), i+9)):
+                if j not in shown:
+                    print(lines[j])
+                    shown.add(j)
+'

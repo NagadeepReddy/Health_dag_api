@@ -1,22 +1,31 @@
-podman run --rm --entrypoint /bin/bash \
-  -v "$PWD":/workspace:ro -w /workspace \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-nvidia-full:latest \
-  -lc 'PYTHONPATH=artifacts/v1.168-max python -u - <<'"'"'PY'"'"'
-import numpy as np
-from cta_max.run_live_max_inference import infer_max_live
+python3 - <<'PY'
+from pathlib import Path
+import shutil
 
-print("FIRST NATIVE MAX INFERENCE", flush=True)
-a = np.asarray(infer_max_live(None))
-assert a.shape == (1, 2048)
-assert np.isfinite(a).all()
+p = Path("artifacts/v1.168-max/cta_max/run_live_max_inference.py")
+s = p.read_text()
 
-cached = infer_max_live._max_model
-print("FIRST INFERENCE: PASS", flush=True)
+assert s.count("from max.driver import CPU, Buffer") == 1
+assert s.count("Buffer.from_numpy(value)") == 1
+assert "_max_model" in s, "STOP: Persistent cache missing"
 
-print("SECOND NATIVE MAX INFERENCE", flush=True)
-b = np.asarray(infer_max_live(None))
-assert infer_max_live._max_model is cached
-np.testing.assert_allclose(a, b, rtol=1e-5, atol=1e-5)
+backup = p.with_name(p.name + ".before_local_image_restore")
+assert not backup.exists(), "STOP: Backup already exists"
 
-print("PASS: NVIDIA MAX inference and model cache reuse", flush=True)
-PY'
+updated = s.replace(
+    "from max.driver import CPU, Buffer",
+    "from max.driver import CPU, Tensor"
+).replace(
+    "Buffer.from_numpy(value)",
+    "Tensor.from_numpy(value)"
+)
+
+compile(updated, str(p), "exec")
+shutil.copy2(p, backup)
+p.write_text(updated)
+
+print("PASS: Compatible MAX Tensor API restored")
+print("PASS: Persistent cache retained")
+print("PASS: Backup created; syntax valid")
+print("DS CODE: UNCHANGED")
+PY

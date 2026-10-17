@@ -1,50 +1,30 @@
 
-python3 - <<'PY'
-from pathlib import Path
-import ast
+podman run --rm \
+  -v "$PWD:/workspace:ro" \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  -c '
+import sys
+import inspect
+sys.path.insert(0, "artifacts/v1.168-max")
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_worker_registration.py")
+from max.serve.pipelines.model_worker import ModelWorker
+from maxserve_cta_extension.cta_worker_registration import install_cta_scheduler_hook
 
-code = '''
-from .cta_scheduler_factory import create_cta_scheduler
+fn = ModelWorker.run
+real_fn = inspect.unwrap(fn)
 
+print("DIRECT SCHEDULER GLOBAL:", "load_scheduler" in fn.__globals__)
+print("UNWRAPPED SCHEDULER GLOBAL:", "load_scheduler" in real_fn.__globals__)
 
-def install_cta_scheduler_hook():
-    """Install CTA scheduler selection inside the MAX worker process."""
-    from max.serve.pipelines.model_worker import ModelWorker
-
-    worker_globals = ModelWorker.run.__globals__
-    original = worker_globals["load_scheduler"]
-
-    if getattr(original, "_cta_hook", False):
-        return False
-
-    def select_scheduler(
-        pipeline, pipeline_config, settings, scheduler_zmq_configs
-    ):
-        if not getattr(pipeline, "_cta_native_pipeline", False):
-            return original(
-                pipeline, pipeline_config, settings, scheduler_zmq_configs
-            )
-
-        adapter = getattr(pipeline, "cta_adapter", None)
-        if adapter is None:
-            raise RuntimeError("CTA pipeline adapter not registered")
-
-        return create_cta_scheduler(
-            adapter=adapter,
-            scheduler_zmq_configs=scheduler_zmq_configs,
-        )
-
-    select_scheduler._cta_hook = True
-    worker_globals["load_scheduler"] = select_scheduler
-    return True
-'''
-
-ast.parse(code)
-with p.open("x") as f:
-    f.write(code)
-
-print("CTA WORKER REGISTRATION HOOK CREATED — SYNTAX PASS")
-print("Existing DS, MAX and inference files unchanged")
-PY
+try:
+    result = install_cta_scheduler_hook()
+    print("CTA HOOK INSTALL:", "PASS" if result else "ALREADY INSTALLED")
+    print("CTA HOOK ACTIVE:", getattr(
+        real_fn.__globals__.get("load_scheduler"), "_cta_hook", False
+    ))
+except Exception as exc:
+    print("CTA HOOK INSTALL: FAIL")
+    print(type(exc).__name__, str(exc))
+'

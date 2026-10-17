@@ -1,22 +1,41 @@
 
-podman run --rm --entrypoint /opt/venv/bin/python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -c '
-import inspect
-from max.serve.pipelines.model_worker import ModelWorker
+python3 - <<'PY'
+from pathlib import Path
+import ast
 
-lines = inspect.getsource(ModelWorker.run).splitlines()
-keywords = (
-    "request_queue", "response_queue", "engine_queue",
-    "request_id", "zmq", "get_paged_manager",
-    "scheduler.run_iteration", "pipeline="
-)
-selected = set()
-for i, line in enumerate(lines):
-    if any(k in line for k in keywords):
-        selected.update(range(max(0, i-2), min(len(lines), i+4)))
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_context.py")
 
-print("NATIVE WORKER REQUEST/RESPONSE FLOW:")
-for i in sorted(selected):
-    print(f"{i+1}: {lines[i]}")
-'
+code = '''
+from max.interfaces.context import BaseContext, GenerationStatus
+
+
+class CTAContext(BaseContext):
+    """Native MAX Serve request context carrying real CTA JSON."""
+
+    def __init__(self, request_id, body):
+        if not isinstance(body, dict):
+            raise TypeError("CTA request must be a JSON object")
+        self._request_id = request_id
+        self.body = body
+        self._status = GenerationStatus.ACTIVE
+
+    @property
+    def request_id(self):
+        return self._request_id
+
+    @property
+    def status(self):
+        return self._status
+
+    @status.setter
+    def status(self, value):
+        self._status = value
+'''
+
+ast.parse(code)
+with p.open("x") as f:
+    f.write(code)
+
+print("CTA NATIVE REQUEST CONTEXT CREATED — SYNTAX PASS")
+print("Original DS and MAX inference files unchanged")
+PY

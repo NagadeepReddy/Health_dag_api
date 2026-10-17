@@ -1,27 +1,38 @@
 
-podman run --rm \
-  -v "$PWD:/workspace:ro" \
-  -w /workspace \
-  --entrypoint /opt/venv/bin/python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -c '
-import sys, inspect
-sys.path.insert(0, "artifacts/v1.168-max")
+python3 - <<'PY'
+from pathlib import Path
+import ast
 
-from max.serve.pipelines.model_worker import ModelWorker
-from maxserve_cta_extension.cta_worker_registration import install_cta_scheduler_hook
+folder = Path("artifacts/v1.168-max/maxserve_cta_extension/bootstrap")
+p = folder / "sitecustomize.py"
 
-real_fn = inspect.unwrap(ModelWorker.run)
-original = real_fn.__globals__["load_scheduler"]
+code = '''
+"""Opt-in CTA hook initialization for MAX Serve Python processes."""
 
-assert install_cta_scheduler_hook() is True
-hook = real_fn.__globals__["load_scheduler"]
-assert getattr(hook, "_cta_hook", False)
-assert hook is not original
-assert install_cta_scheduler_hook() is False
+import os
 
-print("CTA WORKER HOOK INSTALL: PASS")
-print("REAL WORKER GLOBAL PATCH: PASS")
-print("REPEATED INSTALL PROTECTION: PASS")
-print("SPAWNED WORKER ACTIVATION: STILL PENDING")
-'
+if os.environ.get("CTA_MAX_NATIVE_BOOTSTRAP") == "1":
+    import sys
+    from pathlib import Path
+
+    extension_root = str(Path(__file__).resolve().parents[2])
+    if extension_root not in sys.path:
+        sys.path.insert(0, extension_root)
+
+    from maxserve_cta_extension.cta_worker_registration import (
+        install_cta_scheduler_hook,
+    )
+
+    install_cta_scheduler_hook()
+'''
+
+ast.parse(code)
+folder.mkdir(parents=True, exist_ok=True)
+
+with p.open("x") as f:
+    f.write(code)
+
+print("CTA SPAWN BOOTSTRAP CREATED — SYNTAX PASS")
+print("BOOTSTRAP DEFAULT: DISABLED")
+print("Original DS, MAX inference and installed MAX files unchanged")
+PY

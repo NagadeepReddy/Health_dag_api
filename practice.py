@@ -1,33 +1,74 @@
 
 python3 - <<'PY'
-from runpy import run_path
+from pathlib import Path
+import ast
 
-path = "artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py"
-CTAWorkerAdapter = run_path(path)["CTAWorkerAdapter"]
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_scheduler.py")
 
-calls = {"created": 0, "loaded": 0, "attached": 0}
+if p.exists():
+    raise SystemExit("STOP: CTA scheduler already exists; not overwriting")
 
-class MockPipeline:
-    def load(self):
-        calls["loaded"] += 1
+code = '''
+from queue import Queue, Empty
+from threading import Lock
 
-    def predict_raw(self, body):
-        return {"received": body}
+from max.interfaces.scheduler import Scheduler, SchedulerProgress
 
-def factory():
-    calls["created"] += 1
-    return MockPipeline()
 
-def attach(pipeline):
-    calls["attached"] += 1
+class CTAScheduler(Scheduler):
+    """CTA request scheduler using the existing real MAX adapter."""
 
-adapter = CTAWorkerAdapter(factory, attach)
+    def __init__(self, adapter, max_items_per_iteration=1):
+        if max_items_per_iteration < 1:
+            raise ValueError("Iteration limit must be positive")
+        self.adapter = adapter
+        self.max_items_per_iteration = max_items_per_iteration
+        self.pending = Queue()
+        self.completed = {}
+        self.lock = Lock()
 
-assert adapter.predict({"request": 1}) == {"received": {"request": 1}}
-assert adapter.predict({"request": 2}) == {"received": {"request": 2}}
-assert calls == {"created": 1, "loaded": 1, "attached": 1}
+    def submit(self, request_id, body):
+        if not isinstance(body, dict):
+            raise TypeError("CTA request must be a JSON object")
+        self.pending.put((request_id, body))
 
-print("CTA ADAPTER CONTRACT: PASS")
-print("ONE-TIME INITIALIZATION: PASS")
-print("JSON FORWARDING: PASS")
+    def run_iteration(self):
+        processed = 0
+
+        while processed < self.max_items_per_iteration:
+            try:
+                request_id, body = self.pending.get_nowait()
+            except Empty:
+                break
+
+            try:
+                result = self.adapter.predict(body)
+                outcome = (True, result)
+            except Exception as exc:
+                outcome = (False, exc)
+
+            with self.lock:
+                self.completed[request_id] = outcome
+
+            self.pending.task_done()
+            processed += 1
+
+        return (
+            SchedulerProgress.MADE_PROGRESS
+            if processed
+            else SchedulerProgress.NO_PROGRESS
+        )
+
+    def take_result(self, request_id):
+        with self.lock:
+            success, value = self.completed.pop(request_id)
+        if not success:
+            raise value
+        return value
+'''
+
+ast.parse(code)
+p.write_text(code)
+print("CTA SCHEDULER CREATED — SYNTAX PASS")
+print("Existing DS and MAX inference files untouched")
 PY

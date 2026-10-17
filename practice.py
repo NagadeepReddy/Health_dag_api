@@ -1,21 +1,14 @@
 
-podman run --rm \
-  -v "$PWD/artifacts/v1.168-max/maxserve_cta_extension:/cta_extension:ro" \
-  --entrypoint /opt/venv/bin/python \
+podman run --rm --entrypoint /opt/venv/bin/python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
   -c '
-import importlib.util
-import inspect
-from max.interfaces.scheduler import Scheduler
+from max.serve.scheduler import load_scheduler
 
-p = "/cta_extension/cta_scheduler.py"
-spec = importlib.util.spec_from_file_location("cta_scheduler", p)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+cls = load_scheduler.__globals__["EmbeddingsScheduler"]
+progress = cls.run_iteration.__globals__["SchedulerProgress"]
 
-cls = module.CTAScheduler
-print("NATIVE MAX SCHEDULER:", issubclass(cls, Scheduler))
-print("UNIMPLEMENTED METHODS:", sorted(cls.__abstractmethods__))
-print("RUN ITERATION:", inspect.signature(cls.run_iteration))
-print("SCHEDULER IMPORT: PASS")
+print("CORRECT IMPORT MODULE:", progress.__module__)
+print("SYMBOL:", progress.__name__)
+print("MADE_PROGRESS:", progress.MADE_PROGRESS)
+print("NO_PROGRESS:", progress.NO_PROGRESS)
 '

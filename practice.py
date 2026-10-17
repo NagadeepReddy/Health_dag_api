@@ -4,7 +4,8 @@ podman run --rm -i \
   --entrypoint /opt/venv/bin/python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 import importlib.util
-from starlette.testclient import TestClient
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from max.serve.api_server import ROUTES
 from max.serve.config import APIType
 
@@ -14,9 +15,10 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 module.register_cta_routes()
 
-client = TestClient(ROUTES[APIType.KSERVE].router)
-response = client.post("/v2/cta/probe")
+app = FastAPI()
+app.include_router(ROUTES[APIType.KSERVE].router)
 
+response = TestClient(app).post("/v2/cta/probe")
 print("HTTP STATUS:", response.status_code)
 print("RESPONSE:", response.json())
 assert response.status_code == 200

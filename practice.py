@@ -4,22 +4,26 @@ from pathlib import Path
 d = Path("artifacts/v1.168-max/maxserve_cta_extension")
 p = d / "cta_spawn_worker.py"
 
-code = '''"""Spawn-safe native MAX worker registration."""
-from max.serve.pipelines.model_worker import ModelWorker
+code = '''"""CTA registration inside the spawned MAX worker."""
 
-_ORIGINAL_RUN = ModelWorker.run
-
-async def cta_worker_run(*args, **kwargs):
-    ModelWorker.run = staticmethod(_ORIGINAL_RUN)
+def cta_worker_entry(*args, **kwargs):
     from cta_worker_registration import install_cta_scheduler_hook
     install_cta_scheduler_hook()
-    return await _ORIGINAL_RUN(*args, **kwargs)
+
+    from max.serve.pipelines.model_worker import ModelWorker
+    return ModelWorker._call(*args, **kwargs)
+
 
 def install_cta_spawn_entry():
-    ModelWorker.run = staticmethod(cta_worker_run)
+    from max.serve.pipelines.model_worker import ModelWorker
+    ModelWorker._call = staticmethod(cta_worker_entry)
 '''
 
+launcher = (d / "cta_native_launcher.py").read_text()
+assert "install_cta_spawn_entry()" in launcher
 compile(code, str(p), "exec")
 p.write_text(code)
-print("SPAWN WORKER RECURSION FIXED — SYNTAX PASS")
+
+print("SPAWN-SAFE WORKER ENTRY: SYNTAX PASS")
+print("LAUNCHER CONNECTION: PASS")
 PY

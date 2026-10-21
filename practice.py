@@ -1,28 +1,37 @@
-python3 - <<'PY'
-from pathlib import Path
+T=$(mktemp /tmp/cta_spawn_XXXXXX.py)
+cat > "$T" <<'PY'
+import multiprocessing as mp
 
-d = Path("artifacts/v1.168-max/maxserve_cta_extension")
-base = d.parent
+def worker(queue):
+    import pickle
+    from cta_spawn_worker import CTAFactoryWrapper
 
-paths = [
-    base.parent / "v1.168/core-artifact/pipeline.py",
-    base / "cta_max/live_cta_pipeline_bridge.py",
-    d / "cta_worker_adapter.py",
-]
+    class DummyFactory:
+        def __call__(self):
+            return "MODEL"
 
-for p in paths:
-    assert p.is_file(), f"MISSING: {p}"
-    print("FOUND:", p)
+    factory = CTAFactoryWrapper(DummyFactory())
+    restored = pickle.loads(pickle.dumps(factory))
+    queue.put(restored.original_factory())
 
-worker = (d / "cta_spawn_worker.py").read_text()
-launcher = (d / "cta_native_launcher.py").read_text()
+if __name__ == "__main__":
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    p = ctx.Process(target=worker, args=(q,))
+    p.start()
+    p.join(8)
 
-for token in ("CTAFactoryWrapper", "install_cta_scheduler_hook",
-              "pipeline.cta_adapter", "pipeline._cta_native_pipeline"):
-    assert token in worker, f"MISSING WIRING: {token}"
+    if p.is_alive():
+        p.kill()
+        p.join()
+        raise RuntimeError("Spawn timed out")
 
-assert "install_cta_spawn_entry()" in launcher
-assert "run_module" in launcher
-
-print("CTA NATIVE FACTORY WIRING: STATIC PASS")
+    assert p.exitcode == 0, p.exitcode
+    assert q.get(timeout=2) == "MODEL"
+    print("REAL PYTHON SPAWN: PASS")
 PY
+PYTHONPATH=artifacts/v1.168-max/maxserve_cta_extension \
+timeout 12s python3 "$T"
+RC=$?
+rm -f "$T"
+exit "$RC"

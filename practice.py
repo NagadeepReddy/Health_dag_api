@@ -1,23 +1,33 @@
-python3 - <<'PY'
-from pathlib import Path
+PYTHONPATH=artifacts/v1.168-max/maxserve_cta_extension python3 - <<'PY'
+import sys, types
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
-s = p.read_text()
+events = []
 
-old = "    return ModelWorker._call(*args, **kwargs)"
-assert s.count(old) == 1, "Unexpected code; no changes made"
-assert "_ORIGINAL_CALL" not in s, "Already modified; no changes made"
+for name in ("max", "max.serve", "max.serve.pipelines"):
+    m = types.ModuleType(name)
+    m.__path__ = []
+    sys.modules[name] = m
 
-s = s.replace(
-    "def cta_worker_entry",
-    "from max.serve.pipelines.model_worker import ModelWorker\n"
-    "_ORIGINAL_CALL = ModelWorker._call\n\n"
-    "def cta_worker_entry",
-    1
-)
-s = s.replace(old, "    return _ORIGINAL_CALL(*args, **kwargs)")
+worker = types.ModuleType("max.serve.pipelines.model_worker")
 
-compile(s, str(p), "exec")
-p.write_text(s)
-print("SPAWN WRAPPER RECURSION GUARD: PASS")
+class ModelWorker:
+    @staticmethod
+    def _call():
+        events.append("original_worker")
+
+worker.ModelWorker = ModelWorker
+sys.modules[worker.__name__] = worker
+
+registration = types.ModuleType("cta_worker_registration")
+registration.install_cta_scheduler_hook = lambda: events.append("cta_hook")
+sys.modules[registration.__name__] = registration
+
+from cta_spawn_worker import install_cta_spawn_entry
+
+install_cta_spawn_entry()
+ModelWorker._call()
+
+assert events == ["cta_hook", "original_worker"], events
+print("CTA WORKER WRAPPER: PASS")
+print("HOOK ORDER: PASS")
 PY

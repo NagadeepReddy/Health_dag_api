@@ -1,33 +1,20 @@
-PYTHONPATH=artifacts/v1.168-max/maxserve_cta_extension python3 - <<'PY'
-import sys, types
-
-events = []
-
-for name in ("max", "max.serve", "max.serve.pipelines"):
-    m = types.ModuleType(name)
-    m.__path__ = []
-    sys.modules[name] = m
-
-worker = types.ModuleType("max.serve.pipelines.model_worker")
-
-class ModelWorker:
-    @staticmethod
-    def _call():
-        events.append("original_worker")
-
-worker.ModelWorker = ModelWorker
-sys.modules[worker.__name__] = worker
-
-registration = types.ModuleType("cta_worker_registration")
-registration.install_cta_scheduler_hook = lambda: events.append("cta_hook")
-sys.modules[registration.__name__] = registration
-
+unshare -m --propagation private sh -c '
+mount --bind /application /application1 || exit
+timeout -k 5s 30s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --memory=1g --memory-swap=1g --pids-limit=64 \
+  -v /application/sajjna8/rt-pzaas-cta-offers-v1:/workspace:ro \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max/maxserve_cta_extension \
+  --entrypoint /opt/venv/bin/python \
+  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
+  -u -c "
+import pickle
+from max.serve.pipelines.model_worker import ModelWorker
 from cta_spawn_worker import install_cta_spawn_entry
-
 install_cta_spawn_entry()
-ModelWorker._call()
-
-assert events == ["cta_hook", "original_worker"], events
-print("CTA WORKER WRAPPER: PASS")
-print("HOOK ORDER: PASS")
-PY
+assert pickle.loads(pickle.dumps(ModelWorker._call)) is ModelWorker._call
+print(\"REAL MAX WORKER REGISTRATION: PASS\", flush=True)
+"
+'

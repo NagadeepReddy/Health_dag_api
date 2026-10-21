@@ -1,21 +1,23 @@
-unshare -m --propagation private sh -c '
-mount --bind /application /application1 &&
-timeout 45s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never \
-  -v /application/sajjna8/rt-pzaas-cta-offers-v1:/workspace:ro \
-  -e CTA_MAX_NATIVE_BOOTSTRAP=1 \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max/maxserve_cta_extension/bootstrap \
-  --entrypoint /opt/venv/bin/python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest \
-  -u -c "
-import sys, inspect
-from max.serve.pipelines.model_worker import ModelWorker
-assert \"sitecustomize\" in sys.modules
-hook = inspect.unwrap(ModelWorker.run).__globals__.get(\"load_scheduler\")
-assert getattr(hook, \"_cta_hook\", False)
-print(\"FRESH BOOTSTRAP: PASS\")
-print(\"CTA WORKER HOOK: PASS\")
-"
-'
+cat > artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py <<'PY'
+"""Explicit CTA registration before launching native MAX Serve."""
+
+import runpy
+import shutil
+import sys
+
+from cta_worker_registration import install_cta_scheduler_hook
+
+def main():
+    install_cta_scheduler_hook()
+    print("CTA native worker hook installed", flush=True)
+
+    max_cli = shutil.which("max")
+    if not max_cli:
+        raise RuntimeError("MAX CLI not found")
+
+    sys.argv = [max_cli, "serve", *sys.argv[1:]]
+    runpy.run_path(max_cli, run_name="__main__")
+
+if __name__ == "__main__":
+    main()
+PY

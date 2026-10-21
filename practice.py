@@ -1,23 +1,40 @@
-cat > artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py <<'PY'
-"""Explicit CTA registration before launching native MAX Serve."""
+python3 - <<'PY'
+from pathlib import Path
 
-import runpy
-import shutil
-import sys
+d = Path("artifacts/v1.168-max/maxserve_cta_extension")
+p = d / "cta_native_launcher.py"
+s = p.read_text()
 
-from cta_worker_registration import install_cta_scheduler_hook
+old = "    install_cta_scheduler_hook()\n"
+assert s.count(old) == 1, "Launcher differs; no changes made"
 
-def main():
+worker = '''"""Spawn-safe CTA worker entry point."""
+
+def cta_worker_entry(*args, **kwargs):
+    from cta_worker_registration import install_cta_scheduler_hook
     install_cta_scheduler_hook()
-    print("CTA native worker hook installed", flush=True)
 
-    max_cli = shutil.which("max")
-    if not max_cli:
-        raise RuntimeError("MAX CLI not found")
+    from max.serve.pipelines.model_worker import ModelWorker
+    return ModelWorker._call(*args, **kwargs)
 
-    sys.argv = [max_cli, "serve", *sys.argv[1:]]
-    runpy.run_path(max_cli, run_name="__main__")
 
-if __name__ == "__main__":
-    main()
+def install_cta_spawn_entry():
+    from max.serve.pipelines.model_worker import ModelWorker
+    ModelWorker._call = staticmethod(cta_worker_entry)
+'''
+
+updated = s.replace(
+    old,
+    "    from cta_spawn_worker import install_cta_spawn_entry\n"
+    "    install_cta_spawn_entry()\n"
+)
+
+compile(worker, str(d / "cta_spawn_worker.py"), "exec")
+compile(updated, str(p), "exec")
+
+(d / "cta_spawn_worker.py").write_text(worker)
+p.write_text(updated)
+
+print("SPAWN-SAFE CTA ENTRY: CREATED")
+print("LAUNCHER UPDATED: SYNTAX PASS")
 PY

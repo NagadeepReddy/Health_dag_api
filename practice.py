@@ -1,34 +1,28 @@
 python3 - <<'PY'
 from pathlib import Path
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
-s = p.read_text()
-old = "        return self.original_factory()"
-assert s.count(old) == 1, "Unexpected factory code — no changes made"
+d = Path("artifacts/v1.168-max/maxserve_cta_extension")
+base = d.parent
 
-new = '''        pipeline = self.original_factory()
+paths = [
+    base.parent / "v1.168/core-artifact/pipeline.py",
+    base / "cta_max/live_cta_pipeline_bridge.py",
+    d / "cta_worker_adapter.py",
+]
 
-        from pathlib import Path
-        import sys
-        base = Path(__file__).resolve().parent.parent
-        for folder in (
-            base,
-            base / "cta_max",
-            base.parent / "v1.168" / "core-artifact",
-        ):
-            if str(folder) not in sys.path:
-                sys.path.insert(0, str(folder))
+for p in paths:
+    assert p.is_file(), f"MISSING: {p}"
+    print("FOUND:", p)
 
-        from pipeline import pipeline as CTA
-        from cta_max.live_cta_pipeline_bridge import attach_max
-        from cta_worker_adapter import CTAWorkerAdapter
+worker = (d / "cta_spawn_worker.py").read_text()
+launcher = (d / "cta_native_launcher.py").read_text()
 
-        pipeline.cta_adapter = CTAWorkerAdapter(CTA, attach_max)
-        pipeline._cta_native_pipeline = True
-        return pipeline'''
+for token in ("CTAFactoryWrapper", "install_cta_scheduler_hook",
+              "pipeline.cta_adapter", "pipeline._cta_native_pipeline"):
+    assert token in worker, f"MISSING WIRING: {token}"
 
-updated = s.replace(old, new)
-compile(updated, str(p), "exec")
-p.write_text(updated)
-print("REAL CTA FACTORY WIRING: SYNTAX PASS")
+assert "install_cta_spawn_entry()" in launcher
+assert "run_module" in launcher
+
+print("CTA NATIVE FACTORY WIRING: STATIC PASS")
 PY

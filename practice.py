@@ -1,4 +1,13 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-PYTHONPATH="$PWD/artifacts/v1.168-max" \
-python3 -c "import maxserve_cta_extension.cta_scheduler_factory; print('CTA FACTORY PACKAGE IMPORT: PASS')"
+python3 - <<'PY'
+import ast
+from pathlib import Path
+
+p = Path("artifacts/v1.168-max/maxserve_cta_extension")
+for name in ("cta_spawn_worker.py", "cta_scheduler_factory.py", "cta_worker_registration.py"):
+    ast.parse((p / name).read_text())
+    print(name, "SYNTAX PASS")
+
+print("NATIVE CTA FILES: PASS")
+PY

@@ -1,20 +1,25 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-python3 - <<'PY'
-from pathlib import Path
+timeout -k 5s 45s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --network=none --memory=8g --pids-limit=32 \
+  -v "$PWD:/workspace:ro" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  f30453065dac \
+  -u -c '
+from max.serve import api_server
+from max.serve.pipelines import model_worker
+from maxserve_cta_extension.cta_spawn_worker import install_cta_spawn_entry
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
-s = p.read_text()
+install_cta_spawn_entry()
 
-old = 'api = sys.modules.get("max.serve.pipelines.api_server")'
-new = 'from max.serve import api_server\n    api = api_server'
+assert api_server.start_model_worker is model_worker.start_model_worker
+assert model_worker.start_model_worker._cta_wrapped
 
-assert s.count(old) == 1, "Expected code not found; no changes made"
-
-updated = s.replace(old, new)
-compile(updated, str(p), "exec")
-p.write_text(updated)
-
-print("MAX API IMPORT PATH: FIXED")
-print("SYNTAX: PASS")
-PY
+print("MAX API TO CTA WORKER: PASS", flush=True)
+print("NO WORKER SPAWNED", flush=True)
+'
+echo "EXIT CODE: $?"

@@ -1,8 +1,20 @@
-timeout -k 5s 45s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never \
-  --network=none --memory=4g --pids-limit=32 \
-  --entrypoint /bin/sh \
-  f30453065dac \
-  -c 'grep -Rnl --include="*.py" "start_model_worker(" /opt/venv/lib/python3.12/site-packages/max/serve | head -15'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
+s = p.read_text()
+
+old = 'api = sys.modules.get("max.serve.pipelines.api_server")'
+new = 'from max.serve import api_server\n    api = api_server'
+
+assert s.count(old) == 1, "Expected code not found; no changes made"
+
+updated = s.replace(old, new)
+compile(updated, str(p), "exec")
+p.write_text(updated)
+
+print("MAX API IMPORT PATH: FIXED")
+print("SYNTAX: PASS")
+PY

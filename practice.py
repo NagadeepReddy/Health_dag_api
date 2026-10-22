@@ -10,13 +10,15 @@ timeout -k 5s 45s podman \
   --entrypoint /opt/venv/bin/python \
   f30453065dac \
   -u -c '
-import faulthandler
-faulthandler.dump_traceback_later(20, repeat=False)
-print("PYTHON START: PASS", flush=True)
-print("IMPORTING MAX CTA FACTORY...", flush=True)
-from maxserve_cta_extension.cta_scheduler_factory import create_cta_scheduler
-faulthandler.cancel_dump_traceback_later()
-print("REAL MAX CTA FACTORY IMPORT: PASS", flush=True)
+from max.serve.pipelines.model_worker import ModelWorker
+from maxserve_cta_extension.cta_spawn_worker import install_cta_spawn_entry
+
+original = ModelWorker.start_model_worker
+install_cta_spawn_entry()
+
+assert ModelWorker.start_model_worker is not original
+print("REAL MAX WORKER HOOK: PASS", flush=True)
+print("NO WORKER SPAWNED", flush=True)
 '
 
 echo "EXIT CODE: $?"

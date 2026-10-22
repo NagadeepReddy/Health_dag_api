@@ -3,23 +3,23 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 python3 - <<'PY'
 from pathlib import Path
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py")
 s = p.read_text()
 
-changes = {
-    "from cta_worker_registration import install_cta_scheduler_hook":
-    "from maxserve_cta_extension.cta_worker_registration import install_cta_scheduler_hook",
+old = "from cta_spawn_worker import install_cta_spawn_entry"
+new = "from maxserve_cta_extension.cta_spawn_worker import install_cta_spawn_entry"
 
-    "from cta_worker_adapter import CTAWorkerAdapter":
-    "from maxserve_cta_extension.cta_worker_adapter import CTAWorkerAdapter",
-}
+assert old in s or new in s, "Unexpected launcher code; no changes made"
 
-for old, new in changes.items():
-    assert old in s or new in s, f"Unexpected code: {old}"
-    s = s.replace(old, new)
+s = s.replace(old, new)
+s = s.replace(
+    "from cta_worker_registration import install_cta_scheduler_hook\n",
+    ""
+)
 
 compile(s, str(p), "exec")
 p.write_text(s)
-print("CTA WORKER PACKAGE IMPORTS: FIXED")
+
+print("NATIVE LAUNCHER IMPORTS: FIXED")
 print("SYNTAX: PASS")
 PY

@@ -1,1 +1,4 @@
-journalctl -k -b --no-pager | grep -Ei 'oom|out of memory|killed process|memory cgroup' | tail -20
+timeout 8s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  events --since 30m --stream=false | tail -15

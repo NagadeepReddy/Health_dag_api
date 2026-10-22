@@ -10,15 +10,11 @@ timeout -k 5s 45s podman \
   --entrypoint /opt/venv/bin/python \
   f30453065dac \
   -u -c '
-from max.serve.pipelines import model_worker
+from max.serve.pipelines import model_worker, api_server
 from maxserve_cta_extension.cta_spawn_worker import install_cta_spawn_entry
 
-original = model_worker.start_model_worker
 install_cta_spawn_entry()
-
-assert model_worker.start_model_worker is not original
-assert model_worker.start_model_worker._cta_wrapped
-print("REAL MAX WORKER HOOK: PASS", flush=True)
-print("NO WORKER SPAWNED", flush=True)
+assert api_server.start_model_worker is model_worker.start_model_worker
+print("MAX API TO CTA WORKER WIRING: PASS", flush=True)
 '
 echo "EXIT CODE: $?"

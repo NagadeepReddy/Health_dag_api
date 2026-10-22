@@ -1,4 +1,20 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-grep -nE '^[[:space:]]*(from|import) (cta_|\.cta_|maxserve_cta_extension)' \
-artifacts/v1.168-max/maxserve_cta_extension/{cta_worker_registration.py,cta_scheduler_factory.py,cta_native_scheduler.py,cta_spawn_worker.py,cta_native_launcher.py}
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_worker_registration.py")
+s = p.read_text()
+
+old = "from cta_scheduler_factory import create_cta_scheduler"
+new = "from maxserve_cta_extension.cta_scheduler_factory import create_cta_scheduler"
+
+assert s.count(old) == 1, "Expected import not found; no changes made"
+updated = s.replace(old, new)
+
+compile(updated, str(p), "exec")
+p.write_text(updated)
+
+print("CTA REGISTRATION IMPORT: FIXED")
+print("SYNTAX: PASS")
+PY

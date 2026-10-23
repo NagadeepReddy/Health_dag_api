@@ -1,21 +1,26 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-python3 - <<'PY'
+timeout -k 5s 45s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --network=none --memory=8g --pids-limit=32 \
+  -v "$PWD:/workspace:ro" \
+  --entrypoint /opt/venv/bin/python \
+  f30453065dac \
+  -u -c '
+import sys
 from pathlib import Path
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
-s = p.read_text()
+root = Path("/workspace/artifacts")
+ds = root / "v1.168/core-artifact"
+sys.path.insert(0, str(ds))
 
-old = 'base.parent / "v1.168" / "core-artifact"'
-new = 'base.parent.parent / "v1.168" / "core-artifact"'
+assert (ds / "pipeline.py").is_file()
+print("CTA PIPELINE PATH: PASS", flush=True)
 
-assert s.count(old) == 1, "Expected path not found; no changes made"
-assert Path("artifacts/v1.168/core-artifact/pipeline.py").is_file()
+from pipeline import CTA
+print("REAL CTA PIPELINE IMPORT: PASS", flush=True)
+'
 
-updated = s.replace(old, new)
-compile(updated, str(p), "exec")
-p.write_text(updated)
-
-print("CTA v1.168 DS PIPELINE PATH: FIXED")
-print("SYNTAX: PASS")
-PY
+echo "EXIT CODE: $?"

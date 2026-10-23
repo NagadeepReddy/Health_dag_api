@@ -1,6 +1,6 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-timeout -k 5s 90s podman \
+timeout -k 5s 75s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never \
@@ -9,8 +9,12 @@ timeout -k 5s 90s podman \
   -e PYTHONPATH=/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168/core-artifact \
   -e HF_HUB_OFFLINE=1 \
   -e TRANSFORMERS_OFFLINE=1 \
+  -e OTEL_SDK_DISABLED=true \
+  -e OTEL_TRACES_EXPORTER=none \
+  -e OTEL_METRICS_EXPORTER=none \
+  -e OTEL_LOGS_EXPORTER=none \
   --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
+  localhost/cta-max-faiss:local -u - <<'PY' 2>&1 | grep -Ei 'CTA|worker|ready|error|exception|traceback|telemetry|failed'
 import sys, runpy
 from pipeline import pipeline as CTA
 from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
@@ -21,42 +25,36 @@ TARGET = "/workspace/artifacts/v1.168/core-artifact"
 def is_cta(config):
     return str(config.model_config.model_path) == TARGET
 
-original_resolve = PipelineConfig.resolve
-original_log = PipelineConfig.log_basic_config
-registry_class = type(PIPELINE_REGISTRY)
-original_factory = registry_class.retrieve_factory
+resolve_original = PipelineConfig.resolve
+log_original = PipelineConfig.log_basic_config
+registry = type(PIPELINE_REGISTRY)
+factory_original = registry.retrieve_factory
 
 def resolve(self):
     if is_cta(self):
-        print("CTA CONFIG: PASS", flush=True)
+        print("CTA CONFIG ACTIVE", flush=True)
         return
-    return original_resolve(self)
+    return resolve_original(self)
 
-def log_basic_config(self):
+def log_config(self):
     if is_cta(self):
-        print("CTA LOGGING: PASS", flush=True)
         return
-    return original_log(self)
+    return log_original(self)
 
-def retrieve_factory(self, config, *args, **kwargs):
+def factory(self, config, *args, **kwargs):
     if is_cta(config):
-        print("CTA REAL FACTORY: SELECTED", flush=True)
+        print("CTA REAL FACTORY SELECTED", flush=True)
         return None, CTAFactoryWrapper(CTA)
-    return original_factory(self, config, *args, **kwargs)
+    return factory_original(self, config, *args, **kwargs)
 
 PipelineConfig.resolve = resolve
-PipelineConfig.log_basic_config = log_basic_config
-registry_class.retrieve_factory = retrieve_factory
+PipelineConfig.log_basic_config = log_config
+registry.retrieve_factory = factory
 
 launcher = "/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py"
-sys.argv = [
-    launcher, "--headless",
-    "--devices", "cpu",
-    "--model-path", TARGET
-]
+sys.argv = [launcher, "--headless", "--devices", "cpu", "--model-path", TARGET]
 
-print("STARTING REAL CTA NATIVE WORKER", flush=True)
 runpy.run_path(launcher, run_name="__main__")
 PY
 
-echo "EXIT CODE: $?"
+echo "PODMAN EXIT CODE: ${PIPESTATUS[0]}"

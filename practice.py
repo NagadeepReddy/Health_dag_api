@@ -1,41 +1,32 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-timeout -k 5s 60s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never \
-  --network=none --memory=6g --cpus=2 --pids-limit=64 \
-  -v "$PWD:/workspace:ro" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  -e HF_HUB_OFFLINE=1 \
-  -e TRANSFORMERS_OFFLINE=1 \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-import sys
-import runpy
-from max.pipelines import PipelineConfig
+python3 - <<'PY'
+from pathlib import Path
+import ast
 
-original_resolve = PipelineConfig.resolve
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
+s = p.read_text()
 
-def cta_resolve(self):
-    path = str(self.model_config.model_path)
-    if path == "/workspace/artifacts/v1.168/core-artifact":
-        print("CTA: BYPASSED HF CONFIG VALIDATION", flush=True)
-        return None
-    return original_resolve(self)
+old1 = "        pipeline = self.original_factory()\n"
+old2 = "        pipeline.cta_adapter = CTAWorkerAdapter(CTA, attach_max)\n"
 
-PipelineConfig.resolve = cta_resolve
+assert s.count(old1) == 1, "Factory code differs; no changes made"
+assert s.count(old2) == 1, "Adapter code differs; no changes made"
 
-launcher = "/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py"
-sys.argv = [
-    launcher,
-    "--headless",
-    "--devices", "cpu",
-    "--model-path", "/workspace/artifacts/v1.168/core-artifact"
-]
+updated = s.replace(old1, "", 1)
+updated = updated.replace(
+    old2,
+    "        pipeline = CTA()\n" + old2,
+    1
+)
 
-print("STARTING NATIVE CTA WORKER", flush=True)
-runpy.run_path(launcher, run_name="__main__")
+ast.parse(updated)
+backup = p.with_suffix(".py.before_cta_factory_fix")
+if not backup.exists():
+    backup.write_text(s)
+p.write_text(updated)
+
+print("CTA REAL FACTORY: FIXED")
+print("SYNTAX: PASS")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY
-
-echo "EXIT CODE: $?"

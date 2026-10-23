@@ -1,5 +1,1 @@
-
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-grep -nE -A 5 -B 5 \
-'run_module|__main__|sys.argv|install_cta|register_cta|start_workers' \
-artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py
+Thanks Sriram. For MAX Serve testing, we need a Verizon-approved image with MAX Serve, Python 3.12, PyTorch, FAISS CPU support, and the CTA model dependencies. Do we have an approved image with these, or can we get one built and shared?

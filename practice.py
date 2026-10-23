@@ -11,7 +11,8 @@ timeout -k 5s 45s podman \
   -u -c '
 import sys
 sys.path.insert(0, "/workspace/artifacts/v1.168/core-artifact")
-from pipeline import CTA
+from pipeline import pipeline as CTA
+assert callable(CTA)
 print("REAL CTA PIPELINE IMPORT: PASS", flush=True)
 '
 

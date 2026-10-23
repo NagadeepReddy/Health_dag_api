@@ -1,13 +1,13 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-test -f artifacts/v1.168/core-artifact/pipeline.py && \
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --memory=8g \
-  -p 127.0.0.1:18080:8000 \
-  -v "$PWD:/workspace:ro" \
-  -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max/cta_max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -u artifacts/v1.168-max/maxserve_cta_extension/cta_native_http_entry.py
+INPUT=$(find artifacts -type f -name 'sanity_input.json' -print -quit)
+
+if [ -n "$INPUT" ]; then
+  echo "Testing real CTA JSON: $INPUT"
+  curl -sS -i --max-time 120 \
+    -X POST http://127.0.0.1:18080/v2/cta/predict \
+    -H "Content-Type: application/json" \
+    --data-binary @"$INPUT"
+else
+  echo "CTA input file not found"
+fi

@@ -10,24 +10,19 @@ timeout -k 5s 45s podman \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -u - <<'PY'
 import sys
-from pathlib import Path
-
-root = Path("/workspace/artifacts/v1.168")
-sys.path.insert(0, str(root / "core-artifact"))
+sys.path.insert(0, "/workspace/artifacts/v1.168/core-artifact")
 
 from pipeline import pipeline as CTA
 from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
 
-print("CREATING REAL CTA PIPELINE", flush=True)
-
 p = CTAFactoryWrapper(CTA)()
 
 assert isinstance(p, CTA)
-assert p.cta_native_pipeline is True
+assert getattr(p, "_cta_native_pipeline", False) is True
 assert p.cta_adapter is not None
 
 print("REAL CTA FACTORY: PASS", flush=True)
-print("CTA NATIVE PIPELINE: PASS", flush=True)
+print("NATIVE CTA MARKER: PASS", flush=True)
 print("CTA MAX ADAPTER: PASS", flush=True)
 PY
 

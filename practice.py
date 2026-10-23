@@ -5,4 +5,4 @@ timeout -k 5s 30s podman \
   --network=none --memory=4g --pids-limit=32 \
   --entrypoint /bin/sh \
   f30453065dac \
-  -c 'sed -n "205,260p" /opt/venv/lib/python3.12/site-packages/max/serve/api_server.py'
+  -c 'grep -Rn -C 6 --include="*.py" "submit_request(" /opt/venv/lib/python3.12/site-packages/max/serve | head -90'

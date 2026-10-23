@@ -1,23 +1,23 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-python3 - <<'PY'
-from pathlib import Path
+timeout -k 5s 35s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --network=none --memory=4g --pids-limit=32 \
+  -v "$PWD:/workspace:ro" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  f30453065dac \
+  -u -c '
+from maxserve_cta_extension.cta_native_scheduler import CTANativeScheduler
+from max.interfaces.scheduler import SchedulerResult
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py")
-s = p.read_text()
+assert callable(SchedulerResult.create)
+assert callable(CTANativeScheduler.run_iteration)
 
-old = "responses[request_id] = SchedulerResult.create(result)"
-new = """responses[request_id] = SchedulerResult.create(
-                    SimpleNamespace(is_done=True, result=result)
-                )"""
+print("REAL MAX CTA SCHEDULER IMPORT: PASS", flush=True)
+print("MAX RESULT INTERFACE: PASS", flush=True)
+'
 
-assert s.count(old) == 1, "Unexpected scheduler code; no changes made"
-
-updated = "from types import SimpleNamespace\n" + s.replace(old, new)
-
-compile(updated, str(p), "exec")
-p.write_text(updated)
-
-print("CTA REAL JSON RESULT WRAPPING: FIXED")
-print("SYNTAX: PASS")
-PY
+echo "EXIT CODE: $?"

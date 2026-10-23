@@ -1,6 +1,6 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-timeout -k 5s 75s podman \
+timeout -k 5s 80s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never \
@@ -10,12 +10,9 @@ timeout -k 5s 75s podman \
   -e HF_HUB_OFFLINE=1 \
   -e TRANSFORMERS_OFFLINE=1 \
   -e OTEL_SDK_DISABLED=true \
-  -e OTEL_TRACES_EXPORTER=none \
-  -e OTEL_METRICS_EXPORTER=none \
   --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY' 2>&1 | grep -Ei 'CTA|worker|scheduler|ready|error|exception|traceback|failed|model load'
-import sys
-import runpy
+  localhost/cta-max-faiss:local -u - <<'PY'
+import sys, runpy, threading, time, json, urllib.request
 
 from pipeline import pipeline as CTA
 from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
@@ -26,43 +23,57 @@ TARGET = "/workspace/artifacts/v1.168/core-artifact"
 def is_cta(config):
     return str(config.model_config.model_path) == TARGET
 
-original_resolve = PipelineConfig.resolve
-original_log = PipelineConfig.log_basic_config
+old_resolve = PipelineConfig.resolve
+old_log = PipelineConfig.log_basic_config
 registry_class = type(PIPELINE_REGISTRY)
-original_factory = registry_class.retrieve_factory
+old_factory = registry_class.retrieve_factory
 
 def resolve(self):
     if is_cta(self):
-        print("CTA CONFIG ACTIVE", flush=True)
         return
-    return original_resolve(self)
+    return old_resolve(self)
 
 def log_config(self):
     if is_cta(self):
         return
-    return original_log(self)
+    return old_log(self)
 
 def factory(self, config, *args, **kwargs):
     if is_cta(config):
-        print("CTA REAL FACTORY SELECTED", flush=True)
+        print("REAL CTA FACTORY: SELECTED", flush=True)
         return None, CTAFactoryWrapper(CTA)
-    return original_factory(self, config, *args, **kwargs)
+    return old_factory(self, config, *args, **kwargs)
 
 PipelineConfig.resolve = resolve
 PipelineConfig.log_basic_config = log_config
 registry_class.retrieve_factory = factory
 
-launcher = "/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py"
+def check_endpoint():
+    for attempt in range(50):
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:8000/openapi.json",
+                timeout=2
+            ) as response:
+                data = json.load(response)
+            print("MAX HTTP ENDPOINT: PASS", flush=True)
+            for path, methods in data.get("paths", {}).items():
+                print("ROUTE:", path, list(methods), flush=True)
+            return
+        except Exception:
+            time.sleep(1)
+    print("MAX HTTP ENDPOINT: NOT REACHABLE", flush=True)
 
+threading.Thread(target=check_endpoint, daemon=True).start()
+
+launcher = "/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py"
 sys.argv = [
-    launcher,
-    "--headless",
-    "--devices", "cpu",
-    "--model-path", TARGET
+    launcher, "--devices", "cpu",
+    "--port", "8000", "--model-path", TARGET
 ]
 
-print("STARTING REAL CTA NATIVE WORKER", flush=True)
+print("STARTING MAX HTTP SERVER WITH REAL CTA", flush=True)
 runpy.run_path(launcher, run_name="__main__")
 PY
 
-echo "EXIT CODE: ${PIPESTATUS[0]}"
+echo "EXIT CODE: $?"

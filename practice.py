@@ -5,4 +5,4 @@ timeout -k 5s 30s podman \
   --network=none --memory=4g --pids-limit=32 \
   --entrypoint /bin/sh \
   f30453065dac \
-  -c 'sed -n "45,115p" /opt/venv/lib/python3.12/site-packages/max/interfaces/scheduler.py'
+  -c 'grep -Rn -A 12 -B 3 "PipelineOutputType" /opt/venv/lib/python3.12/site-packages/max/interfaces --include="*.py" | head -85'

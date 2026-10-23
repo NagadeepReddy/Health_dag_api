@@ -9,17 +9,34 @@ timeout -k 5s 30s podman \
   -e PYTHONPATH=/work/artifacts/v1.168-max \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -c '
-from maxserve_cta_extension.cta_router import (
-    register_cta_routes, ROUTES, APIType
-)
-register_cta_routes()
-routes = ROUTES[APIType.KSERVE].router.routes
-for r in routes:
-    if "cta" in r.path:
-        print(r.path, r.methods)
-assert any(
-    r.path.endswith("/cta/infer") and "POST" in r.methods
-    for r in routes
-)
-print("NATIVE CTA ROUTE REGISTRATION: PASS")
+import asyncio
+from types import SimpleNamespace
+from maxserve_cta_extension.cta_router import cta_infer
+
+class TestQueue:
+    async def stream(self, request_id, context):
+        assert request_id == "cta-test-1"
+        assert context.body == {"test_only": True}
+        yield SimpleNamespace(
+            result={"test_only": "queue-response"}
+        )
+
+class TestRequest:
+    state = SimpleNamespace(request_id="cta-test-1")
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            pipeline=SimpleNamespace(
+                _engine_queue=TestQueue()
+            )
+        )
+    )
+    async def json(self):
+        return {"test_only": True}
+
+async def main():
+    result = await cta_infer(TestRequest())
+    assert result == {"test_only": "queue-response"}
+    print("CTA JSON QUEUE INTERFACE: PASS")
+
+asyncio.run(main())
 '

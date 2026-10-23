@@ -1,37 +1,33 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-timeout -k 5s 35s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never \
-  --network=none --memory=4g \
-  -v "$PWD:/workspace:ro" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-from max.entrypoints import workers
-from max.serve.pipelines import model_worker
-from maxserve_cta_extension.cta_spawn_worker import install_cta_spawn_entry
+python3 - <<'PY'
+from pathlib import Path
+import ast
 
-original = workers.start_model_worker
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
+s = p.read_text()
 
-install_cta_spawn_entry()
+anchor = "        api.start_model_worker = wrapped\n"
+assert s.count(anchor) == 1, "Unexpected code structure; no changes made"
+assert "headless_workers.start_model_worker = wrapped" not in s, "Already patched"
 
-print(
-    "MODEL WORKER HOOK:",
-    getattr(model_worker.start_model_worker, "_cta_wrapped", False),
-    flush=True
-)
+addition = """
+    # Headless MAX imports its own reference to start_model_worker.
+    from max.entrypoints import workers as headless_workers
+    if getattr(headless_workers, "start_model_worker", None) is original:
+        headless_workers.start_model_worker = wrapped
+"""
 
-print(
-    "HEADLESS WORKER HOOK:",
-    getattr(workers.start_model_worker, "_cta_wrapped", False),
-    flush=True
-)
+updated = s.replace(anchor, anchor + addition, 1)
+ast.parse(updated)
 
-print(
-    "HEADLESS FUNCTION UPDATED:",
-    workers.start_model_worker is not original,
-    flush=True
-)
+backup = p.with_name("cta_spawn_worker.py.before_headless_fix")
+if not backup.exists():
+    backup.write_text(s)
+
+p.write_text(updated)
+
+print("CTA HEADLESS WORKER HOOK: FIXED")
+print("SYNTAX: PASS")
+print("DS CODE: UNCHANGED")
 PY

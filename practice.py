@@ -1,31 +1,50 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  -v "$PWD:/workspace:ro" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local - <<'PY'
-import json
+python3 - <<'PY'
 from pathlib import Path
-from max.interfaces.utils.serialization import msgpack_numpy_encoder
-from maxserve_cta_extension.cta_context import CTAContext
+import re
 
-body = json.loads(Path(
-    "/workspace/artifacts/v1.167/samples/sanity_input.json"
-).read_text())
+base = Path("artifacts/v1.168-max/maxserve_cta_extension")
+router = base / "cta_router.py"
+scheduler = base / "cta_native_scheduler.py"
 
-encoder = msgpack_numpy_encoder()
-context = CTAContext("cta-test", body)
+r = router.read_text()
+s = scheduler.read_text()
 
-for name, value in [
-    ("CTAContext", context),
-    ("Plain JSON envelope", {"request_id": "cta-test", "body": body}),
-]:
-    try:
-        data = encoder(value)
-        print(name, "SERIALIZATION PASS", len(data), "bytes")
-    except Exception as e:
-        print(name, "SERIALIZATION FAIL", type(e).__name__, str(e)[:150])
+old = "queue.open_channel(request_id, context)"
+new = 'queue.open_channel(request_id, {"request_id": request_id, "body": body})'
+
+if old not in r:
+    raise SystemExit("Router pattern differs; no files changed")
+
+pattern = r"(?m)^([ \t]*)request_id = context\.request_id\b"
+match = re.search(pattern, s)
+
+if not match:
+    raise SystemExit("Scheduler pattern differs; no files changed")
+
+indent = match.group(1)
+replacement = (
+    indent + "if isinstance(context, dict):\n"
+    + indent + "    from .cta_context import CTAContext\n"
+    + indent + '    context = CTAContext(context["request_id"], context["body"])\n'
+    + indent + "request_id = context.request_id"
+)
+
+r_new = r.replace(old, new, 1)
+s_new = re.sub(pattern, lambda m: replacement, s, count=1)
+
+compile(r_new, str(router), "exec")
+compile(s_new, str(scheduler), "exec")
+
+for path, original, updated in (
+    (router, r, r_new),
+    (scheduler, s, s_new),
+):
+    path.with_suffix(".before_queue_fix.bak").write_text(original)
+    path.write_text(updated)
+
+print("JSON queue transport FIXED")
+print("Scheduler context reconstruction FIXED")
+print("Syntax PASS")
 PY

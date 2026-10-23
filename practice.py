@@ -11,9 +11,13 @@ timeout -k 5s 45s podman \
   -u -c '
 import sys
 sys.path.insert(0, "/workspace/artifacts/v1.168/core-artifact")
+
 from pipeline import pipeline as CTA
-assert callable(CTA)
-print("REAL CTA PIPELINE IMPORT: PASS", flush=True)
+
+p = CTA()
+print("REAL CTA INSTANCE: PASS", flush=True)
+print("LOAD:", callable(getattr(p, "load", None)), flush=True)
+print("PREDICT_RAW:", callable(getattr(p, "predict_raw", None)), flush=True)
 '
 
 echo "EXIT CODE: $?"

@@ -1,6 +1,9 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-curl -sS -i --max-time 120 \
-  -X POST http://127.0.0.1:8000/v2/cta/predict \
-  -H "Content-Type: application/json" \
-  --data-binary @artifacts/v1.167/samples/sanity_input.json
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  -p 127.0.0.1:8000:8000 \
+  -v "$PWD:/workspace:Z" \
+  --entrypoint /bin/sh localhost/cta-max-faiss:local \
+  -c 'cd /workspace && PYTHONPATH=/workspace/artifacts/v1.168-max python -u artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py --headless --devices cpu --model-path TARGET'

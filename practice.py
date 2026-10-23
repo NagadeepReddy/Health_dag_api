@@ -1,4 +1,8 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-
-sed -n '1,160p' artifacts/v1.168-max/maxserve_cta_extension/cta_context.py
-sed -n '1,130p' artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py
+timeout -k 5s 30s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --network=none --memory=4g --pids-limit=32 \
+  --entrypoint /bin/sh \
+  f30453065dac \
+  -c 'grep -nE "request_queue|response_queue|app.state|register_request" /opt/venv/lib/python3.12/site-packages/max/serve/api_server.py | head -55'

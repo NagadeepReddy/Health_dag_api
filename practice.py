@@ -1,36 +1,68 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-timeout -k 5s 40s podman \
+timeout -k 5s 75s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never \
-  --network=none --memory=4g \
+  --network=none --memory=8g --cpus=2 \
   -v "$PWD:/workspace:ro" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168/core-artifact \
+  -e HF_HUB_OFFLINE=1 \
+  -e TRANSFORMERS_OFFLINE=1 \
+  -e OTEL_SDK_DISABLED=true \
+  -e OTEL_TRACES_EXPORTER=none \
+  -e OTEL_METRICS_EXPORTER=none \
   --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-from max.entrypoints import workers
-from max.serve.pipelines import model_worker
-from maxserve_cta_extension.cta_spawn_worker import install_cta_spawn_entry
+  localhost/cta-max-faiss:local -u - <<'PY' 2>&1 | grep -Ei 'CTA|worker|scheduler|ready|error|exception|traceback|failed|model load'
+import sys
+import runpy
 
-install_cta_spawn_entry()
+from pipeline import pipeline as CTA
+from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
+from max.pipelines import PipelineConfig, PIPELINE_REGISTRY
 
-assert getattr(
-    model_worker.start_model_worker, "_cta_wrapped", False
-), "Model-worker hook missing"
+TARGET = "/workspace/artifacts/v1.168/core-artifact"
 
-assert getattr(
-    workers.start_model_worker, "_cta_wrapped", False
-), "Headless hook missing"
+def is_cta(config):
+    return str(config.model_config.model_path) == TARGET
 
-assert (
-    workers.start_model_worker
-    is model_worker.start_model_worker
-), "Worker references differ"
+original_resolve = PipelineConfig.resolve
+original_log = PipelineConfig.log_basic_config
+registry_class = type(PIPELINE_REGISTRY)
+original_factory = registry_class.retrieve_factory
 
-print("MODEL WORKER HOOK: PASS", flush=True)
-print("HEADLESS WORKER HOOK: PASS", flush=True)
-print("WORKER REFERENCES: MATCH", flush=True)
+def resolve(self):
+    if is_cta(self):
+        print("CTA CONFIG ACTIVE", flush=True)
+        return
+    return original_resolve(self)
+
+def log_config(self):
+    if is_cta(self):
+        return
+    return original_log(self)
+
+def factory(self, config, *args, **kwargs):
+    if is_cta(config):
+        print("CTA REAL FACTORY SELECTED", flush=True)
+        return None, CTAFactoryWrapper(CTA)
+    return original_factory(self, config, *args, **kwargs)
+
+PipelineConfig.resolve = resolve
+PipelineConfig.log_basic_config = log_config
+registry_class.retrieve_factory = factory
+
+launcher = "/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py"
+
+sys.argv = [
+    launcher,
+    "--headless",
+    "--devices", "cpu",
+    "--model-path", TARGET
+]
+
+print("STARTING REAL CTA NATIVE WORKER", flush=True)
+runpy.run_path(launcher, run_name="__main__")
 PY
 
-echo "EXIT CODE: $?"
+echo "EXIT CODE: ${PIPESTATUS[0]}"

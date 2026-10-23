@@ -1,6 +1,4 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=none \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -c 'import inspect; from max.serve import api_server; C=api_server.ServingTokenGeneratorSettings; print("CLASS:", C.__module__); print("CONSTRUCTOR:", inspect.signature(C))'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+
+sed -n '1,125p' \
+artifacts/v1.168-max/maxserve_cta_extension/cta_scheduler_factory.py

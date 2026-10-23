@@ -4,20 +4,17 @@ timeout -k 5s 45s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm --pull=never \
-  --network=none --memory=8g --pids-limit=32 \
+  --network=none --memory=6g --cpus=2 --pids-limit=32 \
   -v "$PWD:/workspace:ro" \
+  -w /workspace/artifacts/v1.168/core-artifact \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
   -u -c '
-import sys
-sys.path.insert(0, "/workspace/artifacts/v1.168/core-artifact")
-
-from pipeline import pipeline as CTA
-
-p = CTA()
-print("REAL CTA INSTANCE: PASS", flush=True)
-print("LOAD:", callable(getattr(p, "load", None)), flush=True)
-print("PREDICT_RAW:", callable(getattr(p, "predict_raw", None)), flush=True)
+from pipeline import pipeline
+print("STARTING REAL CTA MODEL LOAD", flush=True)
+p = pipeline()
+p.load()
+print("REAL CTA MODEL LOAD: PASS", flush=True)
 '
 
 echo "EXIT CODE: $?"

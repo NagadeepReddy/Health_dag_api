@@ -1,6 +1,3 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-
-find artifacts/v1.168 -maxdepth 5 -type f \
-  \( -iname '*requirements*' -o -iname 'pyproject.toml' \
-     -o -iname '*environment*.yml' -o -iname 'Dockerfile*' \) \
-  -print
+timeout 15s find /application1/sajjna8 \
+  -type f \( -iname '*faiss*.whl' -o -iname '*faiss*.so' \) \
+  -print -quit

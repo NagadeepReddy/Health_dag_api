@@ -1,3 +1,4 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-sed -n '1,190p' artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py
+sed -n '1,160p' artifacts/v1.168-max/maxserve_cta_extension/cta_context.py
+sed -n '1,130p' artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py

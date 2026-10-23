@@ -13,9 +13,11 @@ from max.serve.config import Settings
 from maxserve_cta_extension.cta_router import register_cta_routes
 
 register_cta_routes()
-print("DEFAULT API:", Settings().api_type)
+
+print("DEFAULT API TYPES:", Settings().api_types)
 print("KSERVE CTA ROUTES:", [
-    r.path for r in api_server.ROUTES[api_server.APIType.KSERVE].router.routes
+    (r.path, sorted(r.methods))
+    for r in api_server.ROUTES[api_server.APIType.KSERVE].router.routes
     if "cta" in r.path
 ])
 '

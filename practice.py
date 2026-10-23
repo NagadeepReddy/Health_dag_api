@@ -1,15 +1,4 @@
-timeout -k 5s 30s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=none \
-  --memory=2g \
-  --entrypoint /bin/sh localhost/cta-max-faiss:local \
-  -c '
-f=$(grep -Rl --include="*.py" "^class EngineQueue" /opt/venv/lib/python3.12/site-packages/max/serve | head -1)
-if [ -n "$f" ]; then
-  echo "=== ENGINE QUEUE: $f ==="
-  sed -n "/^class EngineQueue/,/^class /p" "$f" | head -180
-else
-  echo "EngineQueue class not found"
-fi
-'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+grep -nE -A 8 \
+'class CTAContext|def __init__|SchedulerResult\(|def register_cta_routes|async def cta_probe' \
+artifacts/v1.168-max/maxserve_cta_extension/{cta_context.py,cta_native_scheduler.py,cta_router.py}

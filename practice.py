@@ -30,7 +30,7 @@ config = SimpleNamespace(
 register_cta_routes()
 
 serving = api_server.ServingTokenGeneratorSettings(
-    model_factory=CTAFactorWrapper(real_cta_factory),
+    model_factory=CTAFactoryWrapper(real_cta_factory),
     pipeline_config=config,
     tokenizer=None,
     pipeline_task=PipelineTask.TEXT_GENERATION

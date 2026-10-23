@@ -1,47 +1,62 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-python3 - <<'PY'
-from pathlib import Path
-import ast
-import re
+timeout -k 5s 90s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --network=none --memory=8g --cpus=2 \
+  -v "$PWD:/workspace:ro" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168/core-artifact \
+  -e HF_HUB_OFFLINE=1 \
+  -e TRANSFORMERS_OFFLINE=1 \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -u - <<'PY'
+import sys, runpy
+from pipeline import pipeline as CTA
+from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
+from max.pipelines import PipelineConfig, PIPELINE_REGISTRY
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py")
-s = p.read_text()
+TARGET = "/workspace/artifacts/v1.168/core-artifact"
 
-pattern = re.compile(r'^([ \t]*)async def wrapped\(\*args, \*\*kwargs\):', re.M)
-matches = list(pattern.finditer(s))
-assert len(matches) == 1, "Wrapper differs; no changes made"
+def is_cta(config):
+    return str(config.model_config.model_path) == TARGET
 
-indent = matches[0].group(1)
-assert s.count("return await original(*bound.args, **bound.kwargs)") == 1, \
-    "Original call differs; no changes made"
+original_resolve = PipelineConfig.resolve
+original_log = PipelineConfig.log_basic_config
+registry_class = type(PIPELINE_REGISTRY)
+original_factory = registry_class.retrieve_factory
 
-updated = pattern.sub(
-    lambda m: (
-        f"{indent}from contextlib import asynccontextmanager\n\n"
-        f"{indent}@asynccontextmanager\n"
-        f"{indent}async def wrapped(*args, **kwargs):"
-    ),
-    s,
-    count=1
-)
+def resolve(self):
+    if is_cta(self):
+        print("CTA CONFIG: PASS", flush=True)
+        return
+    return original_resolve(self)
 
-updated = updated.replace(
-    "return await original(*bound.args, **bound.kwargs)",
-    "async with original(*bound.args, **bound.kwargs) as monitor:\n"
-    + indent + "        yield monitor",
-    1
-)
+def log_basic_config(self):
+    if is_cta(self):
+        print("CTA LOGGING: PASS", flush=True)
+        return
+    return original_log(self)
 
-ast.parse(updated)
+def retrieve_factory(self, config, *args, **kwargs):
+    if is_cta(config):
+        print("CTA REAL FACTORY: SELECTED", flush=True)
+        return None, CTAFactoryWrapper(CTA)
+    return original_factory(self, config, *args, **kwargs)
 
-backup = p.with_name("cta_spawn_worker.py.before_context_fix")
-if not backup.exists():
-    backup.write_text(s)
+PipelineConfig.resolve = resolve
+PipelineConfig.log_basic_config = log_basic_config
+registry_class.retrieve_factory = retrieve_factory
 
-p.write_text(updated)
+launcher = "/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py"
+sys.argv = [
+    launcher, "--headless",
+    "--devices", "cpu",
+    "--model-path", TARGET
+]
 
-print("NATIVE CTA ASYNC CONTEXT: FIXED")
-print("SYNTAX: PASS")
-print("DS CODE: UNCHANGED")
+print("STARTING REAL CTA NATIVE WORKER", flush=True)
+runpy.run_path(launcher, run_name="__main__")
 PY
+
+echo "EXIT CODE: $?"

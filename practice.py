@@ -24,24 +24,30 @@ def is_cta(config):
     return str(config.model_config.model_path) == TARGET
 
 original_resolve = PipelineConfig.resolve
-
-def resolve(self):
-    if is_cta(self):
-        print("CTA CONFIG HOOK: ACTIVE", flush=True)
-        return None
-    return original_resolve(self)
-
-PipelineConfig.resolve = resolve
-
+original_log = PipelineConfig.log_basic_config
 registry_class = type(PIPELINE_REGISTRY)
 original_factory = registry_class.retrieve_factory
 
+def resolve(self):
+    if is_cta(self):
+        print("CTA CONFIG: PASS", flush=True)
+        return None
+    return original_resolve(self)
+
+def log_basic_config(self):
+    if is_cta(self):
+        print("CTA LOGGING: HF LOOKUP SKIPPED", flush=True)
+        return None
+    return original_log(self)
+
 def retrieve_factory(self, config, *args, **kwargs):
     if is_cta(config):
-        print("CTA REAL FACTORY SELECTED", flush=True)
+        print("CTA REAL FACTORY: SELECTED", flush=True)
         return None, CTAFactoryWrapper(CTA)
     return original_factory(self, config, *args, **kwargs)
 
+PipelineConfig.resolve = resolve
+PipelineConfig.log_basic_config = log_basic_config
 registry_class.retrieve_factory = retrieve_factory
 
 launcher = "/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py"
@@ -51,7 +57,7 @@ sys.argv = [
     "--model-path", TARGET
 ]
 
-print("STARTING REAL CTA NATIVE WORKER", flush=True)
+print("STARTING NATIVE CTA", flush=True)
 runpy.run_path(launcher, run_name="__main__")
 PY
 

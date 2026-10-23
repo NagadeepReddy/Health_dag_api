@@ -5,4 +5,4 @@ timeout -k 5s 30s podman \
   --network=none --memory=4g --pids-limit=32 \
   --entrypoint /bin/sh \
   f30453065dac \
-  -c 'grep -RnE --include="*.py" "request_queue\.(put|put_nowait)|request_queue\[|ROUTES\[api_type\]" /opt/venv/lib/python3.12/site-packages/max/serve | head -35'
+  -c 'sed -n "225,255p" /opt/venv/lib/python3.12/site-packages/max/serve/api_server.py; sed -n "145,185p" /opt/venv/lib/python3.12/site-packages/max/serve/scheduler/queues.py'

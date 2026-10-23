@@ -24,7 +24,8 @@ config = SimpleNamespace(
         model_name="cta-offers-v1.168",
         model_path="/workspace/artifacts/v1.168/core-artifact"
     ),
-    lora_config=None
+    lora_config=None,
+    zmq_endpoint_base="ipc:///tmp/cta-max-native"
 )
 
 register_cta_routes()
@@ -37,7 +38,7 @@ serving = api_server.ServingTokenGeneratorSettings(
 )
 
 app = api_server.fastapi_app(Settings(), serving)
-print("DIRECT MAX APP: PASS")
+print("NATIVE MAX APP: PASS")
 print("CTA PREDICT ROUTE:", any(
     r.path == "/v2/cta/predict" for r in app.routes
 ))

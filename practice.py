@@ -3,4 +3,4 @@ podman --root /application1/podman/storage \
   run --rm --pull=never --network=none \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
-  -c 'import inspect; from max.entrypoints.cli import serve_api_server_and_model_worker; print(inspect.signature(serve_api_server_and_model_worker))'
+  -c 'from dataclasses import fields; from max.pipelines.lib.model_config import MAXModelConfig; print([(f.name, str(f.default)) for f in fields(MAXModelConfig) if any(x in f.name for x in ("model", "path", "repo", "architecture"))])'

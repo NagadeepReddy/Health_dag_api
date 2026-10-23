@@ -1,6 +1,6 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-timeout -k 5s 35s podman \
+timeout -k 5s 30s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm --pull=never \
@@ -10,14 +10,16 @@ timeout -k 5s 35s podman \
   --entrypoint /opt/venv/bin/python \
   f30453065dac \
   -u -c '
-from maxserve_cta_extension.cta_native_scheduler import CTANativeScheduler
+from types import SimpleNamespace
 from max.interfaces.scheduler import SchedulerResult
+from maxserve_cta_extension.cta_native_scheduler import CTANativeScheduler
 
-assert callable(SchedulerResult.create)
+output = SimpleNamespace(is_done=True, result=None)
+wrapped = SchedulerResult.create(output)
+
+assert wrapped is not None
 assert callable(CTANativeScheduler.run_iteration)
-
-print("REAL MAX CTA SCHEDULER IMPORT: PASS", flush=True)
-print("MAX RESULT INTERFACE: PASS", flush=True)
+print("NATIVE CTA RESULT CONTRACT: PASS", flush=True)
 '
 
 echo "EXIT CODE: $?"

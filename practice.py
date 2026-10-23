@@ -5,4 +5,4 @@ timeout -k 5s 30s podman \
   --network=none --memory=4g --pids-limit=32 \
   --entrypoint /bin/sh \
   f30453065dac \
-  -c 'grep -Rn -A 35 --include="*.py" "^def register_request\|^async def register_request" /opt/venv/lib/python3.12/site-packages/max/serve | head -75'
+  -c 'sed -n "105,165p" /opt/venv/lib/python3.12/site-packages/max/serve/api_server.py'

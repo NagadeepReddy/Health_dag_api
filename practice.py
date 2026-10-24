@@ -1,30 +1,20 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-python3 - <<'PY'
-from pathlib import Path
+timeout 45s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  > /tmp/cta_context_test.log 2>&1
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_router.py")
-s = p.read_text()
+rc=$?
 
-old = '{"request_id": request_id, "body": body}'
-new = 'CTAContext(request_id, body)'
+echo "=== CTA REQUEST AND RESPONSE ==="
+grep -E 'CTA REQUEST RECEIVED|CTA WORKER RESPONSE IDS|CTA NATIVE HTTP STATUS|CTA RESPONSE:|CTA NATIVE END-TO-END|ValidationError|TypeError|Traceback' \
+  /tmp/cta_context_test.log | tail -15
 
-if s.count(old) != 1:
-    raise SystemExit("Expected request payload not found. No changes made.")
-
-s = s.replace(old, new, 1)
-
-if 'from .cta_context import CTAContext' not in s:
-    s = s.replace(
-        'async def cta_infer(request: Request):',
-        'async def cta_infer(request: Request):\n    from .cta_context import CTAContext',
-        1
-    )
-
-compile(s, str(p), "exec")
-p.write_text(s)
-
-print("CTA NATIVE REQUEST CONTEXT: INSTALLED")
-print("ROUTER SYNTAX: PASS")
-print("ORIGINAL DS CODE: UNCHANGED")
-PY
+echo "TEST EXIT CODE: $rc"

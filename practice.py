@@ -1,6 +1,3 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=none \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -c 'from max.interfaces import PipelineTask; print("MAX TASKS:", [(x.name, x.value) for x in PipelineTask])'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+
+nl -ba artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py | sed -n '1,100p'

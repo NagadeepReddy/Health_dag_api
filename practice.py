@@ -1,34 +1,45 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-import inspect
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py")
+s = p.read_text()
+
+patch = '''
+# CTA-only native queue compatibility.
+from typing import Any
 import importlib
 
-queues = importlib.import_module("max.serve.scheduler.queues")
+_cta_queues = importlib.import_module("max.serve.scheduler.queues")
+_cta_original_init = _cta_queues.SchedulerZmqConfigs.__init__
 
-print("=== MAX REQUEST TYPE SELECTION ===")
-fn = queues._get_request_type_from_pipeline_task
-print(inspect.getsource(fn))
+def _cta_queue_init(self, pipeline_task):
+    _cta_original_init(self, pipeline_task)
+    self.request_queue_config = _cta_queues.ZmqConfig[Any](Any)
 
-print("\n=== ACTUAL PIPELINE TASK TYPE ===")
-PipelineTask = fn.__globals__.get("PipelineTask")
+_cta_queues.SchedulerZmqConfigs.__init__ = _cta_queue_init
+'''
 
-if PipelineTask is None:
-    print("Task enum not in function globals")
-else:
-    print("MODULE:", PipelineTask.__module__)
-    print("TASKS:", list(PipelineTask))
+if "_cta_queue_init" not in s:
+    anchor = "from types import SimpleNamespace"
+    assert anchor in s, "Expected test structure missing; no changes made"
+    s = s.replace(anchor, patch + "\n" + anchor, 1)
+    compile(s, str(p), "exec")
+    p.write_text(s)
 
-    for task in PipelineTask:
-        try:
-            request_type = fn(task)
-            print("TASK:", task, "REQUEST TYPE:", request_type)
-        except Exception as exc:
-            print("TASK:", task, "ERROR:", str(exc))
-
-print("\nQUEUE CONTRACT CHECK COMPLETE")
+print("CTA NATIVE JSON QUEUE PATCH: SYNTAX PASS")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY
+
+timeout 150s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py
+
+echo "E2E EXIT CODE: $?"

@@ -4,15 +4,24 @@ podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never --network=none \
   --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local - <<'PY'
+  localhost/cta-max-faiss:local -u - <<'PY'
 import inspect
-from max.serve.api_server import fastapi_app
+from max.serve import api_server
 
-print("MAX BUILT-IN HTTP APP IMPLEMENTATION:", flush=True)
+src = inspect.getsource(api_server.lifespan).splitlines()
 
-source = inspect.getsource(fastapi_app)
-for n, line in enumerate(source.splitlines(), 1):
-    print(f"{n}: {line}")
+print("MAX NATIVE STARTUP FLOW:", flush=True)
+for i, line in enumerate(src):
+    if any(x in line for x in (
+        "start_model_worker",
+        "model_factory",
+        "pipeline",
+        "engine_queue",
+        "yield",
+    )):
+        for j in range(max(0, i - 2), min(len(src), i + 4)):
+            print(f"{j+1}: {src[j]}", flush=True)
+        print("---", flush=True)
 
 print("CHECK COMPLETE", flush=True)
 PY

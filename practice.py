@@ -1,21 +1,28 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-import inspect
-from max.serve.api_server import TokenGeneratorPipeline
+python3 - <<'PY'
+from pathlib import Path
 
-EngineQueue = TokenGeneratorPipeline.__init__.__globals__["EngineQueue"]
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_router.py")
+s = p.read_text()
 
-print("ENGINE QUEUE:", EngineQueue.__module__)
+anchor = 'request_id = request.state.request_id'
+diagnostic = '''print(
+        "CTA HTTP FANOUT:",
+        "background_tasks=", [
+            (t.done(), str(t.exception()) if t.done() and not t.cancelled() else "running")
+            for t in getattr(pipeline, "_background_tasks", [])
+        ],
+        "response_worker=", hasattr(queue, "response_worker"),
+        "request_id=", request_id,
+        flush=True,
+    )'''
 
-for name in ("response_worker", "open_channel"):
-    print(f"\n=== {name} ===")
-    method = getattr(EngineQueue, name, None)
-    print(inspect.getsource(method) if method else "NOT FOUND")
+if "CTA HTTP FANOUT:" not in s:
+    assert s.count(anchor) == 1, "Expected anchor missing; unchanged"
+    s = s.replace(anchor, anchor + "\n    " + diagnostic, 1)
+    compile(s, str(p), "exec")
+    p.write_text(s)
 
-print("\nQUEUE HANDOFF REVIEW COMPLETE")
+print("CTA HTTP FANOUT DIAGNOSTIC: READY")
 PY

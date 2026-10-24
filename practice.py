@@ -8,13 +8,17 @@ podman --root /application1/podman/storage \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -u - <<'PY'
 from maxserve_cta_extension.cta_context import CTAContext
-from max.serve.queue.zmq_queue import msgpack_numpy_encoder
+from max.serve.queue.zmq_queue import msgpack_numpy_encoder, msgpack_numpy_decoder
 
-ctx = CTAContext("cta-test", {"test": 1})
+original = CTAContext("cta-test", {"test": 1})
+encoded = msgpack_numpy_encoder()(original)
 
 try:
-    data = msgpack_numpy_encoder()(ctx)
-    print("MAX SERIALIZATION: PASS", len(data))
+    decoded = msgpack_numpy_decoder(CTAContext)(encoded)
+    assert isinstance(decoded, CTAContext)
+    assert decoded.request_id == "cta-test"
+    assert decoded.body == {"test": 1}
+    print("MAX CONTEXT ROUNDTRIP: PASS")
 except Exception as e:
-    print("MAX SERIALIZATION: FAIL", type(e).__name__, str(e)[:200])
+    print("MAX CONTEXT ROUNDTRIP: FAIL", type(e).__name__, str(e)[:250])
 PY

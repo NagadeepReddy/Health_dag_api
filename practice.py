@@ -11,4 +11,5 @@ podman --root /application1/podman/storage \
   -m maxserve_cta_extension.cta_native_launcher \
   --model-path /workspace/artifacts/v1.168-max/cta_native_model \
   --custom-architectures cta_native_model \
+  --quantization-encoding float32 \
   --port 8000

@@ -7,25 +7,17 @@ podman --root /application1/podman/storage \
   -e PYTHONPATH=/workspace/artifacts/v1.168-max \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -c '
-import json, multiprocessing as mp, queue, time
+import json, traceback
 from pathlib import Path
 from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
-from maxserve_cta_extension.cta_native_scheduler import CTANativeScheduler
 
 body = json.loads(Path("/workspace/artifacts/v1.167/samples/sanity_input.json").read_text())
 pipeline = CTAFactoryWrapper(dict)()
-qin, qout, qcancel = mp.Queue(), mp.Queue(), mp.Queue()
-scheduler = CTANativeScheduler(pipeline.cta_adapter, qin, qout, qcancel)
-qin.put({"request_id": "cta-native-smoke", "body": body})
 
-for attempt in range(120):
-    scheduler.run_iteration()
-    try:
-        result = qout.get_nowait()
-        print("CTA NATIVE SCHEDULER RESULT:", result, flush=True)
-        break
-    except queue.Empty:
-        time.sleep(0.5)
-else:
-    print("CTA NATIVE SCHEDULER: NO RESPONSE", flush=True)
+try:
+    result = pipeline.cta_adapter.predict(body)
+    print("CTA INFERENCE: PASS", type(result).__name__)
+except Exception:
+    print("CTA EXACT FAILURE:")
+    traceback.print_exc(limit=12)
 '

@@ -3,4 +3,4 @@ podman --root /application1/podman/storage \
   run --rm --pull=never --network=none \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
-  -c 'import inspect, max.serve.api_server as m; print("STARTUP FUNCTIONS:"); [print(n, inspect.signature(v)) for n,v in vars(m).items() if inspect.isfunction(v) and ("serve" in n or "start" in n or "worker" in n)]'
+  -c 'import inspect; from max.serve.api_server import start_model_worker; print(inspect.signature(start_model_worker)); print(inspect.getsource(start_model_worker)[:5000])'

@@ -5,4 +5,4 @@ podman --root /application1/podman/storage \
   run --rm --pull=never --network=none \
   --entrypoint /bin/sh \
   localhost/cta-max-faiss:local \
-  -c 'grep -RnE "open_channel\(|class .*Request|tag_field|tag=|msgspec.Struct|msgspec.msgpack" /opt/venv/lib/python3.12/site-packages/max/serve/queue /opt/venv/lib/python3.12/site-packages/max/serve/pipelines | head -65'
+  -c 'sed -n "1,115p" /opt/venv/lib/python3.12/site-packages/max/serve/queue/zmq_queue.py; grep -RnE "class .*Request|tag_field|def open_channel" /opt/venv/lib/python3.12/site-packages/max/serve/queue /opt/venv/lib/python3.12/site-packages/max/serve/pipelines | head -35'

@@ -6,8 +6,7 @@ podman --root /application1/podman/storage \
 import inspect
 from max.interfaces.queue import BackgroundQueueDrainer
 
-for name in ("__init__", "start_draining", "retrieve_item"):
-    method = getattr(BackgroundQueueDrainer, name)
-    print(f"\n=== {name} ===", flush=True)
-    print(inspect.getsource(method), flush=True)
+print("=== MAX BACKGROUND REQUEST RECEIVER ===")
+print(inspect.getsource(BackgroundQueueDrainer._drain_queue_background))
+print("RECEIVER REVIEW COMPLETE")
 PY

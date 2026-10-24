@@ -1,26 +1,4 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-import inspect
-from max.pipelines.lib import PipelineModel
-
-for name in ("prepare_initial_token_inputs", "execute"):
-    method = getattr(PipelineModel, name)
-    print("\n===", name, "TYPES ===")
-    annotations = inspect.get_annotations(method, eval_str=True)
-
-    for key, value in annotations.items():
-        print(key, ":", value)
-        if key == "return":
-            try:
-                print("CONSTRUCTOR:", inspect.signature(value))
-                print("FIELDS:", getattr(value, "__annotations__", {}))
-            except (TypeError, ValueError):
-                pass
-
-print("\nCTA MODEL TYPE CONTRACT CHECK COMPLETE")
-PY
+sed -n '1,220p' \
+artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py

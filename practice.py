@@ -7,4 +7,4 @@ podman --root /application1/podman/storage \
   -e PYTHONPATH=/workspace/artifacts/v1.168-max \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
-  -c 'import pickle; from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper; from maxserve_cta_extension.cta_worker_registration import install_cta_scheduler_hook; print("CTA WORKER MODULES: PASS"); print("FACTORY PICKLE:", end=" "); f=CT AFactoryWrapper(lambda: None); print("PASS" if pickle.dumps(f) else "FAIL")'
+  -c 'import pickle; from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper; f=CTAFactoryWrapper(dict); restored=pickle.loads(pickle.dumps(f)); p=restored(); print("FACTORY SERIALIZATION: PASS"); print("CTA ADAPTER:", hasattr(p,"cta_adapter")); print("NATIVE FLAG:", getattr(p,"_cta_native_pipeline",False))'

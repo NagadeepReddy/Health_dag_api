@@ -6,21 +6,17 @@ podman --root /application1/podman/storage \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -u - <<'PY'
 import inspect
-from max.serve import api_server
+from max.serve.api_server import fastapi_app
+from max.serve.config import Settings, ServingTokenGeneratorSettings
 
-app = api_server.fastapi_app
+print("=== REQUIRED DIRECT STARTUP ARGUMENTS ===")
 
-print("=== BUILT-IN MAX HTTP STARTUP ===")
-print("APP:", inspect.signature(app))
+for cls in (Settings, ServingTokenGeneratorSettings):
+    print(f"\n{cls.__name__}:")
+    for name, p in inspect.signature(cls).parameters.items():
+        if p.default is inspect.Parameter.empty:
+            print("REQUIRED:", name, p.annotation)
 
-for name in ("Settings", "ServingTokenGeneratorSettings"):
-    cls = app.__globals__.get(name)
-    print("\n", name)
-    if cls is None:
-        print("NOT FOUND")
-        continue
-    print("CONSTRUCTOR:", inspect.signature(cls))
-    print("MODULE:", cls.__module__)
-
-print("\nDIRECT MAX HTTP STARTUP CONTRACT: CHECK COMPLETE")
+print("\nBUILT-IN HTTP FACTORY:", inspect.signature(fastapi_app))
+print("CHECK COMPLETE")
 PY

@@ -1,5 +1,17 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-grep -nE -C 3 'cta_adapter|_cta_adapter|select_scheduler' \
-artifacts/v1.168-max/maxserve_cta_extension/cta_worker_registration.py \
-artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py
+PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
+
+CID=$($PODMAN ps -q | head -1)
+
+if [ -n "$CID" ]; then
+  echo "=== RUNNING PROCESSES ==="
+  $PODMAN top "$CID" pid args
+
+  echo "=== WORKER LOGS ==="
+  $PODMAN logs --tail 150 "$CID" 2>&1 |
+    grep -Ei 'CTA|scheduler|worker|error|traceback|failed' |
+    tail -45
+else
+  echo "NO RUNNING CONTAINER"
+fi

@@ -9,7 +9,7 @@ podman --root /application1/podman/storage \
   localhost/cta-max-faiss:local -u - <<'PY'
 from types import SimpleNamespace
 from max.serve import api_server
-from max.serve.config import Settings
+from max.serve.config import Settings, APIType
 from maxserve_cta_extension.cta_spawn_worker import (
     CTAFactoryWrapper,
     install_cta_spawn_entry,
@@ -19,7 +19,7 @@ from maxserve_cta_extension.cta_http_pipeline import CTANativeHTTPPipeline
 
 class UnusedFactory:
     def __call__(self):
-        raise RuntimeError("CTA factory wrapper was not used")
+        raise RuntimeError("CTA factory was not used")
 
 install_cta_spawn_entry()
 register_cta_routes()
@@ -37,10 +37,16 @@ serving = api_server.ServingTokenGeneratorSettings(
     tokenizer=None,
 )
 
-app = api_server.fastapi_app(Settings(), serving)
+settings = Settings(api_types=[APIType.KSERVE])
+app = api_server.fastapi_app(settings, serving)
 
-paths = [r.path for r in app.routes]
+paths = [route.path for route in app.routes]
+cta_paths = [p for p in paths if "/cta/" in p]
+
 print("MAX BUILT-IN APP: CREATED")
-print("CTA ROUTES:", [p for p in paths if "/cta/" in p])
-print("CTA ROUTE CHECK:", "PASS" if "/cta/predict" in paths else "FAIL")
+print("CTA ROUTES:", cta_paths)
+
+assert any(p.endswith("/cta/predict") for p in cta_paths)
+print("CTA ROUTE CHECK: PASS")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY

@@ -2,38 +2,57 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
 python3 - <<'PY'
 from pathlib import Path
+import re
 
 base = Path("artifacts/v1.168-max/maxserve_cta_extension")
 test = base / "cta_native_e2e_test.py"
 sched = base / "cta_native_scheduler.py"
 
-a = test.read_text()
-b = sched.read_text()
+updates = {}
 
-old_type = "dict[str, SchedulerResult[CTASerializableOutput]]"
-new_type = "dict[RequestID, SchedulerResult[CTASerializableOutput]]"
+for p in (test, sched):
+    s = p.read_text()
 
-old_key = "responses[request_id] = SchedulerResult.create("
-new_key = "responses[RequestID(request_id)] = SchedulerResult.create("
+    # Remove only incorrectly positioned imports inserted previously.
+    s = re.sub(
+        r'(?m)^from max\.interfaces\.request import RequestID\n(?=[ \t]+from max\.interfaces\.scheduler import)',
+        '',
+        s
+    )
 
-assert old_type in a or new_type in a, "Response config not found"
-assert old_key in b or new_key in b, "Scheduler response assignment not found"
-
-a = a.replace(old_type, new_type)
-b = b.replace(old_key, new_key)
-
-for name, content in ((test, a), (sched, b)):
-    if "from max.interfaces.request import RequestID" not in content:
-        anchor = "from max.interfaces.scheduler import"
-        assert anchor in content
-        content = content.replace(
-            anchor,
-            "from max.interfaces.request import RequestID\n" + anchor,
-            1
+    # Insert RequestID import at the SAME indentation as SchedulerResult.
+    if "from max.interfaces.request import RequestID" not in s:
+        match = re.search(
+            r'(?m)^([ \t]*)from max\.interfaces\.scheduler import ',
+            s
         )
-    compile(content, str(name), "exec")
-    name.write_text(content)
+        assert match, f"Scheduler import not found: {p.name}"
+        indent = match.group(1)
+        s = (
+            s[:match.start()]
+            + indent + "from max.interfaces.request import RequestID\n"
+            + s[match.start():]
+        )
 
-print("CTA NATIVE REQUEST-ID RESPONSE ALIGNMENT: PASS")
+    if p == test:
+        s = s.replace(
+            "dict[str, SchedulerResult[CTASerializableOutput]]",
+            "dict[RequestID, SchedulerResult[CTASerializableOutput]]"
+        )
+    else:
+        s = s.replace(
+            "responses[request_id] = SchedulerResult.create(",
+            "responses[RequestID(request_id)] = SchedulerResult.create("
+        )
+
+    compile(s, str(p), "exec")
+    updates[p] = s
+
+# Write only if BOTH files pass syntax validation.
+for p, s in updates.items():
+    p.write_text(s)
+
+print("CTA IMPORT INDENTATION: PASS")
+print("CTA RESPONSE-ID ALIGNMENT: PASS")
 print("ORIGINAL DS CODE: UNCHANGED")
 PY

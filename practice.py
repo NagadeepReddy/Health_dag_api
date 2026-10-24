@@ -7,15 +7,13 @@ podman --root /application1/podman/storage \
   localhost/cta-max-faiss:local -u - <<'PY'
 import inspect
 from max.serve.scheduler.queues import SchedulerZmqConfigs
-from max.serve.pipelines import TokenGeneratorPipeline
+from max.serve.api_server import TokenGeneratorPipeline
 
-print("=== MAX WORKER REQUEST MESSAGE ===", flush=True)
+print("=== MAX WORKER REQUEST QUEUES ===")
+print(inspect.getsource(SchedulerZmqConfigs.model_worker_queues))
 
-method = SchedulerZmqConfigs.model_worker_queues
-print(inspect.getsource(method), flush=True)
+print("\n=== MAX HTTP ENGINE QUEUE ===")
+print(inspect.getsource(TokenGeneratorPipeline.__init__))
 
-print("\n=== HTTP QUEUE CREATION ===", flush=True)
-print(inspect.getsource(TokenGeneratorPipeline.__init__), flush=True)
-
-print("\nMESSAGE CONTRACT CHECK COMPLETE", flush=True)
+print("\nQUEUE CONTRACT CHECK COMPLETE")
 PY

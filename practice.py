@@ -1,6 +1,3 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=none \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -c 'import inspect; from max.pipelines.lib import PipelineModel; [print(n, inspect.signature(getattr(PipelineModel,n))) for n in sorted(PipelineModel.__abstractmethods__)]'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+
+nl -ba artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py | sed -n '1,130p'

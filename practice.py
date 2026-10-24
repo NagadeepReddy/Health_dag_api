@@ -1,24 +1,18 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-python3 - <<'PY'
-from pathlib import Path
+timeout 45s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  > /tmp/cta_request_trace.log 2>&1
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py")
-s = p.read_text()
-
-anchor = "context = self.drainer.retrieve_item()"
-marker = "CTA REQUEST RECEIVED:"
-
-if marker not in s:
-    assert s.count(anchor) == 1, "Expected scheduler location missing"
-    s = s.replace(
-        anchor,
-        anchor + '\n                print("CTA REQUEST RECEIVED:", type(context).__name__, flush=True)',
-        1
-    )
-    compile(s, str(p), "exec")
-    p.write_text(s)
-
-print("CTA REQUEST TRACE: READY")
-print("DS CODE: UNCHANGED")
-PY
+rc=$?
+echo "=== CTA REQUEST DELIVERY ==="
+grep -E 'CTA REQUEST RECEIVED|CTA WORKER RESPONSE IDS|CTA HTTP FANOUT|CTA NATIVE HTTP STATUS|CTA RESPONSE:|Traceback|Error' \
+  /tmp/cta_request_trace.log | tail -15
+echo "TEST EXIT CODE: $rc"

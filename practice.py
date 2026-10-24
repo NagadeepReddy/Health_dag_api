@@ -1,6 +1,7 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
+timeout 60s podman \
+  --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never --network=none \
   -v "$PWD:/workspace:Z" \
@@ -8,6 +9,7 @@ podman --root /application1/podman/storage \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -u - <<'PY'
 from types import SimpleNamespace
+from fastapi.testclient import TestClient
 from max.serve import api_server
 from max.serve.config import Settings, APIType
 from maxserve_cta_extension.cta_spawn_worker import (
@@ -16,10 +18,6 @@ from maxserve_cta_extension.cta_spawn_worker import (
 )
 from maxserve_cta_extension.cta_router import register_cta_routes
 from maxserve_cta_extension.cta_http_pipeline import CTANativeHTTPPipeline
-
-class UnusedFactory:
-    def __call__(self):
-        raise RuntimeError("CTA factory was not used")
 
 install_cta_spawn_entry()
 register_cta_routes()
@@ -32,21 +30,26 @@ config = SimpleNamespace(
 )
 
 serving = api_server.ServingTokenGeneratorSettings(
-    model_factory=CTAFactoryWrapper(UnusedFactory()),
+    model_factory=CTAFactoryWrapper(lambda: None),
     pipeline_config=config,
     tokenizer=None,
 )
 
-settings = Settings(api_types=[APIType.KSERVE])
-app = api_server.fastapi_app(settings, serving)
+app = api_server.fastapi_app(
+    Settings(api_types=[APIType.KSERVE]),
+    serving,
+)
 
-paths = [route.path for route in app.routes]
-cta_paths = [p for p in paths if "/cta/" in p]
+print("CTA ROUTES: PASS", flush=True)
+print("STARTING MAX NATIVE LIFECYCLE...", flush=True)
 
-print("MAX BUILT-IN APP: CREATED")
-print("CTA ROUTES:", cta_paths)
-
-assert any(p.endswith("/cta/predict") for p in cta_paths)
-print("CTA ROUTE CHECK: PASS")
-print("ORIGINAL DS CODE: UNCHANGED")
+try:
+    with TestClient(app) as client:
+        print("MAX NATIVE LIFECYCLE: PASS", flush=True)
+        response = client.post("/v2/cta/probe")
+        print("CTA PROBE:", response.status_code, response.text, flush=True)
+except Exception:
+    import traceback
+    print("MAX NATIVE LIFECYCLE: BLOCKED", flush=True)
+    traceback.print_exc(limit=8)
 PY

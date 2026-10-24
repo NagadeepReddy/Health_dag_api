@@ -1,6 +1,18 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-grep -RnE 'class .*PipelineModel|pipeline_model[[:space:]]*=|def (execute|load_model|load_weights)\(' \
-  artifacts/v1.168-max/cta_native_model \
-  artifacts/v1.168-max/maxserve_cta_extension \
-  || echo "NO CTA PIPELINEMODEL FOUND — native implementation required"
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never --network=none \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -c '
+import inspect
+from max.pipelines.lib import PipelineModel
+
+print("MAX PIPELINEMODEL CONTRACT")
+print("Constructor:", inspect.signature(PipelineModel.__init__))
+
+for name in sorted(PipelineModel.__abstractmethods__):
+    method = getattr(PipelineModel, name)
+    print(name, inspect.signature(method))
+'

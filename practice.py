@@ -7,4 +7,4 @@ podman --root /application1/podman/storage \
   -e PYTHONPATH=/workspace/artifacts/v1.168-max \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
-  -c 'from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper; p=CT AFactoryWrapper(lambda: None)(); print("CTA FACTORY INITIALIZATION PASS", type(p).__name__)'
+  -c 'from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper; p = CTAFactoryWrapper(lambda: None)(); print("CTA FACTORY INITIALIZATION PASS", type(p).__name__)'

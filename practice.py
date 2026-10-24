@@ -1,7 +1,8 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-sed -n '1,130p' \
-artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py
-
-sed -n '1,65p' \
-artifacts/v1.168-max/cta_max/live_cta_pipeline_bridge.py
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never --network=none \
+  --entrypoint /bin/sh \
+  localhost/cta-max-faiss:local \
+  -c 'find /opt/venv/lib/python3.12/site-packages/max/pipelines/architectures -name "model.py" | head -15'

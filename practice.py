@@ -11,7 +11,9 @@ from max.pipelines.lib import PipelineModel
 for name in ("prepare_initial_token_inputs", "execute"):
     method = getattr(PipelineModel, name)
     print("\n===", name, "TYPES ===")
-    for key, value in inspect.get_annotations(method, eval=True).items():
+    annotations = inspect.get_annotations(method, eval_str=True)
+
+    for key, value in annotations.items():
         print(key, ":", value)
         if key == "return":
             try:

@@ -1,12 +1,5 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
-
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  run --rm --pull=never --network=none --memory=8g \
-  -v "$PWD:/workspace:Z" -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -m maxserve_cta_extension.cta_native_launcher \
-  --model-path /workspace/artifacts/v1.168/config \
-  --port 8000
+  run --rm --pull=never --network=none \
+  --entrypoint /bin/sh localhost/cta-max-faiss:local \
+  -c 'sed -n "700,735p" /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/config.py'

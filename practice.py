@@ -1,16 +1,27 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=host --memory=8g \
-  -v "$PWD:/workspace:Z" \
-  -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  -e modelId=cta-native-smoke \
-  -e expThrottleLabel=T \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -m maxserve_cta_extension.cta_native_launcher \
-  --model-path /workspace/artifacts/v1.168-max/cta_native_model \
-  --custom-architectures cta_native_model \
-  --port 8000
+python3 - <<'PY'
+from pathlib import Path
+
+base = Path("artifacts/v1.168-max")
+pkg = base / "cta_native_model"
+reg = base / "maxserve_cta_extension/cta_architecture_registration.py"
+
+assert reg.is_file(), f"Missing registration: {reg}"
+assert "def register_cta_architecture(" in reg.read_text(), "Registration function not found"
+
+pkg.mkdir(exist_ok=True)
+(pkg / "__init__.py").touch(exist_ok=True)
+
+arch = pkg / "arch.py"
+assert not arch.exists(), "arch.py already exists — leaving it unchanged"
+
+arch.write_text(
+    "from maxserve_cta_extension.cta_architecture_registration import register_cta_architecture\n"
+    "register_cta_architecture()\n"
+)
+
+import py_compile
+py_compile.compile(str(arch), doraise=True)
+print("CTA ARCH MODULE BRIDGE: CREATED — SYNTAX PASS")
+PY

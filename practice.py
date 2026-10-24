@@ -1,7 +1,13 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -u - <<'PY'
+import inspect
+from max.interfaces.queue import BackgroundQueueDrainer
 
-grep -nE -A 28 -B 8 \
-'def run_iteration|def retrieve_item|CTA REQUEST RECEIVED|def __init__|def process|def enqueue' \
-artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py \
-artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler_hook.py \
-2>/dev/null | head -180
+for name in ("__init__", "start_draining", "retrieve_item"):
+    method = getattr(BackgroundQueueDrainer, name)
+    print(f"\n=== {name} ===", flush=True)
+    print(inspect.getsource(method), flush=True)
+PY

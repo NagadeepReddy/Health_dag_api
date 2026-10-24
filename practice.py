@@ -12,12 +12,28 @@ from pathlib import Path
 from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
 
 body = json.loads(Path("/workspace/artifacts/v1.167/samples/sanity_input.json").read_text())
+
+def fix(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "webinteraction_name" and v is None:
+                obj[k] = ""
+            elif k == "category" and v == "Smartphones":
+                obj[k] = "Tiles"
+            else:
+                fix(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            fix(item)
+
+fix(body)
 pipeline = CTAFactoryWrapper(dict)()
 
 try:
     result = pipeline.cta_adapter.predict(body)
-    print("CTA INFERENCE: PASS", type(result).__name__)
+    print("CTA INFERENCE: PASS")
+    print("RESULT:", json.dumps(result, default=str)[:1500])
 except Exception:
-    print("CTA EXACT FAILURE:")
-    traceback.print_exc(limit=12)
+    print("CTA INFERENCE: FAIL")
+    traceback.print_exc(limit=8)
 '

@@ -1,28 +1,25 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-cat > artifacts/v1.168-max/maxserve_cta_extension/cta_pipeline_model.py <<'PY'
-"""CTA-specific MAX PipelineModel integration.
+python3 - <<'PY'
+from pathlib import Path
 
-Original DS pipeline and business logic remain unchanged.
-"""
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_architecture_registration.py")
+s = p.read_text()
 
-from max.pipelines.lib import PipelineModel
+old = 'cta_arch = replace(llama_arch, name="CTAMaxPipelineModel")'
+new = '''from .cta_pipeline_model import CTAMaxPipelineModel
+    cta_arch = replace(
+        llama_arch,
+        name="CTAMaxPipelineModel",
+        pipeline_model=CTAMaxPipelineModel,
+    )'''
 
+assert old in s, "Expected registration line not found; no changes made"
+p.write_text(s.replace(old, new, 1))
 
-class CTAMaxPipelineModel(PipelineModel):
-    """Native MAX model contract for CTA Offers."""
-
-    @classmethod
-    def calculate_max_seq_len(
-        cls, pipeline_config, huggingface_config
-    ) -> int:
-        return 50
-
-    @classmethod
-    def infer_optimal_batch_size(cls, *args, **kwargs) -> int:
-        return 1
+print("CTA MODEL REGISTRATION: UPDATED")
 PY
 
 python3 -m py_compile \
-  artifacts/v1.168-max/maxserve_cta_extension/cta_pipeline_model.py \
-  && echo "CTA NATIVE MODEL CLASS: INITIAL IMPLEMENTATION CREATED"
+  artifacts/v1.168-max/maxserve_cta_extension/cta_architecture_registration.py \
+  && echo "CTA REGISTRATION SYNTAX: PASS"

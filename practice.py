@@ -3,32 +3,29 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 python3 - <<'PY'
 from pathlib import Path
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py")
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py")
 s = p.read_text()
 
-patch = '''
-# CTA-only native queue compatibility.
+old = "SimpleNamespace(is_done=True, result=result)"
+new = "CTASerializableOutput(is_done=True, result=result)"
+
+if new not in s:
+    if old not in s:
+        raise SystemExit("Expected response code not found. No changes made.")
+
+    addition = """import msgspec
 from typing import Any
-import importlib
 
-_cta_queues = importlib.import_module("max.serve.scheduler.queues")
-_cta_original_init = _cta_queues.SchedulerZmqConfigs.__init__
+class CTASerializableOutput(msgspec.Struct):
+    is_done: bool
+    result: Any
 
-def _cta_queue_init(self, pipeline_task):
-    _cta_original_init(self, pipeline_task)
-    self.request_queue_config = _cta_queues.ZmqConfig[Any](Any)
-
-_cta_queues.SchedulerZmqConfigs.__init__ = _cta_queue_init
-'''
-
-if "_cta_queue_init" not in s:
-    anchor = "from types import SimpleNamespace"
-    assert anchor in s, "Expected test structure missing; no changes made"
-    s = s.replace(anchor, patch + "\n" + anchor, 1)
+"""
+    s = addition + s.replace(old, new, 1)
     compile(s, str(p), "exec")
     p.write_text(s)
 
-print("CTA NATIVE JSON QUEUE PATCH: SYNTAX PASS")
+print("CTA RESPONSE SERIALIZATION FIX: SYNTAX PASS")
 print("ORIGINAL DS CODE: UNCHANGED")
 PY
 

@@ -6,12 +6,15 @@ podman --root /application1/podman/storage \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -u - <<'PY'
 import inspect
-from max.pipelines.architectures import SupportedArchitecture
+from dataclasses import fields
+from max.pipelines.architectures.llama3.arch import llama_arch
 from max.pipelines.lib import PIPELINE_REGISTRY
 
-print("ARCHITECTURE FIELDS:")
-print(inspect.signature(SupportedArchitecture))
-print("\nREGISTRATION CONTRACT:")
-print(inspect.signature(PIPELINE_REGISTRY.register))
-print("\nCTA REGISTRATION CONTRACT: READY")
+architecture_type = type(llama_arch)
+
+print("ARCHITECTURE CLASS:", architecture_type)
+print("CONSTRUCTOR:", inspect.signature(architecture_type))
+print("FIELDS:", [f.name for f in fields(llama_arch)])
+print("REGISTRATION:", inspect.signature(PIPELINE_REGISTRY.register))
+print("CTA ARCHITECTURE INTERFACE: CHECK COMPLETE")
 PY

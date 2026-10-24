@@ -6,6 +6,7 @@ podman --root /application1/podman/storage \
   -v "$PWD:/workspace:Z" \
   -w /workspace \
   -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  -e modelId=cta-native-smoke \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local - <<'PY'
 import json, traceback
@@ -31,9 +32,9 @@ fix(body)
 
 try:
     result = CTAFactoryWrapper(dict)().cta_adapter.predict(body)
-    print("CTA NATIVE INFERENCE: PASS")
+    print("CTA FULL INFERENCE: PASS")
     print(json.dumps(result, default=str)[:800])
 except Exception:
-    print("CTA NATIVE INFERENCE: FAIL")
+    print("CTA FULL INFERENCE: FAIL")
     traceback.print_exc(limit=8)
 PY

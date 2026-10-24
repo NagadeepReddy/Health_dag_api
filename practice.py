@@ -3,34 +3,30 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 python3 - <<'PY'
 from pathlib import Path
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py")
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py")
 s = p.read_text()
 
-old = "self.response_queue.put_nowait(responses)"
-marker = "CTA_NATIVE_RESPONSE_TYPES:"
+old = "    self.request_queue_config = _cta_queues.ZmqConfig[Any](Any)"
 
-if marker not in s:
-    assert old in s, "Expected response queue call not found. No changes made."
+new = """    self.request_queue_config = _cta_queues.ZmqConfig[Any](Any)
 
-    replacement = """print(
-            "CTA_NATIVE_RESPONSE_TYPES:",
-            type(responses).__name__,
-            [
-                (
-                    type(value).__name__,
-                    type(getattr(value, "result", None)).__name__
-                )
-                for value in responses.values()
-            ],
-            flush=True,
-        )
-        self.response_queue.put_nowait(responses)"""
+    from max.interfaces.scheduler import SchedulerResult
+    from maxserve_cta_extension.cta_native_scheduler import CTASerializableOutput
 
-    s = s.replace(old, replacement, 1)
-    compile(s, str(p), "exec")
-    p.write_text(s)
+    response_type = dict[str, SchedulerResult[CTASerializableOutput]]
+    self.response_queue_config = _cta_queues.ZmqConfig[response_type](
+        response_type
+    )"""
 
-print("CTA RESPONSE DIAGNOSTIC: INSTALLED")
+if "SchedulerResult[CTASerializableOutput]" not in s:
+    if old not in s:
+        raise SystemExit("Expected queue patch not found. No changes made.")
+
+    updated = s.replace(old, new, 1)
+    compile(updated, str(p), "exec")
+    p.write_text(updated)
+
+print("CTA RESPONSE QUEUE TYPE FIX: SYNTAX PASS")
 print("ORIGINAL DS CODE: UNCHANGED")
 PY
 
@@ -43,8 +39,12 @@ timeout 150s podman \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
   -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
-  2>&1 | tee /tmp/cta_native_response_debug.log
+  > /tmp/cta_native_e2e_result.log 2>&1
 
-echo "=== IMPORTANT RESULTS ==="
-grep -E 'CTA_NATIVE_RESPONSE_TYPES|CTA RESPONSE:|CTA NATIVE HTTP STATUS:|ValidationError|RecursionError|CTA NATIVE END-TO-END|Worker failed' \
-  /tmp/cta_native_response_debug.log | tail -15
+rc=$?
+
+echo "=== CTA NATIVE E2E RESULTS ==="
+grep -E 'CTA_NATIVE_RESPONSE_TYPES|CTA NATIVE HTTP STATUS|CTA RESPONSE:|CTA NATIVE END-TO-END|ValidationError|RecursionError|Exception:|AssertionError|Traceback' \
+  /tmp/cta_native_e2e_result.log | tail -20
+
+echo "E2E EXIT CODE: $rc"

@@ -7,7 +7,4 @@ podman --root /application1/podman/storage \
 -e PYTHONPATH=/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max/cta_max \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local \
--u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py \
---devices cpu \
---model-path /workspace/artifacts/v1.168/config \
---port 8000
+-u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_http_entry.py

@@ -1,19 +1,37 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-python3 - <<'PY'
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none --memory=8g \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local - <<'PY'
+import json, traceback
 from pathlib import Path
+from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
 
-base = Path("artifacts/v1.168-max/cta_max")
-for name in ("run_real_sanity_input_adapter.py", "run_live_max_inference.py"):
-    p = base / name
-    s = p.read_text()
-    old = 'BASE = Path("artifacts/v1.168-max/cta_max")'
-    new = 'BASE = Path(__file__).resolve().parent'
-    if old in s:
-        p.write_text(s.replace(old, new, 1))
-    elif new not in s:
-        raise RuntimeError(f"Unexpected BASE definition: {p}")
-    print(f"ABSOLUTE PATH FIX: {name} PASS")
+body = json.loads(Path("/workspace/artifacts/v1.167/samples/sanity_input.json").read_text())
 
-print("ROTARY LOADER PATH FIX COMPLETE")
+def fix(obj):
+    if isinstance(obj, dict):
+        if obj.get("webinteraction_name") is None:
+            obj["webinteraction_name"] = ""
+        for k, v in list(obj.items()):
+            if k == "category" and v == "Smartphones":
+                obj[k] = "Tiles"
+            else:
+                fix(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            fix(v)
+
+fix(body)
+try:
+    result = CTAFactoryWrapper(dict)().cta_adapter.predict(body)
+    print("CTA NATIVE INFERENCE: PASS")
+    print(json.dumps(result, default=str)[:800])
+except Exception:
+    print("CTA NATIVE INFERENCE: FAIL")
+    traceback.print_exc(limit=8)
 PY

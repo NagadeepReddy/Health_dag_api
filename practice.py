@@ -3,4 +3,4 @@ podman --root /application1/podman/storage \
   run --rm --pull=never --network=none \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
-  -c 'import inspect; from max.pipelines.lib import PipelineModel; print(inspect.getsource(PipelineModel))' | head -130
+  -c 'import inspect; from max.serve.api_server import serve_api_server_and_model_worker; print(inspect.signature(serve_api_server_and_model_worker))'

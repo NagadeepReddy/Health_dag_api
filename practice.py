@@ -1,4 +1,3 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-grep -RnE 'retrieve_factory|PIPELINE_REGISTRY|pipeline_factory' \
-artifacts/v1.168-max/maxserve_cta_extension/
+nl -ba artifacts/v1.168-max/maxserve_cta_extension/cta_architecture_registration.py | sed -n '1,100p'

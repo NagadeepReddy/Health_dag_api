@@ -1,34 +1,18 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-python3 - <<'PY'
-from pathlib import Path
-import re
+timeout 50s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  > /tmp/cta_queue_fix_test.log 2>&1
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py")
-s = p.read_text()
-
-if "CTA MAX REQUEST UNWRAPPED" not in s:
-    matches = list(re.finditer(
-        r'(?m)^([ \t]*)if isinstance\(context, dict\):[ \t]*$',
-        s
-    ))
-    assert len(matches) == 1, "Expected conversion block not found"
-
-    m = matches[0]
-    i = m.group(1)
-
-    fix = (
-        f'{i}if isinstance(context, dict) and "body" not in context:\n'
-        f'{i}    if len(context) != 1:\n'
-        f'{i}        raise RuntimeError("CTA batching not yet supported")\n'
-        f'{i}    queued_id, context = next(iter(context.items()))\n'
-        f'{i}    print("CTA MAX REQUEST UNWRAPPED:", queued_id, flush=True)\n'
-    )
-
-    s = s[:m.start()] + fix + s[m.start():]
-    compile(s, str(p), "exec")
-    p.write_text(s)
-
-print("CTA MAX QUEUE FORMAT FIX: INSTALLED")
-print("ORIGINAL DS CODE: UNCHANGED")
-PY
+rc=$?
+echo "=== NATIVE CTA RESULT ==="
+grep -E 'CTA MAX REQUEST UNWRAPPED|CTA REQUEST RECEIVED|CTA NATIVE HTTP STATUS|CTA RESPONSE:|KeyError|TypeError|ValueError|Traceback|Error' \
+  /tmp/cta_queue_fix_test.log | tail -15
+echo "EXIT CODE: $rc"

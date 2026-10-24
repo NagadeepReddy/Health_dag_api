@@ -4,21 +4,15 @@ podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never --network=none \
   --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
+  localhost/cta-max-faiss:local - <<'PY'
 import inspect
-from max.serve import api_server
+from max.serve.api_server import fastapi_app
 
-print("MAX NATIVE SERVER ENTRY POINTS:", flush=True)
+print("MAX BUILT-IN HTTP APP IMPLEMENTATION:", flush=True)
 
-for name, obj in vars(api_server).items():
-    if (inspect.isfunction(obj) or inspect.isclass(obj)) and any(
-        term in name.lower()
-        for term in ("server", "serve", "app", "route")
-    ):
-        try:
-            print(name, inspect.signature(obj))
-        except (TypeError, ValueError):
-            print(name)
+source = inspect.getsource(fastapi_app)
+for n, line in enumerate(source.splitlines(), 1):
+    print(f"{n}: {line}")
 
 print("CHECK COMPLETE", flush=True)
 PY

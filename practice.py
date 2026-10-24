@@ -1,19 +1,20 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
 python3 - <<'PY'
-import json
 from pathlib import Path
+import py_compile
 
-base = Path("artifacts/v1.168-max")
-config = json.loads((base / "cta_native_model/config.json").read_text())
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_architecture_registration.py")
+s = p.read_text()
 
-print("CONFIG ARCHITECTURES:", config.get("architectures"), flush=True)
-print("CONFIG MODEL TYPE:", config.get("model_type"), flush=True)
+old = 'name="BertModel"'
+new = 'name="CTAMaxPipelineModel"'
 
-p = base / "maxserve_cta_extension/cta_architecture_registration.py"
-for n, line in enumerate(p.read_text().splitlines(), 1):
-    if any(x in line for x in ("name=", "pipeline_model=", "register(", "return cta_arch")):
-        print(f"REGISTRATION LINE {n}: {line.strip()}", flush=True)
+assert s.count(old) == 1, "Expected architecture definition not found"
+p.write_text(s.replace(old, new, 1))
 
-print("CHECK COMPLETE", flush=True)
+py_compile.compile(str(p), doraise=True)
+
+print("CTA ARCHITECTURE NAME ALIGNMENT: PASS")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY

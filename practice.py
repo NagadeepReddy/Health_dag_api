@@ -1,6 +1,10 @@
-echo "=== TEST PROCESS ==="
-ps -eo pid,ppid,stat,etime,args | grep -E '[c]ta_native_e2e_test.py|[t]imeout 50s podman'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-echo "=== LAST RESULTS ==="
-grep -E 'CTA MAX REQUEST UNWRAPPED|CTA REQUEST RECEIVED|CTA WORKER RESPONSE IDS|CTA NATIVE HTTP STATUS|KeyError|TypeError|Error|Traceback|EXIT CODE' \
-/tmp/cta_queue_fix_test.log | tail -20
+echo "=== STOP OLD CTA TESTS ==="
+ps -eo pid,args | awk \
+  '$0 ~ /[c]ta_native_e2e_test.py/ && $0 ~ /[/]opt[/]venv[/]bin[/]python/ {print $1}' \
+  | xargs -r kill -TERM
+
+echo "=== FIRST REQUEST PROCESSING RESULTS ==="
+grep -nE 'CTA REQUEST RECEIVED|CTA MAX REQUEST UNWRAPPED|CTA WORKER RESPONSE IDS|KeyError|TypeError|ValueError|RuntimeError|Exception' \
+  /tmp/cta_queue_fix_test.log | grep -v 'RESPONSE IDS: \[\]' | head -25

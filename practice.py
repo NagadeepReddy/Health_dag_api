@@ -1,6 +1,7 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-curl -sS -i --max-time 120 \
-  -X POST http://127.0.0.1:18080/v2/cta/predict \
-  -H "Content-Type: application/json" \
-  --data-binary @artifacts/v1.167/samples/sanity_input.json
+grep -nE -C 5 \
+'open_channel|request_queue|response_queue|run_iteration|CTAContext|isinstance|send_result|create_cta_scheduler' \
+artifacts/v1.168-max/maxserve_cta_extension/cta_router.py \
+artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py \
+artifacts/v1.168-max/maxserve_cta_extension/cta_scheduler_factory.py

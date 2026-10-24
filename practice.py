@@ -3,4 +3,4 @@ podman --root /application1/podman/storage \
   run --rm --pull=never --network=none \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
-  -c 'import inspect; from max.entrypoints.cli import serve_api_server_and_model_worker; print(inspect.signature(serve_api_server_and_model_worker)); print(inspect.getsource(serve_api_server_and_model_worker)[:6500])'
+  -c 'import inspect; from max.serve import Server; from max.serve.config import Settings; print("SERVER:", inspect.signature(Server)); print("SETTINGS:", inspect.signature(Settings)); print("METHODS:", [x for x in dir(Server) if not x.startswith("_")])'

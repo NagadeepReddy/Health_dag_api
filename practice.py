@@ -1,37 +1,47 @@
-python3 - <<'PY'
-from pathlib import Path
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-lines = Path("/tmp/cta_final_verify.log").read_text(
-    errors="replace"
-).splitlines()
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -u - <<'PY'
+import time
+import queue
+from max.interfaces.request import RequestID
+from max.interfaces.scheduler import SchedulerResult
+from max.serve.scheduler.queues import ZmqConfig
+from maxserve_cta_extension.cta_native_scheduler import CTASerializableOutput
 
-print("=== FIRST ERROR ===")
-for i, line in enumerate(lines):
-    if any(x in line for x in (
-        "Traceback (most recent",
-        "ValidationError:",
-        "KeyError:",
-        "TypeError:",
-        "RuntimeError:",
-        "MemoryError:",
-    )):
-        print("\n".join(lines[max(0, i-5):i+18]))
-        break
-else:
-    print("No Python exception found")
+contract = dict[RequestID, SchedulerResult[CTASerializableOutput]]
+config = ZmqConfig[contract](contract)
+rx = config.pull()
+tx = config.push()
 
-print("\n=== LAST IMPORTANT EVENTS ===")
-events = [
-    x for x in lines
-    if any(t in x for t in (
-        "CTA REQUEST RECEIVED",
-        "CTA MAX REQUEST UNWRAPPED",
-        "CTA NATIVE RESPONSE TYPES",
-        "CTA WORKER RESPONSE IDS:",
-        "CTA NATIVE HTTP STATUS",
-        "CTA RESPONSE:",
-    ))
-    and "RESPONSE IDS: []" not in x
-]
-print("\n".join(events[-12:]) or "No matching events")
+try:
+    rid = RequestID("cta-test")
+    time.sleep(0.3)
+    tx.put_nowait({
+        rid: SchedulerResult.create(
+            CTASerializableOutput(
+                is_done=True, result={"status": "ok"}
+            )
+        )
+    })
+    for _ in range(30):
+        try:
+            response = rx.get_nowait()
+            assert response[rid].result.result == {"status": "ok"}
+            print("CTA TYPED ZMQ TRANSPORT: PASS")
+            break
+        except queue.Empty:
+            time.sleep(0.1)
+    else:
+        print("CTA TYPED ZMQ TRANSPORT: FAIL - NO RESPONSE")
+except Exception as e:
+    print("CTA TYPED ZMQ TRANSPORT: FAIL", type(e).__name__, str(e))
+finally:
+    tx.close()
+    rx.close()
 PY

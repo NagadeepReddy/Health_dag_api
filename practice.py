@@ -2,26 +2,36 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
 python3 - <<'PY'
 from pathlib import Path
+import re
 
 p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_router.py")
 s = p.read_text()
 
-old = 'result = getattr(output, "result", None)'
+pattern = (
+    r'(?m)^([ \t]*)result = getattr\(output, "result", None\)\n'
+    r'[ \t]*from \.cta_native_scheduler import CTASerializableOutput\n'
+    r'[ \t]*if isinstance\(result, CTASerializableOutput\):\n'
+    r'[ \t]*result = result\.result\n'
+)
 
-new = '''result = getattr(output, "result", None)
-                from .cta_native_scheduler import CTASerializableOutput
-                if isinstance(result, CTASerializableOutput):
-                    result = result.result'''
+def fix(m):
+    indent = m.group(1)
+    return (
+        indent + 'result = getattr(output, "result", None)\n'
+        + indent + 'result = getattr(result, "result", result)\n'
+    )
 
-if new not in s:
-    if s.count(old) != 1:
-        raise SystemExit("Expected router code not found. No changes made.")
-    s = s.replace(old, new, 1)
-    compile(s, str(p), "exec")
-    p.write_text(s)
+updated, count = re.subn(pattern, fix, s)
 
-print("CTA HTTP RESPONSE UNWRAP: SYNTAX PASS")
-print("ONLY MAX ROUTER MODIFIED")
+if count != 1:
+    raise SystemExit("Expected block not found. No changes made.")
+
+compile(updated, str(p), "exec")
+p.write_text(updated)
+
+print("CTA ROUTER INDENTATION FIX: PASS")
+print("CTA RESPONSE UNWRAPPING: INSTALLED")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY
 
 timeout 150s podman \
@@ -38,7 +48,7 @@ timeout 150s podman \
 rc=$?
 
 echo "=== CTA RESULTS ==="
-grep -E 'CTA RESPONSE:|CTA NATIVE HTTP STATUS|CTA NATIVE END-TO-END|CTA_NATIVE_RESPONSE_TYPES|ValidationError|AssertionError|Traceback|CTA RESPONSE|CTA PROBE' \
+grep -E 'CTA PROBE|CTA NATIVE HTTP STATUS|CTA RESPONSE:|CTA NATIVE END-TO-END|SyntaxError|ValidationError|AssertionError|Traceback' \
   /tmp/cta_native_final.log | tail -15
 
 echo "E2E EXIT CODE: $rc"

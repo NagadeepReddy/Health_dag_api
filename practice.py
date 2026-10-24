@@ -1,5 +1,6 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=none \
-  --entrypoint /bin/sh localhost/cta-max-faiss:local \
-  -c 'sed -n "170,255p" /opt/venv/lib/python3.12/site-packages/max/entrypoints/cli/serve/serve_api_and_model_worker.py'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+
+grep -nE 'retrieve_factory|model_factory|PIPELINE_REGISTRY|install_cta_spawn_entry' \
+artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py \
+artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py \
+artifacts/v1.168-max/maxserve_cta_extension/cta_architecture_registration.py

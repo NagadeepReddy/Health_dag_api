@@ -7,13 +7,11 @@ podman --root /application1/podman/storage \
   localhost/cta-max-faiss:local -u - <<'PY'
 import inspect
 from max.pipelines.lib import PipelineModel
-from max.pipelines.architectures.llama3.model import Llama3Model
 
-print("=== REQUIRED MAX MODEL METHODS ===", flush=True)
+for name in ("prepare_initial_token_inputs", "execute"):
+    method = getattr(PipelineModel, name)
+    print(f"\n=== {name} ===", flush=True)
+    print(inspect.getsource(method), flush=True)
 
-for name in sorted(PipelineModel.__abstractmethods__):
-    print("REQUIRED:", name, inspect.signature(getattr(PipelineModel, name)))
-    print("REFERENCE:", inspect.signature(getattr(Llama3Model, name)))
-
-print("MAX MODEL CONTRACT CHECK COMPLETE", flush=True)
+print("\nCTA NATIVE MODEL INTERFACE REVIEW COMPLETE", flush=True)
 PY

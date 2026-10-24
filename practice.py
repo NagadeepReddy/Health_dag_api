@@ -1,5 +1,5 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
-
-grep -nE 'start_model_worker|model_factory|CTAFactoryWrapper|install_cta_spawn_entry' \
-artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py \
-artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage \
+run --rm --pull=never --network=none \
+--entrypoint /bin/sh localhost/cta-max-faiss:local \
+-c 'grep -RniE "custom.architectures|register_architecture" /opt/venv/lib/python3.12/site-packages/max/entrypoints /opt/venv/lib/python3.12/site-packages/max/pipelines 2>/dev/null | head -25'

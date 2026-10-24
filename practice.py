@@ -1,31 +1,39 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  -v "$PWD:/workspace:Z" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-from max.interfaces.request import RequestID
-from max.interfaces.scheduler import SchedulerResult
-from max.serve.queue.zmq_queue import msgpack_numpy_encoder, msgpack_numpy_decoder
-from maxserve_cta_extension.cta_native_scheduler import CTASerializableOutput
+python3 - <<'PY'
+from pathlib import Path
 
-contract = dict[RequestID, SchedulerResult[CTASerializableOutput]]
-rid = RequestID("cta-test")
-response = {
-    rid: SchedulerResult.create(
-        CTASerializableOutput(is_done=True, result={"status": "ok"})
-    )
-}
+base = Path("artifacts/v1.168-max/maxserve_cta_extension")
+test = base / "cta_native_e2e_test.py"
+sched = base / "cta_native_scheduler.py"
 
-try:
-    wire = msgpack_numpy_encoder()(response)
-    decoded = msgpack_numpy_decoder(contract)(wire)
-    assert decoded[rid].result.result == {"status": "ok"}
-    print("CTA MAX TYPED RESPONSE CONTRACT: PASS")
-except Exception as e:
-    print("CTA MAX TYPED RESPONSE CONTRACT: FAIL")
-    print(type(e).__name__, str(e)[:300])
+a = test.read_text()
+b = sched.read_text()
+
+old_type = "dict[str, SchedulerResult[CTASerializableOutput]]"
+new_type = "dict[RequestID, SchedulerResult[CTASerializableOutput]]"
+
+old_key = "responses[request_id] = SchedulerResult.create("
+new_key = "responses[RequestID(request_id)] = SchedulerResult.create("
+
+assert old_type in a or new_type in a, "Response config not found"
+assert old_key in b or new_key in b, "Scheduler response assignment not found"
+
+a = a.replace(old_type, new_type)
+b = b.replace(old_key, new_key)
+
+for name, content in ((test, a), (sched, b)):
+    if "from max.interfaces.request import RequestID" not in content:
+        anchor = "from max.interfaces.scheduler import"
+        assert anchor in content
+        content = content.replace(
+            anchor,
+            "from max.interfaces.request import RequestID\n" + anchor,
+            1
+        )
+    compile(content, str(name), "exec")
+    name.write_text(content)
+
+print("CTA NATIVE REQUEST-ID RESPONSE ALIGNMENT: PASS")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY

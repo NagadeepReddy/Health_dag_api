@@ -1,12 +1,6 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
-
-timeout 45 podman --root /application1/podman/storage \
+podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  run --rm --pull=never --network=host --memory=8g \
-  -v "$PWD:/workspace:Z" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  run --rm --pull=never --network=none \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
-  -m maxserve_cta_extension.cta_native_launcher \
-  --model-path /workspace/artifacts/v1.168-max/cta_native_model \
-  --port 8000 2>&1 | tail -25
+  -c 'import inspect; from max.pipelines.lib import PipelineModel; print(inspect.getsource(PipelineModel))' | head -130

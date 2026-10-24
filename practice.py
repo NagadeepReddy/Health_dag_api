@@ -5,4 +5,4 @@ podman --root /application1/podman/storage \
   run --rm --pull=never --network=none \
   --entrypoint /bin/sh \
   localhost/cta-max-faiss:local \
-  -c "grep -R -n -m 2 'SupportedArchitecture(' /opt/venv/lib/python3.12/site-packages/max/pipelines | head -20"
+  -c "sed -n '1,85p' /opt/venv/lib/python3.12/site-packages/max/pipelines/architectures/llama/arch.py; sed -n '55,115p' /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/registry.py"

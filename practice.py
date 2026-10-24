@@ -1,18 +1,37 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+python3 - <<'PY'
+from pathlib import Path
 
-timeout -k 5s 45s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  -v "$PWD:/workspace:Z" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
-  > /tmp/cta_final_verify.log 2>&1
+lines = Path("/tmp/cta_final_verify.log").read_text(
+    errors="replace"
+).splitlines()
 
-rc=$?
-echo "=== CTA NATIVE E2E RESULT ==="
-grep -E 'CTA REQUEST RECEIVED|CTA WORKER RESPONSE IDS: \[.|CTA NATIVE HTTP STATUS|CTA RESPONSE:|CTA NATIVE END-TO-END|ValidationError|KeyError|TypeError|RuntimeError|Traceback' \
-  /tmp/cta_final_verify.log | tail -12
-echo "EXIT CODE: $rc"
+print("=== FIRST ERROR ===")
+for i, line in enumerate(lines):
+    if any(x in line for x in (
+        "Traceback (most recent",
+        "ValidationError:",
+        "KeyError:",
+        "TypeError:",
+        "RuntimeError:",
+        "MemoryError:",
+    )):
+        print("\n".join(lines[max(0, i-5):i+18]))
+        break
+else:
+    print("No Python exception found")
+
+print("\n=== LAST IMPORTANT EVENTS ===")
+events = [
+    x for x in lines
+    if any(t in x for t in (
+        "CTA REQUEST RECEIVED",
+        "CTA MAX REQUEST UNWRAPPED",
+        "CTA NATIVE RESPONSE TYPES",
+        "CTA WORKER RESPONSE IDS:",
+        "CTA NATIVE HTTP STATUS",
+        "CTA RESPONSE:",
+    ))
+    and "RESPONSE IDS: []" not in x
+]
+print("\n".join(events[-12:]) or "No matching events")
+PY

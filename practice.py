@@ -1,10 +1,22 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+python3 - <<'PY'
+from pathlib import Path
 
-echo "=== STOP OLD CTA TESTS ==="
-ps -eo pid,args | awk \
-  '$0 ~ /[c]ta_native_e2e_test.py/ && $0 ~ /[/]opt[/]venv[/]bin[/]python/ {print $1}' \
-  | xargs -r kill -TERM
+p = Path("/tmp/cta_queue_fix_test.log")
+lines = p.read_text(errors="replace").splitlines()
 
-echo "=== FIRST REQUEST PROCESSING RESULTS ==="
-grep -nE 'CTA REQUEST RECEIVED|CTA MAX REQUEST UNWRAPPED|CTA WORKER RESPONSE IDS|KeyError|TypeError|ValueError|RuntimeError|Exception' \
-  /tmp/cta_queue_fix_test.log | grep -v 'RESPONSE IDS: \[\]' | head -25
+print("=== FIRST WORKER RESPONSE ===")
+for i, line in enumerate(lines):
+    if "CTA WORKER RESPONSE IDS:" in line and "[]" not in line:
+        print("\n".join(lines[max(0, i-10):i+20]))
+        break
+
+print("\n=== FIRST RESPONSE DELIVERY ERROR ===")
+for i, line in enumerate(lines):
+    if any(x in line for x in (
+        "Failed to put message",
+        "Error in background draining",
+        "CTA NATIVE HTTP STATUS",
+    )):
+        print("\n".join(lines[max(0, i-8):i+8]))
+        break
+PY

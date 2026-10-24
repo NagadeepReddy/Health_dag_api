@@ -1,12 +1,26 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-echo "=== CTA NATIVE SCHEDULER ==="
-sed -n '1,150p' artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -u - <<'PY'
+import inspect
+from max.serve.api_server import TokenGeneratorPipeline
 
-echo "=== CTA SCHEDULER FACTORY ==="
-sed -n '1,110p' artifacts/v1.168-max/maxserve_cta_extension/cta_scheduler_factory.py
+print("MAX PIPELINE QUEUE INITIALIZATION")
+print("Constructor:", inspect.signature(TokenGeneratorPipeline))
 
-echo "=== CTA ROUTE CONNECTION ==="
-sed -n '1,65p' artifacts/v1.168-max/maxserve_cta_extension/cta_router.py
+for name in ("__init__", "__aenter__", "__aexit__"):
+    method = getattr(TokenGeneratorPipeline, name, None)
+    if method:
+        print(f"\n=== {name} ===")
+        try:
+            source = inspect.getsource(method)
+            for i, line in enumerate(source.splitlines(), 1):
+                print(f"{i}: {line}")
+        except (OSError, TypeError):
+            print(inspect.signature(method))
 
-echo "CTA LIFECYCLE INTEGRATION REVIEW COMPLETE"
+print("\nCHECK COMPLETE")
+PY

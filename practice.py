@@ -1,58 +1,18 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-python3 - <<'PY'
-from pathlib import Path
-import re
+timeout -k 5s 45s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  > /tmp/cta_final_verify.log 2>&1
 
-base = Path("artifacts/v1.168-max/maxserve_cta_extension")
-test = base / "cta_native_e2e_test.py"
-sched = base / "cta_native_scheduler.py"
-
-updates = {}
-
-for p in (test, sched):
-    s = p.read_text()
-
-    # Remove only incorrectly positioned imports inserted previously.
-    s = re.sub(
-        r'(?m)^from max\.interfaces\.request import RequestID\n(?=[ \t]+from max\.interfaces\.scheduler import)',
-        '',
-        s
-    )
-
-    # Insert RequestID import at the SAME indentation as SchedulerResult.
-    if "from max.interfaces.request import RequestID" not in s:
-        match = re.search(
-            r'(?m)^([ \t]*)from max\.interfaces\.scheduler import ',
-            s
-        )
-        assert match, f"Scheduler import not found: {p.name}"
-        indent = match.group(1)
-        s = (
-            s[:match.start()]
-            + indent + "from max.interfaces.request import RequestID\n"
-            + s[match.start():]
-        )
-
-    if p == test:
-        s = s.replace(
-            "dict[str, SchedulerResult[CTASerializableOutput]]",
-            "dict[RequestID, SchedulerResult[CTASerializableOutput]]"
-        )
-    else:
-        s = s.replace(
-            "responses[request_id] = SchedulerResult.create(",
-            "responses[RequestID(request_id)] = SchedulerResult.create("
-        )
-
-    compile(s, str(p), "exec")
-    updates[p] = s
-
-# Write only if BOTH files pass syntax validation.
-for p, s in updates.items():
-    p.write_text(s)
-
-print("CTA IMPORT INDENTATION: PASS")
-print("CTA RESPONSE-ID ALIGNMENT: PASS")
-print("ORIGINAL DS CODE: UNCHANGED")
-PY
+rc=$?
+echo "=== CTA NATIVE E2E RESULT ==="
+grep -E 'CTA REQUEST RECEIVED|CTA WORKER RESPONSE IDS: \[.|CTA NATIVE HTTP STATUS|CTA RESPONSE:|CTA NATIVE END-TO-END|ValidationError|KeyError|TypeError|RuntimeError|Traceback' \
+  /tmp/cta_final_verify.log | tail -12
+echo "EXIT CODE: $rc"

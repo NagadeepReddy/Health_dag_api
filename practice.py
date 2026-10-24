@@ -7,28 +7,21 @@ podman --root /application1/podman/storage \
   -e PYTHONPATH=/workspace/artifacts/v1.168-max \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -u - <<'PY'
-import inspect
 import msgspec
 from typing import Any
-from max.serve.scheduler.base import SchedulerResult
+from max.interfaces.scheduler import SchedulerResult
 from maxserve_cta_extension.cta_native_scheduler import CTASerializableOutput
 
-print("=== MAX RESPONSE FORMAT ===", flush=True)
-print(inspect.getsource(SchedulerResult), flush=True)
-
-print("\n=== CTA OUTPUT FORMAT ===", flush=True)
-print(inspect.signature(CTASerializableOutput), flush=True)
+print("=== CTA RESPONSE SERIALIZATION TEST ===", flush=True)
 
 output = CTASerializableOutput(
     is_done=True,
-    result={"status": "CTA response test"}
+    result={"status": "CTA test"}
 )
 
 response = {
     "cta-test-1": SchedulerResult.create(output)
 }
-
-print("\n=== MSGPACK ROUNDTRIP ===", flush=True)
 
 try:
     encoded = msgspec.msgpack.encode(response)
@@ -36,11 +29,11 @@ try:
         encoded,
         type=dict[str, SchedulerResult[Any]]
     )
-    print("RESPONSE SERIALIZATION: PASS", flush=True)
-    print("DECODED:", decoded, flush=True)
+    print("SERIALIZATION: PASS")
+    print("DECODED:", decoded)
 except Exception as exc:
-    print("RESPONSE SERIALIZATION: FAIL", flush=True)
-    print(type(exc).__name__, str(exc), flush=True)
+    print("SERIALIZATION: FAIL")
+    print("ERROR:", type(exc).__name__, str(exc))
 
-print("\nORIGINAL DS CODE: UNCHANGED", flush=True)
+print("TEST COMPLETE")
 PY

@@ -4,6 +4,7 @@ podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never --network=none --memory=8g \
   -v "$PWD:/workspace:Z" \
+  -w /workspace \
   -e PYTHONPATH=/workspace/artifacts/v1.168-max \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local - <<'PY'
@@ -11,7 +12,7 @@ import json, traceback
 from pathlib import Path
 from maxserve_cta_extension.cta_spawn_worker import CTAFactoryWrapper
 
-body = json.loads(Path("/workspace/artifacts/v1.167/samples/sanity_input.json").read_text())
+body = json.loads(Path("artifacts/v1.167/samples/sanity_input.json").read_text())
 
 def fix(obj):
     if isinstance(obj, dict):
@@ -27,6 +28,7 @@ def fix(obj):
             fix(v)
 
 fix(body)
+
 try:
     result = CTAFactoryWrapper(dict)().cta_adapter.predict(body)
     print("CTA NATIVE INFERENCE: PASS")

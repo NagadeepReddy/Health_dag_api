@@ -1,47 +1,47 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_router.py")
+s = p.read_text()
+
+if "from max.interfaces.request import RequestID" not in s:
+    s = s.replace(
+        "from .cta_context import CTAContext",
+        "from .cta_context import CTAContext\n"
+        "    from max.interfaces.request import RequestID",
+        1
+    )
+
+s, count = re.subn(
+    r'(with queue\.open_channel\(\s*)request_id(?=\s*,)',
+    r'\1(RequestID(request_id) if not isinstance(request_id, RequestID) else request_id)',
+    s
+)
+
+assert count == 1 or "RequestID(request_id) if not isinstance" in s
+compile(s, str(p), "exec")
+p.write_text(s)
+
+print("CTA HTTP REQUEST-ID MATCHING: FIXED")
+print("ORIGINAL DS CODE: UNCHANGED")
+PY
+
+timeout -k 5s 90s podman \
+  --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never --network=none \
   -v "$PWD:/workspace:Z" \
   -e PYTHONPATH=/workspace/artifacts/v1.168-max \
   --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-import time
-import queue
-from max.interfaces.request import RequestID
-from max.interfaces.scheduler import SchedulerResult
-from max.serve.scheduler.queues import ZmqConfig
-from maxserve_cta_extension.cta_native_scheduler import CTASerializableOutput
+  localhost/cta-max-faiss:local \
+  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  > /tmp/cta_id_match_test.log 2>&1
 
-contract = dict[RequestID, SchedulerResult[CTASerializableOutput]]
-config = ZmqConfig[contract](contract)
-rx = config.pull()
-tx = config.push()
-
-try:
-    rid = RequestID("cta-test")
-    time.sleep(0.3)
-    tx.put_nowait({
-        rid: SchedulerResult.create(
-            CTASerializableOutput(
-                is_done=True, result={"status": "ok"}
-            )
-        )
-    })
-    for _ in range(30):
-        try:
-            response = rx.get_nowait()
-            assert response[rid].result.result == {"status": "ok"}
-            print("CTA TYPED ZMQ TRANSPORT: PASS")
-            break
-        except queue.Empty:
-            time.sleep(0.1)
-    else:
-        print("CTA TYPED ZMQ TRANSPORT: FAIL - NO RESPONSE")
-except Exception as e:
-    print("CTA TYPED ZMQ TRANSPORT: FAIL", type(e).__name__, str(e))
-finally:
-    tx.close()
-    rx.close()
-PY
+rc=$?
+echo "=== NATIVE CTA RESULT ==="
+grep -E 'CTA NATIVE HTTP STATUS|CTA RESPONSE:|CTA WORKER RESPONSE IDS: \[.|ValidationError|Traceback|Error' \
+  /tmp/cta_id_match_test.log | tail -10
+echo "EXIT CODE: $rc"

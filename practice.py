@@ -1,6 +1,7 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=none \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -c 'from max.pipelines.lib import PipelineTask; print("MAX TASKS:", [(x.name, x.value) for x in PipelineTask])'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+
+if [ -f artifacts/v1.168-max/cta_native_model/arch.py ]; then
+  sed -n '1,110p' artifacts/v1.168-max/cta_native_model/arch.py
+else
+  echo "CTA ARCH.PY MISSING — registration not complete"
+fi

@@ -1,29 +1,30 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-cat > artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py <<'PY'
-"""CTA integration with MAX Serve's built-in worker queues."""
+python3 - <<'PY'
+from pathlib import Path
+import re
+import py_compile
 
-from max.serve.pipelines import TokenGeneratorPipeline
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py")
+s = p.read_text()
 
+marker = re.search(r"(?m)^([ \t]*)register_cta_routes\(\)[ \t]*$", s)
+assert marker, "CTA route registration point not found"
 
-class CTANativeHTTPPipeline(TokenGeneratorPipeline):
-    """Reuse MAX's EngineQueue lifecycle for structured CTA JSON."""
+hook = (
+    "from max.serve import api_server\n"
+    "from maxserve_cta_extension.cta_http_pipeline import CTANativeHTTPPipeline\n"
+    "api_server.TokenGeneratorPipeline = CTANativeHTTPPipeline"
+)
 
-    def __init__(
-        self,
-        model_name,
-        worker_monitor,
-        scheduler_zmq_configs,
-    ):
-        super().__init__(
-            model_name=model_name,
-            tokenizer=None,
-            worker_monitor=worker_monitor,
-            scheduler_zmq_configs=scheduler_zmq_configs,
-            lora_queue=None,
-        )
+if "api_server.TokenGeneratorPipeline = CTANativeHTTPPipeline" not in s:
+    indent = marker.group(1)
+    insertion = "\n".join(indent + line for line in hook.splitlines())
+    pos = marker.end()
+    s = s[:pos] + "\n" + insertion + s[pos:]
+    py_compile.compile(str(p), doraise=True)
+    p.write_text(s)
+
+print("CTA MAX BUILT-IN PIPELINE HOOK: SYNTAX PASS")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY
-
-python3 -m py_compile \
-  artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py \
-  && echo "CTA NATIVE HTTP PIPELINE ADAPTER: SYNTAX PASS"

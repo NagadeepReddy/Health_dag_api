@@ -1,15 +1,21 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
-
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  run -d --rm --name cta-native-live \
-  --pull=never --network=none \
-  -v "$PWD:/workspace:Z" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py
+  exec -i cta-native-live /opt/venv/bin/python - <<'PY'
+import urllib.request
+import json
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  ps --filter name=cta-native-live
+url = "http://127.0.0.1:8765/v2/cta/probe"
+req = urllib.request.Request(
+    url,
+    data=b"{}",
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
+
+try:
+    with urllib.request.urlopen(req, timeout=10) as r:
+        print("CTA LIVE HTTP STATUS:", r.status)
+        print("CTA LIVE RESPONSE:", json.loads(r.read()))
+except Exception as e:
+    print("CTA LIVE HTTP ERROR:", str(e))
+PY

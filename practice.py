@@ -1,28 +1,25 @@
 python3 - <<'PY'
 from pathlib import Path
+import re
 
-for name in ("cta_handoff_check", "cta_socket_trace", "cta_queue_fix_test"):
-    p = Path(f"/tmp/{name}.log")
-    if not p.exists():
-        continue
+s = Path("/tmp/cta_socket_trace.log").read_text(errors="replace")
 
-    lines = p.read_text(errors="replace").splitlines()
-    print(f"\n=== {name} ===")
+http = re.findall(
+    r'request_id=\s*(?:RequestID\(value=)?[\'"]?([0-9a-f]{32})',
+    s, re.I
+)
+received = re.findall(
+    r'CTA SOCKET RECEIVE:.*?RequestID\(value=[\'"]([0-9a-f]{32})',
+    s, re.I
+)
 
-    for term in (
-        "CTA REQUEST RECEIVED",
-        "CTA NATIVE RESPONSE TYPES",
-        "CTA WORKER RESPONSE IDS: [RequestID",
-        "CTA SOCKET RECEIVE:",
-        "HTTP WAITING ID:",
-        "HTTP RESPONSE ENQUEUED:",
-        "CTA NATIVE HTTP STATUS:",
-    ):
-        matches = [x for x in lines if term in x]
-        print(f"{term}: {'YES' if matches else 'NO'}")
-        if matches and term in (
-            "CTA WORKER RESPONSE IDS: [RequestID",
-            "CTA SOCKET RECEIVE:",
-        ):
-            print(" ", matches[-1][:200])
+print("HTTP REQUEST ID:", http[-1] if http else "NOT FOUND")
+print("ZMQ RESPONSE ID:", received[-1] if received else "NOT FOUND")
+
+if http and received:
+    print("SAME REQUEST:", "PASS" if http[-1] == received[-1] else "FAIL")
+else:
+    print("SAME REQUEST: NOT VERIFIED")
+
+print("HTTP STATUS:", "PRESENT" if "CTA NATIVE HTTP STATUS:" in s else "MISSING")
 PY

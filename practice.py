@@ -1,6 +1,9 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-grep -RnE 'No expected 256-d|rotary.*(freq|weight)|freq.*rotary' \
-  artifacts/v1.168-max/cta_max \
-  artifacts/v1.168-max/run_live_max_inference.py \
-  artifacts/v1.168-max/*sanity* 2>/dev/null | head -45
+find artifacts/v1.168-max \
+  \( -name 'fn_rotary_emb_inv_freq.npy' \
+  -o -name 'att_pooling.rotary_emb.inv_freq.npy' \) \
+  -print
+
+sed -n '55,95p' \
+  artifacts/v1.168-max/cta_max/run_real_sanity_input_adapter.py

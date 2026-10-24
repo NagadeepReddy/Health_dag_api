@@ -2,7 +2,30 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  run --rm --pull=never --network=none \
-  --entrypoint /bin/sh \
-  localhost/cta-max-faiss:local \
-  -c 'sed -n "1,115p" /opt/venv/lib/python3.12/site-packages/max/serve/queue/zmq_queue.py; grep -RnE "class .*Request|tag_field|def open_channel" /opt/venv/lib/python3.12/site-packages/max/serve/queue /opt/venv/lib/python3.12/site-packages/max/serve/pipelines | head -35'
+  run --rm -i --pull=never --network=none \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -u - <<'PY'
+import inspect
+from max.serve.queue import zmq_queue
+
+print("=== MAX QUEUE MESSAGE CONTRACT ===")
+
+for name, obj in vars(zmq_queue).items():
+    if inspect.isclass(obj) and (
+        "Request" in name or "Reply" in name
+    ):
+        print(name, obj)
+
+from max.serve.queue import queue as queue_module
+
+for name, obj in vars(queue_module).items():
+    if inspect.isclass(obj) and "EngineQueue" in name:
+        print("\nENGINE QUEUE:", name)
+        for method_name in ("open_channel", "response_worker"):
+            method = getattr(obj, method_name, None)
+            if method:
+                print("\n", method_name)
+                print(inspect.getsource(method))
+
+print("\nQUEUE CONTRACT CHECK COMPLETE")
+PY

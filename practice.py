@@ -1,21 +1,16 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
 python3 - <<'PY'
-import json
 from pathlib import Path
 
-source = Path("artifacts/v1.168/config/config.json")
-target = Path("artifacts/v1.168-max/cta_native_model/config.json")
-
-data = json.loads(source.read_text())
-data["architectures"] = ["CTAMaxPipelineModel"]
-
-target.parent.mkdir(parents=True, exist_ok=True)
-if target.exists():
-    print("Existing native config preserved:", target)
+p = Path("artifacts/v1.168-max/cta_native_model/__init__.py")
+if p.exists():
+    print("Existing architecture package preserved:", p)
 else:
-    target.write_text(json.dumps(data, indent=2) + "\n")
-    print("CTA NATIVE CONFIG CREATED:", target)
-
-print("Original DS config unchanged")
+    p.write_text(
+        '"""Native CTA architecture for Modular MAX."""\n'
+        'from .arch import cta_arch\n\n'
+        'ARCHITECTURES = [cta_arch]\n'
+    )
+    print("CTA ARCHITECTURE PACKAGE CREATED")
 PY

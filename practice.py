@@ -10,8 +10,15 @@ from max.pipelines.lib import PipelineModel
 
 for name in ("prepare_initial_token_inputs", "execute"):
     method = getattr(PipelineModel, name)
-    print(f"\n=== {name} ===", flush=True)
-    print(inspect.getsource(method), flush=True)
+    print("\n===", name, "TYPES ===")
+    for key, value in inspect.get_annotations(method, eval=True).items():
+        print(key, ":", value)
+        if key == "return":
+            try:
+                print("CONSTRUCTOR:", inspect.signature(value))
+                print("FIELDS:", getattr(value, "__annotations__", {}))
+            except (TypeError, ValueError):
+                pass
 
-print("\nCTA NATIVE MODEL INTERFACE REVIEW COMPLETE", flush=True)
+print("\nCTA MODEL TYPE CONTRACT CHECK COMPLETE")
 PY

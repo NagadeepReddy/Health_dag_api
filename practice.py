@@ -1,23 +1,26 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-MODEL=$(find artifacts/v1.168-max \
-  -path '*/cta_native_model/config.json' \
-  -print -quit)
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -u - <<'PY'
+import inspect
+from max.serve import api_server
 
-if [ -z "$MODEL" ]; then
-  echo "CTA model config not found"
-else
-  timeout 60s podman \
-    --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    run --rm --pull=never --network=none \
-    -v "$PWD:/workspace:Z" \
-    -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-    --entrypoint /opt/venv/bin/python \
-    localhost/cta-max-faiss:local \
-    -u -m maxserve_cta_extension.cta_native_launcher \
-    --model-path "/workspace/${MODEL%/config.json}" \
-    --port 8000
+app = api_server.fastapi_app
 
-  echo "STARTUP EXIT CODE: $?"
-fi
+print("=== BUILT-IN MAX HTTP STARTUP ===")
+print("APP:", inspect.signature(app))
+
+for name in ("Settings", "ServingTokenGeneratorSettings"):
+    cls = app.__globals__.get(name)
+    print("\n", name)
+    if cls is None:
+        print("NOT FOUND")
+        continue
+    print("CONSTRUCTOR:", inspect.signature(cls))
+    print("MODULE:", cls.__module__)
+
+print("\nDIRECT MAX HTTP STARTUP CONTRACT: CHECK COMPLETE")
+PY

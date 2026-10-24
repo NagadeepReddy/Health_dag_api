@@ -1,20 +1,28 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-import inspect
-from dataclasses import fields
-from max.pipelines.architectures.llama3.arch import llama_arch
-from max.pipelines.lib import PIPELINE_REGISTRY
+cat > artifacts/v1.168-max/maxserve_cta_extension/cta_pipeline_model.py <<'PY'
+"""CTA-specific MAX PipelineModel integration.
 
-architecture_type = type(llama_arch)
+Original DS pipeline and business logic remain unchanged.
+"""
 
-print("ARCHITECTURE CLASS:", architecture_type)
-print("CONSTRUCTOR:", inspect.signature(architecture_type))
-print("FIELDS:", [f.name for f in fields(llama_arch)])
-print("REGISTRATION:", inspect.signature(PIPELINE_REGISTRY.register))
-print("CTA ARCHITECTURE INTERFACE: CHECK COMPLETE")
+from max.pipelines.lib import PipelineModel
+
+
+class CTAMaxPipelineModel(PipelineModel):
+    """Native MAX model contract for CTA Offers."""
+
+    @classmethod
+    def calculate_max_seq_len(
+        cls, pipeline_config, huggingface_config
+    ) -> int:
+        return 50
+
+    @classmethod
+    def infer_optimal_batch_size(cls, *args, **kwargs) -> int:
+        return 1
 PY
+
+python3 -m py_compile \
+  artifacts/v1.168-max/maxserve_cta_extension/cta_pipeline_model.py \
+  && echo "CTA NATIVE MODEL CLASS: INITIAL IMPLEMENTATION CREATED"

@@ -1,2 +1,6 @@
-curl -sS -i --max-time 5 \
-  http://127.0.0.1:18080/openapi.json | head -c 500
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+
+curl -sS -i --max-time 20 \
+  -X POST http://127.0.0.1:18080/v2/cta/predict \
+  -H "Content-Type: application/json" \
+  --data-binary @artifacts/v1.167/samples/sanity_input.json

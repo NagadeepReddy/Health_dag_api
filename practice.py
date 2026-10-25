@@ -1,29 +1,37 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec -i cta-native-live /opt/venv/bin/python - <<'PY'
-import json, urllib.request
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+
+python3 - <<'PY'
 from pathlib import Path
 
-body = json.loads(Path(
-    "/workspace/artifacts/v1.167/samples/sanity_input.json"
-).read_text())
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py")
+s = p.read_text()
+anchor = 'print("LIVE DISPATCH MATCH:", rid in pending, flush=True)'
 
-req = urllib.request.Request(
-    "http://127.0.0.1:8765/v2/cta/predict",
-    data=json.dumps(body).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST"
-)
-try:
-    with urllib.request.urlopen(req, timeout=45) as r:
-        print("HTTP STATUS:", r.status)
-        print("RESPONSE:", r.read().decode()[:1000])
-except Exception as e:
-    print("HTTP RESULT:", type(e).__name__, str(e))
+assert s.count(anchor) == 1, "Expected handoff trace missing"
+
+if "CTA DIRECT HTTP BRIDGE" not in s:
+    s = s.replace(anchor, anchor + '''
+                # CTA DIRECT HTTP BRIDGE - LOCAL POC ONLY
+                if rid in pending:
+                    pending[rid].put_nowait(result[rid])
+                    print("CTA HTTP BRIDGE ENQUEUED: YES", flush=True)
+''', 1)
+
+compile(s, str(p), "exec")
+p.write_text(s)
+print("CTA HTTP RESPONSE BRIDGE: READY")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY
 
-echo "=== FINAL HANDOFF ==="
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage stop cta-native-live
+
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  logs cta-native-live 2>&1 | \
-  grep -E 'CTA HTTP QUEUE ITEM|LIVE DISPATCH MATCH|CTA WORKER RESPONSE IDS: \[RequestID|Traceback|Error' | tail -10
+  run -d --rm --name cta-native-live \
+  --pull=never --network=none \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py

@@ -4,8 +4,8 @@ run --rm --pull=never --network=none \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -c '
 import inspect
-from max.serve.pipelines import model_worker
+from max.serve.pipelines.model_worker import ModelWorker
 
-print("=== NATIVE WORKER STARTUP ===")
-print(inspect.getsource(model_worker.start_model_worker))
+print("=== SPAWNED WORKER ENTRY ===")
+print(inspect.getsource(ModelWorker.__call__))
 '

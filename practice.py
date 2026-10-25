@@ -1,14 +1,10 @@
-P="podman --root /application1/podman/storage --runroot /run/containers/storage"
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  ps -a --no-trunc --filter name=cta-native-live
 
-echo "=== SERVER FAILURE DETAILS ==="
-$P logs --tail 120 cta-native-live 2>&1 |
-  grep -v 'CTA WORKER RESPONSE IDS: \[\]' |
-  tail -55
+echo "=== CONTAINER DETAILS ==="
 
-echo "=== PORT 8765 LISTENING? ==="
-$P exec cta-native-live /opt/venv/bin/python - <<'PY'
-import socket
-s = socket.socket()
-print("PORT STATUS:", s.connect_ex(("127.0.0.1", 8765)))
-s.close()
-PY
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  inspect cta-native-live \
+  --format 'Running={{.State.Running}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}}' 2>&1

@@ -1,29 +1,19 @@
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  exec -i cta-native-live /opt/venv/bin/python - <<'PY'
-import json, urllib.request
-from pathlib import Path
-
-p = Path("/workspace/artifacts/v1.167/samples/sanity_input.json")
-body = json.loads(p.read_text())
-
-req = urllib.request.Request(
-    "http://127.0.0.1:8765/v2/cta/predict",
-    data=json.dumps(body).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST"
-)
-
-try:
-    with urllib.request.urlopen(req, timeout=70) as r:
-        print("CTA HTTP STATUS:", r.status)
-        print("CTA RESPONSE:", r.read().decode()[:1200])
-except Exception as e:
-    print("CTA HTTP RESULT:", type(e).__name__, str(e))
-PY
-
-echo "=== LIVE RESPONSE HANDOFF ==="
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  logs --tail 250 cta-native-live 2>&1 | \
-  grep -E 'LIVE RESPONSE ID|LIVE PENDING IDS|LIVE DISPATCH MATCH|CTA WORKER RESPONSE IDS: \[RequestID|Traceback|Error' | tail -12
+  logs cta-native-live 2>&1 | python3 -c '
+import sys
+lines = sys.stdin.readlines()
+for i, line in enumerate(lines):
+    if (
+        ("CTA WORKER RESPONSE IDS:" in line and "[]" not in line)
+        or any(x in line for x in (
+            "LIVE RESPONSE ID:",
+            "LIVE DISPATCH MATCH:",
+            "Failed to put message",
+            "Socket operation",
+            "ValidationError",
+            "Exception in request session",
+        ))
+    ):
+        print("".join(lines[max(0,i-2):i+8]))
+'

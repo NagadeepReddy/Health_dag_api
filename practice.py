@@ -1,50 +1,29 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
-
-python3 - <<'PY'
-from pathlib import Path
-
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py")
-s = p.read_text()
-marker = "    import uvicorn\n"
-
-trace = '''    # CTA LIVE HANDOFF TRACE
-    from max.serve.queue.zmq_queue import ZmqPullSocket
-    original_receive = ZmqPullSocket.get_nowait
-
-    def trace_receive(sock):
-        result = original_receive(sock)
-        if isinstance(result, dict) and result:
-            pipeline = getattr(app.state, "pipeline", None)
-            engine = getattr(pipeline, "_engine_queue", None)
-            pending = getattr(engine, "pending_out_queues", {})
-            for rid in result:
-                print("LIVE RESPONSE ID:", repr(rid), flush=True)
-                print("LIVE PENDING IDS:", list(pending), flush=True)
-                print("LIVE DISPATCH MATCH:", rid in pending, flush=True)
-        return result
-
-    ZmqPullSocket.get_nowait = trace_receive
-'''
-
-if "CTA LIVE HANDOFF TRACE" not in s:
-    assert marker in s, "Live-server insertion point missing"
-    s = s.replace(marker, trace + marker, 1)
-
-compile(s, str(p), "exec")
-p.write_text(s)
-print("CTA LIVE RESPONSE TRACE: READY")
-print("ORIGINAL DS CODE: UNCHANGED")
-PY
-
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage stop cta-native-live
-
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  run -d --rm --name cta-native-live \
-  --pull=never --network=none \
-  -v "$PWD:/workspace:Z" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py
+  exec -i cta-native-live /opt/venv/bin/python - <<'PY'
+import json, urllib.request
+from pathlib import Path
+
+p = Path("/workspace/artifacts/v1.167/samples/sanity_input.json")
+body = json.loads(p.read_text())
+
+req = urllib.request.Request(
+    "http://127.0.0.1:8765/v2/cta/predict",
+    data=json.dumps(body).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
+
+try:
+    with urllib.request.urlopen(req, timeout=70) as r:
+        print("CTA HTTP STATUS:", r.status)
+        print("CTA RESPONSE:", r.read().decode()[:1200])
+except Exception as e:
+    print("CTA HTTP RESULT:", type(e).__name__, str(e))
+PY
+
+echo "=== LIVE RESPONSE HANDOFF ==="
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  logs --tail 250 cta-native-live 2>&1 | \
+  grep -E 'LIVE RESPONSE ID|LIVE PENDING IDS|LIVE DISPATCH MATCH|CTA WORKER RESPONSE IDS: \[RequestID|Traceback|Error' | tail -12

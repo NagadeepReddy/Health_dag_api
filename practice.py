@@ -1,1 +1,1 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && sed -n '1,180p' artifacts/v1.168-max/maxserve_cta_extension/cta_pipeline_model.py
+podman --root /application1/podman/storage --runroot /run/containers/storage run --rm --pull=never --network=none --entrypoint /opt/venv/bin/python localhost/cta-max-faiss:local -c 'import inspect; from max.pipelines.lib import PipelineModel; print("ABSTRACT METHODS:", sorted(PipelineModel.__abstractmethods__)); print("BASE MODEL SOURCE:"); print("".join(inspect.getsourcelines(PipelineModel)[0][:120]))'

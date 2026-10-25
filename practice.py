@@ -1,3 +1,14 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-grep -nE 'install_cta_scheduler_hook|install_cta_spawn_entry|register_cta_architecture|register_cta_routes|model-path|custom-architectures' \
-artifacts/v1.168-max/maxserve_cta_extension/{cta_native_launcher,cta_spawn_worker,cta_worker_registration}.py
+timeout 90s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never --network=none --memory=4g \
+  -v "$PWD:/workspace:Z" \
+  -w /workspace \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u -m maxserve_cta_extension.cta_native_launcher \
+  --model-path /workspace/artifacts/v1.168-max/cta_native_model \
+  --custom-architectures /workspace/artifacts/v1.168-max/cta_native_model \
+  2>&1 | tail -65

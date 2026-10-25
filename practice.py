@@ -6,6 +6,7 @@ localhost/cta-max-faiss:local -c '
 import inspect
 from max.pipelines.lib.model_config import MAXModelConfig
 
-print("=== MAX MODEL RESOLVE ===")
-print(inspect.getsource(MAXModelConfig.resolve))
+parser = MAXModelConfig.resolve.__globals__["WeightPathParser"]
+print("=== WEIGHT PATH PARSER ===")
+print(inspect.getsource(parser.parse))
 '

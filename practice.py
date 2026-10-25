@@ -19,7 +19,10 @@ pipeline = SimpleNamespace(
     _cta_adapter=object()
 )
 
-print("CTA SCHEDULER SELECTION:", select.__name__)
-print("CTA PIPELINE FLAG:", pipeline._cta_native_pipeline)
-print("SCHEDULER SIGNATURE:", inspect.signature(select))
+try:
+    scheduler = select(pipeline, None, None, None)
+    print("CTA SCHEDULER CREATED:", type(scheduler).__name__)
+except Exception as e:
+    print("CTA SCHEDULER ERROR:", type(e).__name__, str(e))
+    raise
 '

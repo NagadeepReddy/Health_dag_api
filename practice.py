@@ -1,10 +1,15 @@
-echo "=== CONTAINER STATUS ==="
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  ps -a --filter name=cta-native-live
-
-echo "=== SERVER EVENTS ==="
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  logs cta-native-live 2>&1 | \
-  grep -Ei 'startup complete|CTA REQUEST RECEIVED|LIVE RESPONSE ID|LIVE DISPATCH MATCH|CTA HTTP BRIDGE|CTA HTTP QUEUE ITEM|traceback|exception|error|POST /v2/cta/predict' | tail -30
+  logs cta-native-live 2>&1 | python3 -c '
+import sys
+lines = sys.stdin.readlines()
+for i, line in enumerate(lines):
+    if any(x in line for x in (
+        "CTA HTTP QUEUE ITEM:",
+        "CTA HTTP BRIDGE ENQUEUED:",
+        "Traceback",
+        "Exception",
+        "Error in background",
+    )):
+        print("".join(lines[max(0,i-2):i+8]))
+'

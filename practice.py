@@ -1,5 +1,3 @@
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-run --rm --pull=never --network=none \
---entrypoint /bin/sh localhost/cta-max-faiss:local \
--c 'nl -ba /opt/venv/lib/python3.12/site-packages/max/serve/pipelines/model_worker.py | sed -n "110,185p"'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+grep -n -B 8 -A 65 'def install_cta_scheduler_hook' \
+artifacts/v1.168-max/maxserve_cta_extension/cta_scheduler_hook.py

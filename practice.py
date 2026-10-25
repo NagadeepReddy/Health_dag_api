@@ -1,14 +1,28 @@
 P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-echo "=== HTTP LISTENER ==="
-$P exec cta-native-live /opt/venv/bin/python -c '
-import socket
-s = socket.socket()
-print("PORT 8765:", "LISTENING" if s.connect_ex(("127.0.0.1",8765)) == 0 else "NOT LISTENING", flush=True)
-s.close()
-'
+$P exec -i cta-native-live /opt/venv/bin/python - <<'PY'
+import json, urllib.request
+from pathlib import Path
 
-echo "=== SERVER STARTUP / ERRORS ==="
-$P logs cta-native-live 2>&1 | \
-grep -Ev 'CTA WORKER RESPONSE IDS: \[\]|not use pretrained embedding|loaded Transfer Model' | \
-tail -35
+body = json.loads(Path(
+    "/workspace/artifacts/v1.167/samples/sanity_input.json"
+).read_text())
+
+req = urllib.request.Request(
+    "http://127.0.0.1:8765/v2/cta/predict",
+    data=json.dumps(body).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
+
+try:
+    with urllib.request.urlopen(req, timeout=45) as r:
+        print("CTA HTTP STATUS:", r.status)
+        print("CTA RESPONSE:", r.read().decode()[:1000])
+except Exception as e:
+    print("CTA HTTP ERROR:", type(e).__name__, str(e))
+PY
+
+echo "=== RESPONSE DELIVERY ==="
+$P logs cta-native-live 2>&1 | grep -E \
+'CTA CALLBACK EXECUTED|CTA QUEUE SIZE:|CTA HTTP QUEUE ITEM|LIVE DISPATCH MATCH|Traceback|Error' | tail -12

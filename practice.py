@@ -1,15 +1,5 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  logs cta-native-live 2>&1 | python3 -c '
-import sys
-lines = sys.stdin.readlines()
-for i, line in enumerate(lines):
-    if any(x in line for x in (
-        "CTA HTTP QUEUE ITEM:",
-        "CTA HTTP BRIDGE ENQUEUED:",
-        "Traceback",
-        "Exception",
-        "Error in background",
-    )):
-        print("".join(lines[max(0,i-2):i+8]))
-'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+
+grep -n -C 6 -E \
+'CTA HTTP QUEUE ITEM|_cta_http_loop|call_soon_threadsafe|pending\[rid\]|response_queue.get' \
+artifacts/v1.168-max/maxserve_cta_extension/{cta_router.py,cta_native_live_server.py}

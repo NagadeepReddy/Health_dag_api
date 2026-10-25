@@ -1,28 +1,22 @@
 P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-$P exec -i cta-native-live /opt/venv/bin/python - <<'PY'
-import json, urllib.request
-from pathlib import Path
-
-body = json.loads(Path(
-    "/workspace/artifacts/v1.167/samples/sanity_input.json"
-).read_text())
-
-req = urllib.request.Request(
-    "http://127.0.0.1:8765/v2/cta/predict",
-    data=json.dumps(body).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST"
+$P logs --since 15m --timestamps cta-native-live 2>&1 | python3 -c '
+import sys
+keys = (
+    "CTA REQUEST RECEIVED",
+    "CTA NATIVE RESPONSE TYPES",
+    "CTA WORKER RESPONSE IDS: [RequestID",
+    "LIVE RESPONSE ID:",
+    "LIVE DISPATCH MATCH:",
+    "CTA CALLBACK EXECUTED",
+    "CTA QUEUE SIZE:",
+    "CTA HTTP QUEUE ITEM:",
+    "CTA HTTP BRIDGE ENQUEUED:",
+    "Traceback",
+    "Exception",
+    "ERROR:",
 )
-
-try:
-    with urllib.request.urlopen(req, timeout=45) as r:
-        print("CTA HTTP STATUS:", r.status)
-        print("CTA RESPONSE:", r.read().decode()[:1000])
-except Exception as e:
-    print("CTA HTTP ERROR:", type(e).__name__, str(e))
-PY
-
-echo "=== RESPONSE DELIVERY ==="
-$P logs cta-native-live 2>&1 | grep -E \
-'CTA CALLBACK EXECUTED|CTA QUEUE SIZE:|CTA HTTP QUEUE ITEM|LIVE DISPATCH MATCH|Traceback|Error' | tail -12
+matches = [line.strip() for line in sys.stdin if any(k in line for k in keys)]
+print("=== LATEST REQUEST TIMELINE ===")
+print("\n".join(matches[-30:]) if matches else "NO MATCHING EVENTS")
+'

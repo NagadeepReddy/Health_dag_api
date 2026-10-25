@@ -8,10 +8,16 @@ import importlib, inspect
 m = importlib.import_module(
     "max.entrypoints.cli.serve.serve_api_and_model_worker"
 )
-fn = m.serve_api_server_and_model_worker
-cls = fn.__globals__["ServingTokenGeneratorSettings"]
+src, start = inspect.getsourcelines(
+    m.serve_api_server_and_model_worker
+)
 
-print("=== SERVING SETTINGS CONTRACT ===")
-print("SIGNATURE:", inspect.signature(cls))
-print(inspect.getsource(cls)[:5000])
+for i, line in enumerate(src):
+    if any(x in line for x in (
+        "retrieve_factory", "ServingTokenGeneratorSettings",
+        "tokenizer", "model_factory"
+    )):
+        print(f"=== LINE {start+i} ===")
+        for j in range(max(0,i-4), min(len(src),i+7)):
+            print(f"{start+j}: {src[j].rstrip()}")
 '

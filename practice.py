@@ -1,22 +1,6 @@
-P="podman --root /application1/podman/storage --runroot /run/containers/storage"
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-$P logs --since 15m --timestamps cta-native-live 2>&1 | python3 -c '
-import sys
-keys = (
-    "CTA REQUEST RECEIVED",
-    "CTA NATIVE RESPONSE TYPES",
-    "CTA WORKER RESPONSE IDS: [RequestID",
-    "LIVE RESPONSE ID:",
-    "LIVE DISPATCH MATCH:",
-    "CTA CALLBACK EXECUTED",
-    "CTA QUEUE SIZE:",
-    "CTA HTTP QUEUE ITEM:",
-    "CTA HTTP BRIDGE ENQUEUED:",
-    "Traceback",
-    "Exception",
-    "ERROR:",
-)
-matches = [line.strip() for line in sys.stdin if any(k in line for k in keys)]
-print("=== LATEST REQUEST TIMELINE ===")
-print("\n".join(matches[-30:]) if matches else "NO MATCHING EVENTS")
-'
+grep -n -C 8 -E \
+'response_worker|_background_tasks|start_background|create_task|worker_monitor|response_queue' \
+artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py \
+artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py | tail -110

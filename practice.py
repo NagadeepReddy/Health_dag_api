@@ -1,6 +1,5 @@
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm --pull=never --network=none \
---entrypoint /bin/sh \
-localhost/cta-max-faiss:local \
--c 'sed -n "590,690p" /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/model_config.py'
+--entrypoint /bin/sh localhost/cta-max-faiss:local \
+-c 'grep -n -B 12 -A 15 "_resolve_weight_path(" /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/model_config.py'

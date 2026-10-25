@@ -1,9 +1,4 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-echo "=== MAX HEALTH DECISION ==="
-sed -n '95,135p' /tmp/cta_max_queues.py
-
-echo "=== CTA HEALTH MONITOR CONNECTION ==="
-grep -n -C 10 -E \
-'worker_monitor|is_worker_healthy|EngineQueue|start_model_worker' \
-artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py
+$P exec cta-native-live sh -c \
+"grep -Rn -A 35 -E 'class ProcessMonitor|def is_healthy|def set_started|def until_healthy' /opt/venv/lib/python3.12/site-packages/max/serve/process_control.py"

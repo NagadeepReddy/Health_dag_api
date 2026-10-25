@@ -1,24 +1,18 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-python3 - <<'PY'
-from pathlib import Path
+P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py")
-s = p.read_text()
+$P stop -t 5 cta-native-live >/dev/null 2>&1 || true
 
-start = s.find("    # CTA LIVE HANDOFF TRACE")
-end = s.find("    import uvicorn", start)
+$P run -d --rm --name cta-native-live \
+  --pull=never --network=none \
+  -v "$PWD:/workspace:Z" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py
 
-assert start >= 0 and end > start, "Expected bridge section not found"
+sleep 8
 
-clean = s[:start] + s[end:]
-compile(clean, str(p), "exec")
-
-p.with_suffix(".py.bridge_backup").write_text(s)
-p.write_text(clean)
-
-print("CUSTOM HTTP BRIDGE: REMOVED")
-print("MAX ORIGINAL RESPONSE DISPATCH: RESTORED")
-print("SYNTAX: PASS")
-print("DS CODE: UNCHANGED")
-PY
+$P logs cta-native-live 2>&1 | \
+grep -E 'startup complete|Uvicorn running|CTA QUEUE INITIALIZED|Traceback|ERROR' | tail -10

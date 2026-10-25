@@ -1,5 +1,7 @@
-P="podman --root /application1/podman/storage --runroot /run/containers/storage"
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-$P cp cta-native-live:/opt/venv/lib/python3.12/site-packages/max/serve/process_control.py /tmp/cta_process_control.py
-
-grep -n -A 35 -E 'class ProcessMonitor|def is_healthy|def set_started|def until_healthy' /tmp/cta_process_control.py
+grep -nE -C 5 \
+'CTA_NATIVE_FACTORY_ENTERED|CTAFactoryWrapper|def __call__|def install_cta_scheduler_hook|load_scheduler|attach_max|CTA_QUEUE_INITIALIZED' \
+artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py \
+artifacts/v1.168-max/maxserve_cta_extension/cta_scheduler_hook.py \
+artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py 2>/dev/null | head -130

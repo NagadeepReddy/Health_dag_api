@@ -1,44 +1,44 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
-
-python3 - <<'PY'
-from pathlib import Path
-import re
-
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py")
-s = p.read_text()
-
-if "CTA_RESPONSE_WORKER_STARTED" not in s:
-    pattern = r'^([ \t]*)print\("CTA QUEUE INITIALIZED:"'
-    m = re.search(pattern, s, re.M)
-    assert m, "Queue initialization marker not found"
-
-    indent = m.group(1)
-    hook = (
-        indent + "self.create_background_task(\n"
-        + indent + "    self._engine_queue.response_worker,\n"
-        + indent + '    task_name="cta_response_worker",\n'
-        + indent + ")\n"
-        + indent + 'print("CTA_RESPONSE_WORKER_STARTED", flush=True)\n'
-    )
-    s = s[:m.start()] + hook + s[m.start():]
-
-compile(s, str(p), "exec")
-p.write_text(s)
-print("CTA RESPONSE WORKER HOOK: INSTALLED")
-PY
-
 P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-$P stop -t 5 cta-native-live >/dev/null 2>&1 || true
+$P exec -i cta-native-live /opt/venv/bin/python - <<'PY'
+import json, time, urllib.request
+from pathlib import Path
 
-$P run -d --rm --name cta-native-live \
-  --pull=never --network=none \
-  -v "$PWD:/workspace:Z" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py
+base = "http://127.0.0.1:8765"
 
-sleep 8
+for i in range(40):
+    try:
+        req = urllib.request.Request(
+            base + "/v2/cta/probe", data=b"{}", method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=2):
+            print("SERVER READY: YES", flush=True)
+        break
+    except Exception:
+        time.sleep(1)
+else:
+    print("SERVER READY: NO")
+    raise SystemExit(1)
+
+body = json.loads(Path(
+    "/workspace/artifacts/v1.167/samples/sanity_input.json"
+).read_text())
+
+req = urllib.request.Request(
+    base + "/v2/cta/predict",
+    data=json.dumps(body).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
+
+try:
+    with urllib.request.urlopen(req, timeout=45) as r:
+        print("CTA HTTP STATUS:", r.status)
+        print("CTA RESPONSE:", r.read().decode()[:1200])
+except Exception as e:
+    print("CTA HTTP ERROR:", type(e).__name__, str(e))
+PY
+
+echo "=== RESPONSE WORKER RESULT ==="
 $P logs cta-native-live 2>&1 | grep -E \
-'CTA_RESPONSE_WORKER_STARTED|startup complete|Uvicorn running|Traceback|ERROR' | tail -12
+'CTA_RESPONSE_WORKER_STARTED|CTA HTTP QUEUE ITEM|LIVE DISPATCH MATCH|CTA WORKER RESPONSE IDS: \[RequestID|Traceback|Error' | tail -12

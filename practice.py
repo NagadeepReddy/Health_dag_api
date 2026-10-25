@@ -1,5 +1,9 @@
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm --pull=never --network=none \
---entrypoint /bin/sh localhost/cta-max-faiss:local \
--c 'sed -n "700,780p" /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/config.py'
+--entrypoint /opt/venv/bin/python \
+localhost/cta-max-faiss:local -c '
+from max.pipelines.lib import SupportedEncoding, WeightsFormat
+print("ENCODINGS:", [x.name for x in SupportedEncoding])
+print("WEIGHT FORMATS:", [x.name for x in WeightsFormat])
+'

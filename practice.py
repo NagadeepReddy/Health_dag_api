@@ -1,6 +1,19 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
+P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-grep -n -C 8 -E \
-'response_worker|_background_tasks|start_background|create_task|worker_monitor|response_queue' \
-artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py \
-artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py | tail -110
+$P exec -i cta-native-live /opt/venv/bin/python - <<'PY'
+import inspect
+from max.serve.api_server import TokenGeneratorPipeline
+
+for cls in TokenGeneratorPipeline.__mro__:
+    for name, method in cls.__dict__.items():
+        if callable(method) and any(
+            x in name.lower()
+            for x in ("background", "startup", "response_worker")
+        ):
+            print(f"\n=== {cls.__name__}.{name} ===")
+            try:
+                src = inspect.getsource(method)
+                print("\n".join(src.splitlines()[:45]))
+            except (OSError, TypeError):
+                print("Source unavailable")
+PY

@@ -1,16 +1,9 @@
-P="podman --root /application1/podman/storage --runroot /run/containers/storage"
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1
 
-$P start cta-native-live >/dev/null
+echo "=== MAX HEALTH DECISION ==="
+sed -n '95,135p' /tmp/cta_max_queues.py
 
-for i in $(seq 1 15); do
-  echo "=== WORKER SNAPSHOT $i ==="
-  $P top cta-native-live pid ppid comm 2>&1
-  sleep 1
-done
-
-echo "=== FINAL CONTAINER STATE ==="
-$P inspect cta-native-live \
-  --format 'Running={{.State.Running}} Exit={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}}'
-
-echo "=== WORKER FAILURE LOG ==="
-$P logs --tail 45 cta-native-live 2>&1
+echo "=== CTA HEALTH MONITOR CONNECTION ==="
+grep -n -C 10 -E \
+'worker_monitor|is_worker_healthy|EngineQueue|start_model_worker' \
+artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py

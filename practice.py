@@ -12,8 +12,9 @@ from maxserve_cta_extension.cta_worker_registration import install_cta_scheduler
 
 install_cta_scheduler_hook()
 g = inspect.unwrap(ModelWorker.run).__globals__
-f = g.get("load_scheduler")
+f = g["load_scheduler"]
 
-print("SCHEDULER FUNCTION:", getattr(f, "__name__", None))
-print("CTA HOOK ACTIVE:", bool(f and f.__globals__.get("_cta_hook")))
+print("PATCHED FUNCTION:", f.__name__)
+print("CTA SELECTION LOGIC:", "_cta_native_pipeline" in inspect.getsource(f))
+print("CTA SCHEDULER REFERENCE:", "create_cta_scheduler" in inspect.getsource(f))
 '

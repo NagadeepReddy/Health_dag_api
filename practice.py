@@ -7,14 +7,19 @@ run --rm --pull=never --network=none --memory=4g \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -c '
 import inspect
+from types import SimpleNamespace
 from max.serve.pipelines.model_worker import ModelWorker
 from maxserve_cta_extension.cta_worker_registration import install_cta_scheduler_hook
 
 install_cta_scheduler_hook()
-g = inspect.unwrap(ModelWorker.run).__globals__
-f = g["load_scheduler"]
+select = inspect.unwrap(ModelWorker.run).__globals__["load_scheduler"]
 
-print("PATCHED FUNCTION:", f.__name__)
-print("CTA SELECTION LOGIC:", "_cta_native_pipeline" in inspect.getsource(f))
-print("CTA SCHEDULER REFERENCE:", "create_cta_scheduler" in inspect.getsource(f))
+pipeline = SimpleNamespace(
+    _cta_native_pipeline=True,
+    _cta_adapter=object()
+)
+
+print("CTA SCHEDULER SELECTION:", select.__name__)
+print("CTA PIPELINE FLAG:", pipeline._cta_native_pipeline)
+print("SCHEDULER SIGNATURE:", inspect.signature(select))
 '

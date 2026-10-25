@@ -1,5 +1,4 @@
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-run --rm --pull=never --network=none \
---entrypoint /bin/sh localhost/cta-max-faiss:local \
--c 'nl -ba /opt/venv/lib/python3.12/site-packages/max/serve/queue/zmq_queue.py | sed -n "160,195p;225,255p"'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+grep -n -B 10 -A 20 -E \
+"def run_iteration|NO_PROGRESS|get_nowait|Empty|BackgroundQueueDrainer" \
+artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py

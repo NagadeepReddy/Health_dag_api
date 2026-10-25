@@ -1,47 +1,23 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
-
 P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-$P stop cta-native-live >/dev/null 2>&1 || true
+echo "=== CONTAINER ==="
+$P ps -a --filter name=cta-native-live
 
-$P run -d --rm --name cta-native-live \
-  --pull=never --network=none \
-  -v "$PWD:/workspace:Z" \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -u /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py
-
-$P exec -i cta-native-live /opt/venv/bin/python - <<'PY'
-import json, time, urllib.request
-from pathlib import Path
-
-url = "http://127.0.0.1:8765"
-for _ in range(20):
-    try:
-        urllib.request.urlopen(
-            urllib.request.Request(url + "/v2/cta/probe", data=b"{}", method="POST"),
-            timeout=2
-        )
-        break
-    except Exception:
-        time.sleep(1)
-
-body = json.loads(Path("/workspace/artifacts/v1.167/samples/sanity_input.json").read_text())
-req = urllib.request.Request(
-    url + "/v2/cta/predict",
-    data=json.dumps(body).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST"
-)
+echo "=== HTTP READINESS ==="
+$P exec cta-native-live /opt/venv/bin/python - <<'PY'
+import urllib.request
 try:
-    with urllib.request.urlopen(req, timeout=60) as r:
-        print("CTA HTTP STATUS:", r.status)
-        print("CTA RESPONSE:", r.read().decode()[:1000])
+    req = urllib.request.Request(
+        "http://127.0.0.1:8765/v2/cta/probe",
+        data=b"{}",
+        method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        print("SERVER READY:", r.status)
 except Exception as e:
-    print("CTA HTTP ERROR:", type(e).__name__, str(e))
+    print("SERVER NOT READY:", repr(e))
 PY
 
-echo "=== CALLBACK RESULT ==="
-$P logs cta-native-live 2>&1 | grep -E \
-'CTA CALLBACK EXECUTED|CTA QUEUE SIZE:|CTA HTTP QUEUE ITEM|LIVE DISPATCH MATCH|Traceback|Error' | tail -12
+echo "=== RECENT SERVER EVENTS ==="
+$P logs --tail 30 cta-native-live 2>&1 | grep -E \
+'startup complete|Uvicorn running|Shutting down|Traceback|Error|CTA CALLBACK|CTA QUEUE SIZE'

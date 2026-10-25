@@ -3,7 +3,11 @@ podman --root /application1/podman/storage \
 run --rm --pull=never --network=none \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -c '
-from max.pipelines.lib import SupportedEncoding, WeightsFormat
-print("ENCODINGS:", [x.name for x in SupportedEncoding])
-print("WEIGHT FORMATS:", [x.name for x in WeightsFormat])
+from max.pipelines.architectures.llama3.arch import llama_arch
+
+for name in ("default_encoding", "default_weights_format"):
+    value = getattr(llama_arch, name)
+    enum_type = type(value)
+    print(name, "=", value)
+    print("VALID OPTIONS:", [x.name for x in enum_type])
 '

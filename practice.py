@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage inspect cta-native-live --format 'Exit={{.State.ExitCode}} | Error={{.State.Error}} | OOM={{.State.OOMKilled}} | Log={{.HostConfig.LogConfig.Type}}'
+podman --root /application1/podman/storage --runroot /run/containers/storage inspect cta-native-live --format 'Image={{.Config.Image}} | Command={{json .Config.Cmd}} | Entry={{json .Config.Entrypoint}}'

@@ -1,2 +1,1 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-git diff --check -- artifacts/v1.168-max/maxserve_cta_extension/cta_architecture_registration.py && echo "CHANGE CHECK: PASS"
+podman --root /application1/podman/storage --runroot /run/containers/storage inspect cta-native-live --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(HOME|TMPDIR|XDG_CACHE_HOME|HF_HOME|TORCH_HOME|PYTHONPYCACHEPREFIX)=' || echo "No explicit cache/temp settings"

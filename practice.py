@@ -1,1 +1,4 @@
-journalctl -k --since "15 minutes ago" --no-pager 2>/dev/null | grep -Ei 'oom|out of memory|killed process|memory cgroup' | tail -15
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  ps -a --filter name=cta-max-test \
+  --format '{{.Names}} | {{.Status}}'

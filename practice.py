@@ -1,3 +1,9 @@
-grep -RnE 'MAXModelConfig|PipelineConfig|_resolve_weight_path|weight_path|weights_format|validate_and_resolve' \
-  /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension \
-  --include='*.py' | head -50
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --memory=512m --cpus=1 --pids-limit=64 \
+  --network=none --read-only \
+  --entrypoint /bin/sed \
+  localhost/cta-max-faiss:local \
+  -n '1,110p' \
+  /opt/venv/lib/python3.12/site-packages/max/pipelines/architectures/llama3/arch.py

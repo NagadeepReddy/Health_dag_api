@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage cp cta-native-live:/opt/venv/lib/python3.12/site-packages/max/pipelines/architectures/llama3_arch.py - | tar -xO 2>/dev/null | grep -nE 'llama_arch|weight|encoding|quantization' | head -35
+podman --root /application1/podman/storage --runroot /run/containers/storage inspect cta-native-live --format 'RootFS={{.GraphDriver.Data.MergedDir}}'

@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage image inspect localhost/cta-max-faiss:local --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(PATH|PYTHONPATH|VIRTUAL_ENV|MODULAR_HOME|MAX_)' || true
+sed -n '1,20p' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py

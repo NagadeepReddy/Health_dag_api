@@ -3,7 +3,7 @@ podman --root /application1/podman/storage \
   run --rm --pull=never \
   --memory=512m --cpus=1 --pids-limit=64 \
   --network=none --read-only \
-  --entrypoint /bin/sed \
+  --entrypoint /bin/grep \
   localhost/cta-max-faiss:local \
-  -n '50,130p' \
+  -n -A 70 'def post_init' \
   /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/model_config.py

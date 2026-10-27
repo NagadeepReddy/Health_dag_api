@@ -3,7 +3,7 @@ podman --root /application1/podman/storage \
   run --rm --pull=never \
   --memory=512m --cpus=1 --pids-limit=64 \
   --network=none --read-only \
-  --entrypoint /bin/grep \
+  --entrypoint /bin/sed \
   localhost/cta-max-faiss:local \
-  -nE 'class MAXModelConfig|def .*init|def .*weight|def .*resolve' \
+  -n '150,220p' \
   /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/model_config.py

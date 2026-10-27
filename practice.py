@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage inspect cta-native-live --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(HOME|TMPDIR|XDG_CACHE_HOME|HF_HOME|TORCH_HOME|PYTHONPYCACHEPREFIX)=' || echo "No explicit cache/temp settings"
+podman --root /application1/podman/storage --runroot /run/containers/storage inspect cta-native-live --format 'Memory={{.HostConfig.Memory}} | CPUs={{.HostConfig.NanoCpus}} | PIDs={{.HostConfig.PidsLimit}}'

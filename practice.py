@@ -3,7 +3,6 @@ podman --root /application1/podman/storage \
   run --rm --pull=never \
   --memory=512m --cpus=1 --pids-limit=64 \
   --network=none --read-only \
-  --entrypoint /bin/cat \
+  --entrypoint /bin/sh \
   localhost/cta-max-faiss:local \
-  /opt/venv/lib/python3.12/site-packages/max/pipelines/architectures/llama3_arch.py \
-  | grep -A 20 -B 5 'supported_encodings'
+  -c "grep -R -n -m 1 'supported_encodings=' /opt/venv/lib/python3.12/site-packages/max/pipelines/architectures 2>/dev/null | head -15"

@@ -1,1 +1,1 @@
-sed -n '1,180p' artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py
+find artifacts/v1.168-max/cta_native_model -maxdepth 1 -type f -printf '%f | %s bytes\n' | sort

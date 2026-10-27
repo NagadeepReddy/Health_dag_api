@@ -13,4 +13,4 @@ timeout -s TERM -k 5s 45s podman \
   -e HOME=/tmp -e TMPDIR=/tmp \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local \
-  -u -c 'from maxserve_cta_extension.cta_spawn_worker import install_cta_spawn_entry; install_cta_spawn_entry(); print("WORKER REGISTRATION: PASS", flush=True)'
+  -u -c 'import faulthandler; faulthandler.dump_traceback_later(20); from maxserve_cta_extension.cta_architecture_registration import register_cta_architecture; register_cta_architecture(); print("CTA ARCHITECTURE REGISTRATION: PASS", flush=True)'

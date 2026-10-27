@@ -1,1 +1,1 @@
-podman images --format '{{.Repository}}:{{.Tag}}  {{.ID}}  {{.Size}}'
+podman ps -a --format '{{.Names}} | {{.Image}} | {{.Status}}'

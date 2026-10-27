@@ -1,1 +1,1 @@
-grep -nE '^(async )?def start_model_worker|model_factory|load_scheduler' /opt/venv/lib/python3.11/site-packages/max/serve/pipelines/model_worker.py 2>/dev/null || echo "MAX worker source path needs locating"
+find /opt /usr/local/lib /workspace -maxdepth 7 -type f -path '*/max/serve/pipelines/model_worker.py' -print 2>/dev/null

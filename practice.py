@@ -1,1 +1,2 @@
-tar -tzf /application1/cta_max_extension_backup_20261027.tar.gz | tail -15
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+sed -n '1,180p' artifacts/v1.168-max/maxserve_cta_extension/cta_pipeline_model.py

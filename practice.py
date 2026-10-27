@@ -5,5 +5,5 @@ podman --root /application1/podman/storage \
   --network=none --read-only \
   --entrypoint /bin/grep \
   localhost/cta-max-faiss:local \
-  -n -A 45 'def _validate_final_architecture_model_path_weight_path' \
+  -nE '^class |^    def .*weight|^    def .*resolve|^    def .*validate' \
   /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/model_config.py

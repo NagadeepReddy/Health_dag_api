@@ -5,5 +5,5 @@ podman --root /application1/podman/storage \
   --network=none --read-only \
   --entrypoint /bin/grep \
   localhost/cta-max-faiss:local \
-  -n -A 70 'def post_init' \
+  -nE 'class MAXModelConfig|def .*init|def .*weight|def .*resolve' \
   /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/model_config.py

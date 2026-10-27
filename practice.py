@@ -5,4 +5,4 @@ podman --root /application1/podman/storage \
   --network=none --read-only \
   --entrypoint /bin/sh \
   localhost/cta-max-faiss:local \
-  -c "grep -n -B 12 -A 12 'self._resolve_weight_path()' /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/model_config.py"
+  -c "grep -RnE 'resolve_weight_path|resolve_weight_paths' /opt/venv/lib/python3.12/site-packages/max/pipelines --include='*.py' 2>/dev/null | head -25"

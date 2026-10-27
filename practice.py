@@ -1,1 +1,1 @@
-podman image inspect localhost/cta-max-faiss:local --format '{{json .Config.Env}}'
+command -v python python3 podman; ls -ld /opt/venv /workspace /application1 2>/dev/null

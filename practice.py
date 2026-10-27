@@ -5,5 +5,5 @@ podman --root /application1/podman/storage \
   --network=none --read-only \
   --entrypoint /bin/sed \
   localhost/cta-max-faiss:local \
-  -n '220,265p' \
+  -n '640,707p' \
   /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/model_config.py

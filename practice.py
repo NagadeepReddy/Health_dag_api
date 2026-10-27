@@ -1,1 +1,1 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && sed -n '1,110p' artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py
+grep -nE '^(async )?def start_model_worker|model_factory|load_scheduler' /opt/venv/lib/python3.11/site-packages/max/serve/pipelines/model_worker.py 2>/dev/null || echo "MAX worker source path needs locating"

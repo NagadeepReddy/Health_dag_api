@@ -1,1 +1,1 @@
-podman image exists localhost/cta-max-faiss:local; echo "Local MAX image status: $?"
+podman images --format '{{.Repository}}:{{.Tag}}' | grep -Ei 'modular|max|triton' || true

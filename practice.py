@@ -1,1 +1,2 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage inspect cta-native-live --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(PYTHONPATH|PYTHONHOME|PYTHONPYCACHEPREFIX|TMPDIR|MAX_|CTA_)' || true
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+grep -nE 'sys.exit|exit\(|raise |except |main\(' artifacts/v1.168-max/maxserve_cta_extension/cta_native_live_server.py

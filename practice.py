@@ -3,7 +3,6 @@ podman --root /application1/podman/storage \
   run --rm --pull=never \
   --memory=512m --cpus=1 --pids-limit=64 \
   --network=none --read-only \
-  --entrypoint /bin/sed \
+  --entrypoint /bin/sh \
   localhost/cta-max-faiss:local \
-  -n '470,565p' \
-  /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/config.py
+  -c "grep -Rn -A 25 'class WeightsFormat' /opt/venv/lib/python3.12/site-packages/max --include='*.py' 2>/dev/null | head -35"

@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage inspect cta-native-live --format 'Memory={{.HostConfig.Memory}} | CPUs={{.HostConfig.NanoCpus}} | PIDs={{.HostConfig.PidsLimit}}'
+python3 -I -S -B -c 'import ast,pathlib; d=pathlib.Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension"); files=sorted(d.glob("*.py")); [ast.parse(p.read_text(),filename=str(p)) for p in files]; print(f"MAX EXTENSION SYNTAX: PASS ({len(files)} files)")'

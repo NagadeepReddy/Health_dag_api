@@ -1,1 +1,1 @@
-find /application1/sajjna8/rt-pzaas-cta-offers-v1 -maxdepth 5 -type f -name 'model_0_base.pt' -print -quit
+ls -lh /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.167/core-artifact/model_0_base.pt

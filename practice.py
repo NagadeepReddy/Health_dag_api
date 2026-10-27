@@ -1,1 +1,1 @@
-ls -ld /opt/venv/lib/python*/site-packages/max /usr/local/lib/python*/site-packages/max 2>/dev/null
+podman image exists localhost/cta-max-faiss:local; echo "Local MAX image status: $?"

@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage image inspect localhost/cta-max-faiss:local --format 'Image={{.Id}} | WorkingDir={{.Config.WorkingDir}} | Entrypoint={{json .Config.Entrypoint}}'
+podman --root /application1/podman/storage --runroot /run/containers/storage image inspect localhost/cta-max-faiss:local --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(PATH|PYTHONPATH|VIRTUAL_ENV|MODULAR_HOME|MAX_)' || true

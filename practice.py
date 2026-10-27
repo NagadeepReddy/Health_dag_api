@@ -1,1 +1,2 @@
-python3 -I -S -B -c 'import ast,pathlib; d=pathlib.Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension"); files=sorted(d.glob("*.py")); [ast.parse(p.read_text(),filename=str(p)) for p in files]; print(f"MAX EXTENSION SYNTAX: PASS ({len(files)} files)")'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+grep -nE 'llama_arch|pipeline_model|default_encoding|supported_encodings' artifacts/v1.168-max/maxserve_cta_extension/cta_architecture_registration.py

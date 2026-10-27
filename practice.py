@@ -1,1 +1,1 @@
-find /application1 -maxdepth 6 -type d \( -name 'site-packages' -o -name 'max-full' -o -name 'max' \) -print 2>/dev/null | head -30
+ls -ld /application1/p311/lib/python3.11/site-packages/max /application1/p311/lib/python3.11/site-packages/max/serve/pipelines/model_worker.py 2>&1

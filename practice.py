@@ -1,8 +1,9 @@
-echo "=== DISK SPACE ==="
-df -hP /application1 /run /var /tmp /home
+echo "=== CONTAINER STORAGE FILESYSTEMS ==="
+df -hP / /dev/shm /application1/podman/storage /run/containers/storage
 
-echo "=== INODE AVAILABILITY ==="
-df -iP /application1 /run /var /tmp /home
+echo "=== CONTAINER STORAGE INODES ==="
+df -iP / /dev/shm /application1/podman/storage /run/containers/storage
 
-echo "=== PODMAN STORAGE PATHS ==="
-ls -ld /application1/podman/storage /run/containers/storage 2>&1
+echo "=== PODMAN STORAGE MOUNTS ==="
+findmnt -T /application1/podman/storage
+findmnt -T /run/containers/storage

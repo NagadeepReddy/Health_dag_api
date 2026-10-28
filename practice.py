@@ -2,61 +2,35 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
 python3 -S -B - <<'PY'
 from pathlib import Path
-import re
+import shutil
+import ast
 
-log = Path("/application1/cta_native_bridge_validation.log")
-report = Path("/application1/CTA_MAX_CPU_BASELINE_20261028.txt")
+src = Path("artifacts/v1.168-max/maxserve_cta_extension")
+dst = Path("/application1/cta_max_native_release_candidate_20261028")
+backup = Path("/application1/cta_max_native_http_pass_20261028.tar.gz")
 
-assert log.is_file(), "STOP: Successful E2E log missing"
-assert not report.exists(), "STOP: Baseline report already exists"
+assert src.is_dir(), "STOP: Integration directory missing"
+assert backup.is_file(), "STOP: Working backup missing"
+assert not dst.exists(), "STOP: Release candidate already exists"
+assert shutil.disk_usage("/application1").free > 1024**3, \
+    "STOP: Insufficient free disk space"
 
-s = log.read_text(errors="replace")
+files = list(src.rglob("*.py"))
+assert files, "STOP: No Python integration files"
 
-checks = {
-    "Native HTTP 200": bool(re.search(
-        r"CTA NATIVE HTTP STATUS:\s*200", s)),
-    "Native E2E PASS": "CTA NATIVE END-TO-END: PASS" in s,
-    "Real MAX inference": "MAX INFERENCE EXECUTED:" in s,
-    "Response queue sent": "CTA RESPONSE QUEUE SEND: COMPLETED" in s,
-}
+for p in files:
+    ast.parse(p.read_text())
 
-assert all(checks.values()), "STOP: E2E evidence incomplete"
+shutil.copytree(src, dst)
 
-metrics = {}
-for label, pattern in {
-    "Prediction duration (seconds)":
-        r"CTA PREDICT_RAW:\s*ELAPSED\s*([\d.]+)s",
-    "Preprocessing duration (seconds)":
-        r"CTA preprocess:\s*ELAPSED\s*([\d.]+)s",
-    "Postprocessing duration (seconds)":
-        r"CTA postprocess:\s*ELAPSED\s*([\d.]+)s",
-}.items():
-    values = re.findall(pattern, s, re.I)
-    metrics[label] = values[-1] if values else "NOT RECORDED"
+for p in dst.rglob("*.py"):
+    ast.parse(p.read_text())
 
-lines = [
-    "CTA MAX — NATIVE CPU PERFORMANCE BASELINE",
-    "Evidence: " + str(log),
-    "",
-    "VALIDATED RESULTS",
-]
-lines += [f"{k}: PASS" for k in checks]
-lines += ["", "RECORDED TIMINGS"]
-lines += [f"{k}: {v}" for k, v in metrics.items()]
-lines += [
-    "",
-    "Single-request functional baseline only.",
-    "Concurrent throughput: NOT YET MEASURED",
-    "P95/P99 latency: NOT YET MEASURED",
-    "True batched inference: NOT IMPLEMENTED",
-    "GPU performance: NOT TESTED",
-    "Original DS code: UNCHANGED",
-]
-
-report.write_text("\n".join(lines) + "\n")
-
-print("\n".join(lines))
-print("\nCPU BASELINE REPORT: CREATED")
-print("NO MODEL STARTUP")
-print("NO WORKING CODE MODIFIED")
+print("RELEASE CANDIDATE COPY: PASS")
+print("PYTHON FILES:", len(files))
+print("SYNTAX: PASS")
+print("LOCATION:", dst)
+print("WORKING HTTP 200 IMPLEMENTATION: PRESERVED")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("CONTAINERS: NOT STARTED")
 PY

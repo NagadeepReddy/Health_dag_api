@@ -1,9 +1,12 @@
-echo "=== CONTAINER STORAGE FILESYSTEMS ==="
-df -hP / /dev/shm /application1/podman/storage /run/containers/storage
+echo "=== ACTIVE CONTAINER OVERLAY MOUNTS ==="
+findmnt -rn -t overlay -o TARGET | head -25
 
-echo "=== CONTAINER STORAGE INODES ==="
-df -iP / /dev/shm /application1/podman/storage /run/containers/storage
+echo "=== RECENT RUNTIME / FILESYSTEM ERRORS ==="
+journalctl -k --since "30 minutes ago" --no-pager 2>/dev/null \
+  | grep -Ei 'no space left|overlay|xfs|quota|enospc|oom' \
+  | tail -25 || true
 
-echo "=== PODMAN STORAGE MOUNTS ==="
-findmnt -T /application1/podman/storage
-findmnt -T /run/containers/storage
+echo "=== CONTAINER RUNTIME PROCESSES ==="
+ps -eo pid,stat,args \
+  | grep -E '[c]run|[c]onmon|[p]odman' \
+  | head -20

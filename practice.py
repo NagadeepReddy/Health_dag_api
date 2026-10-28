@@ -1,23 +1,21 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-REPO="$PWD"
 BASE=/application1/cta_max_true_batch_dev_20261028
-LOG="$BASE/batch2_real_execution.log"
+LOG="$BASE/batch2_real_execution_retry.log"
 
-echo "=== BATCH-2 FINAL TEST ==="
+echo "=== BATCH-2 RETRY ==="
 
-if [ ! -f "$BASE/batch2_candidate/cta_max/run_batch2_live_max_inference.py" ]; then
-    echo "STOP: Batch-2 runner missing"
-elif [ ! -f "$BASE/batch2_candidate/cta_max/run_batch2_contract.py" ]; then
-    echo "STOP: Batch-2 contract missing"
-elif [ "$(awk '/MemAvailable:/ {print int($2/1024/1024)}' /proc/meminfo)" -lt 20 ]; then
-    echo "STOP: Less than 20 GiB available; no model started"
-elif ! podman --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    image exists localhost/cta-max-faiss:local; then
-    echo "STOP: Local development image unavailable"
+AVAILABLE_KB=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+DISK_KB=$(df -Pk /application1 | awk 'NR==2 {print $4}')
+
+if [ "$AVAILABLE_KB" -lt 20971520 ]; then
+    echo "STOP: Available RAM below 20 GiB"
+elif [ "$DISK_KB" -lt 10485760 ]; then
+    echo "STOP: Less than 10 GiB free on /application1"
+elif [ ! -f "$BASE/batch2_candidate/cta_max/run_batch2_live_max_inference.py" ]; then
+    echo "STOP: Batch runner missing"
 else
-    timeout 360s podman \
+    timeout --signal=TERM --kill-after=10s 360s podman \
       --root /application1/podman/storage \
       --runroot /run/containers/storage \
       run --rm -i \
@@ -26,14 +24,14 @@ else
       --memory=16g \
       --memory-swap=16g \
       --pids-limit=32 \
-      --read-only \
       --tmpfs /tmp:rw,size=512m \
-      -v "$REPO:/workspace:ro" \
+      -v "$PWD:/workspace:ro" \
       -v "$BASE/batch2_candidate:/batchdev:ro" \
       -w /workspace \
       -e HOME=/tmp \
       -e TMPDIR=/tmp \
       -e XDG_CACHE_HOME=/tmp/cache \
+      -e MODULAR_CACHE_DIR=/tmp/modular \
       -e PYTHONDONTWRITEBYTECODE=1 \
       -e MKL_NUM_THREADS=1 \
       -e OPENBLAS_NUM_THREADS=1 \
@@ -53,20 +51,14 @@ matches = list(
         "real_sanity_model_in.pt"
     )
 )
-
-assert len(matches) == 1, (
-    f"STOP: Expected one saved real input, found {len(matches)}"
-)
+assert len(matches) == 1, "STOP: Real input not uniquely found"
 
 model_in = torch.load(
     matches[0], map_location="cpu", weights_only=True
 )
 
-print("REAL CTA INPUT: LOADED", flush=True)
-
 start = time.monotonic()
 output = infer_max_live(model_in)
-elapsed = time.monotonic() - start
 
 if isinstance(output, (tuple, list)) and len(output) == 1:
     output = output[0]
@@ -76,32 +68,25 @@ if isinstance(output, torch.Tensor):
 
 result = np.asarray(output)
 
-print("BATCH-2 OUTPUT SHAPE:", result.shape, flush=True)
-print("BATCH-2 ELAPSED SECONDS:", round(elapsed, 2), flush=True)
+print("BATCH OUTPUT SHAPE:", result.shape, flush=True)
+print("ELAPSED SECONDS:", round(time.monotonic()-start, 2), flush=True)
 
-assert result.shape == (2, 2048), \
-    f"STOP: Incorrect batch output shape {result.shape}"
+assert result.shape == (2, 2048), "STOP: Incorrect batch output"
+assert np.isfinite(result).all(), "STOP: Non-finite output"
 
-assert np.isfinite(result).all(), \
-    "STOP: Non-finite model output"
+diff = float(np.max(np.abs(result[0] - result[1])))
+print("DUPLICATE MAX DIFFERENCE:", diff, flush=True)
 
-diff = np.max(np.abs(result[0] - result[1]))
-print("DUPLICATE REQUEST MAX DIFFERENCE:", float(diff), flush=True)
-
-assert np.allclose(
-    result[0], result[1], rtol=1e-5, atol=1e-5
-), "STOP: Duplicate requests produced inconsistent results"
+assert np.allclose(result[0], result[1], rtol=1e-5, atol=1e-5)
 
 print("REAL BATCH-2 EXECUTION: PASS", flush=True)
-print("BATCH OUTPUT FINITE: PASS", flush=True)
 print("DUPLICATE CONSISTENCY: PASS", flush=True)
-print("DS CODE: UNCHANGED", flush=True)
 PY
 
     RC=$?
-    echo "=== BATCH-2 EXECUTION RESULTS ==="
-    grep -E 'PASS|STOP:|ERROR|Error|Traceback|OUTPUT SHAPE|ELAPSED|DIFFERENCE' \
-      "$LOG" | tail -20 || true
     echo "TEST EXIT CODE: $RC"
+    echo "=== RESULTS ==="
+    grep -E 'PASS|STOP:|Error|ERROR|Traceback|SHAPE|SECONDS|DIFFERENCE' \
+      "$LOG" | tail -20 || true
     echo "LOG: $LOG"
 fi

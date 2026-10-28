@@ -3,8 +3,8 @@ timeout -s TERM -k 10s 120s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm --pull=never \
-  --memory=4g --memory-swap=4g \
-  --cpus=1 --pids-limit=64 \
+  --memory=6g --memory-swap=6g \
+  --cpus=2 --pids-limit=64 \
   --network=none --read-only --log-driver=none \
   --tmpfs /tmp:rw,size=512m,mode=1777 \
   --tmpfs /root/.cache:rw,size=128m,mode=1777 \

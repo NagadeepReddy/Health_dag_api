@@ -1,2 +1,2 @@
-grep -nE 'class |def |load_model|execute|InferenceSession|weights' \
-/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_pipeline_model.py
+grep -nE 'model_factory|retrieve_factory|CTAFactoryWrapper|install_cta_spawn_entry|start_model_worker' \
+/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py

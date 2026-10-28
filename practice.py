@@ -1,66 +1,45 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-from pathlib import Path
-import ast
-import shutil
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-p = Path(
-    "/application1/cta_max_true_batch_dev_20261028/"
-    "batch2_candidate/cta_max/grecbase_fusion_full_head_72_max.py"
-)
-assert p.is_file(), "STOP: Batch candidate missing"
-assert shutil.disk_usage("/application1").free > 2 * 1024**3, "STOP: Low disk space"
+BASE=/application1/cta_max_true_batch_dev_20261028
+LOG="$BASE/batch2_after_sibling_fix.log"
 
-src = p.read_text()
-marker = "CTA_BATCH_SIBLING_POOL_FIX"
-assert marker not in src, "STOP: Fix already installed"
+if [ ! -f "$BASE/batch2_candidate/cta_max/run_batch2_live_max_inference.py" ]; then
+  echo "STOP: Existing batch-2 runner missing"
+elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ]; then
+  echo "STOP: Insufficient available memory"
+elif [ "$(df -Pk /application1 | awk 'NR==2 {print $4}')" -lt 10485760 ]; then
+  echo "STOP: Insufficient /application1 disk space"
+else
+  timeout --signal=TERM --kill-after=10s 360s \
+  podman --root /application1/podman/storage \
+    --runroot /run/containers/storage \
+    run --rm -i --pull=never \
+    --network=none \
+    --memory=16g --memory-swap=16g \
+    --pids-limit=32 \
+    --tmpfs /tmp:rw,size=1g \
+    -v "$PWD:/workspace:ro" \
+    -v "$BASE/batch2_candidate:/batchdev:ro" \
+    -w /workspace \
+    -e HOME=/tmp \
+    -e TMPDIR=/tmp \
+    -e XDG_CACHE_HOME=/tmp/cache \
+    -e MODULAR_CACHE_DIR=/tmp/modular \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    -e OMP_NUM_THREADS=1 \
+    -e MKL_NUM_THREADS=1 \
+    -e OPENBLAS_NUM_THREADS=1 \
+    -e PYTHONPATH=/batchdev:/workspace \
+    --entrypoint /opt/venv/bin/python3 \
+    localhost/cta-max-faiss:local \
+    -B -m cta_max.run_batch2_live_max_inference \
+    > "$LOG" 2>&1
 
-tree = ast.parse(src)
-matches = [
-    n for n in ast.walk(tree)
-    if isinstance(n, ast.Assign)
-    and any(isinstance(t, ast.Name) and t.id == "sibling" for t in n.targets)
-]
-
-assert len(matches) == 1, "STOP: Sibling assignment ambiguous"
-node = matches[0]
-assert node.lineno == node.end_lineno, "STOP: Assignment layout differs"
-
-old = ast.get_source_segment(src, node)
-for expected in (
-    "ops.sum(sibling_stack, axis=1)",
-    "ops.max(sibling_stack, axis=1)",
-    "ops.reshape(remaining[66], [2, 1])",
-):
-    assert expected in old, f"STOP: Unexpected sibling expression: {expected}"
-
-lines = src.splitlines(keepends=True)
-indent = lines[node.lineno - 1][:node.col_offset]
-
-replacement = f"""# {marker}
-sibling_sum = ops.reshape(ops.sum(sibling_stack, axis=1), [2, 128])
-sibling_max = ops.reshape(ops.max(sibling_stack, axis=1), [2, 128])
-sibling_count = ops.cast(ops.reshape(remaining[66], [2, 1]), DType.float32)
-sibling = ops.concat([
-    sibling_sum / (sibling_count + ops.constant(1e-7, dtype=DType.float32, device=device)),
-    sibling_max
-], axis=1)"""
-
-new_lines = [indent + line + "\n" for line in replacement.splitlines()]
-updated = "".join(lines[:node.lineno - 1] + new_lines + lines[node.end_lineno:])
-
-ast.parse(updated)
-
-backup = p.with_name(p.name + ".before_sibling_pool_fix.bak")
-assert not backup.exists(), "STOP: Backup already exists"
-
-backup.write_bytes(p.read_bytes())
-p.write_text(updated)
-
-print("SIBLING POOLING FIX: INSTALLED")
-print("EXPECTED SIBLING OUTPUT: (2, 256)")
-print("BACKUP: PASS")
-print("SYNTAX: PASS")
-print("DS CODE: UNCHANGED")
-print("WORKING MODEL: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
-PY
+  RC=$?
+  echo "TEST EXIT CODE: $RC"
+  echo "=== BATCH-2 RESULTS ==="
+  grep -E 'PASS|FAILED|Error|Traceback|CTA BRANCH|OUTPUT SHAPE|DIFFERENCE|Killed|STOP:' \
+    "$LOG" | tail -35 || true
+  echo "=== FINAL LOG ==="
+  tail -12 "$LOG"
+fi

@@ -1,3 +1,6 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-grep -nE 'CTA HTTP FANOUT|CTA MAX REQUEST UNWRAPPED|CTA NATIVE_RESPONSE_TYPES|CTA WORKER RESPONSE IDS: \[RequestID|CTA HTTP QUEUE ITEM|CTA NATIVE HTTP STATUS' \
-/application1/cta_env_e2e_1028.log | tail -25
+grep -RInE \
+'def open_channel|def response_worker|response_worker|response_queue.get|SchedulerResult' \
+/opt/venv/lib/python3.12/site-packages/max/serve/queues.py \
+/opt/venv/lib/python3.12/site-packages/max/serve/pipelines \
+--include='*.py' 2>/dev/null | head -65

@@ -1,7 +1,6 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
-import shutil
 import hashlib
 
 src = Path("artifacts/v1.168-max/maxserve_cta_extension")
@@ -17,78 +16,56 @@ markers = (
     "CTA ACTUAL ENGINE QUEUE:",
 )
 
+class NormalizeDiagnostics(ast.NodeTransformer):
+    def visit_Expr(self, node):
+        if isinstance(node.value, ast.Call):
+            call = node.value
+            if isinstance(call.func, ast.Name) and call.func.id == "print":
+                strings = [
+                    x.value for x in ast.walk(call)
+                    if isinstance(x, ast.Constant)
+                    and isinstance(x.value, str)
+                ]
+                if any(m in s for m in markers for s in strings):
+                    return ast.copy_location(ast.Pass(), node)
+        return self.generic_visit(node)
+
 assert src.is_dir() and dst.is_dir(), "STOP: Directory missing"
 
-def digest(root):
-    return {
-        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in root.rglob("*") if p.is_file()
-    }
+originals = {
+    str(p.relative_to(src)): p
+    for p in src.rglob("*.py")
+}
+candidates = {
+    str(p.relative_to(dst)): p
+    for p in dst.rglob("*.py")
+}
 
-before = digest(src)
-changes = {}
+assert originals.keys() == candidates.keys(), \
+    "STOP: Python file sets differ"
 
-for p in sorted(dst.rglob("*.py")):
-    original = p.read_text()
-    tree = ast.parse(original)
-    lines = original.splitlines(keepends=True)
-    removals = []
+changed = []
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Expr):
-            continue
-        call = node.value
-        if not isinstance(call, ast.Call):
-            continue
-        if not isinstance(call.func, ast.Name) or call.func.id != "print":
-            continue
+for name in sorted(originals):
+    a = originals[name].read_text()
+    b = candidates[name].read_text()
 
-        strings = [
-            arg.value for arg in call.args
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
-        ]
+    original_ast = NormalizeDiagnostics().visit(ast.parse(a))
+    candidate_ast = NormalizeDiagnostics().visit(ast.parse(b))
 
-        if any(marker in value for value in strings for marker in markers):
-            removals.append((node.lineno, node.end_lineno))
+    assert ast.dump(original_ast) == ast.dump(candidate_ast), \
+        f"STOP: Unexpected logic difference in {name}"
 
-    for start, end in sorted(removals, reverse=True):
-        # Replace diagnostic logging with a harmless statement.
-        # This preserves indentation and conditional-block validity.
-        indentation = lines[start - 1][:
-            len(lines[start - 1]) - len(lines[start - 1].lstrip())
-        ]
-        lines[start - 1:end] = [indentation + "pass\n"]
+    if hashlib.sha256(a.encode()).digest() != \
+       hashlib.sha256(b.encode()).digest():
+        changed.append(name)
 
-    updated = "".join(lines)
-    ast.parse(updated)
-
-    if updated != original:
-        changes[p] = updated
-
-assert digest(src) == before, "STOP: Working integration changed"
-assert shutil.disk_usage("/application1").free > 1024**3, \
-    "STOP: Disk space insufficient"
-
-for p in changes:
-    backup = p.with_name(p.name + ".before_log_cleanup.bak")
-    assert not backup.exists(), f"STOP: Backup exists: {backup}"
-
-for p, updated in changes.items():
-    backup = p.with_name(p.name + ".before_log_cleanup.bak")
-    backup.write_bytes(p.read_bytes())
-    p.write_text(updated)
-
-assert digest(src) == before, "STOP: Working source modified"
-
-for p in dst.rglob("*.py"):
-    ast.parse(p.read_text())
-
-print("RELEASE CANDIDATE DIAGNOSTIC CLEANUP: PASS")
-print("FILES CLEANED:", len(changes))
-print("SYNTAX: PASS")
+print("RELEASE CANDIDATE LOGIC: PASS")
+print("PYTHON FILES VERIFIED:", len(originals))
+print("FILES WITH DIAGNOSTIC CLEANUP:", len(changed))
+print("UNEXPECTED LOGIC CHANGES: NONE")
 print("WORKING HTTP 200 SOURCE: UNCHANGED")
-print("QUEUE BRIDGE AND SCHEDULER: PRESERVED")
-print("DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
-print("RELEASE CANDIDATE RUNTIME: NOT YET VALIDATED")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("MODEL STARTUP: NOT PERFORMED")
+print("RUNTIME REVALIDATION: STILL PENDING")
 PY

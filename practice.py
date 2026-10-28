@@ -7,9 +7,9 @@ timeout 25s podman \
   --entrypoint /bin/sh \
   localhost/cta-max-faiss:local \
   -c '
-    FILE=/opt/venv/lib/python3.12/site-packages/max/serve/pipelines/llm.py
-    echo "=== BASE PIPELINE LIFECYCLE ==="
-    nl -ba "$FILE" | sed -n "240,290p"
-    echo "=== TOKEN GENERATOR LIFECYCLE ==="
-    nl -ba "$FILE" | sed -n "400,455p"
+    FILE=/opt/venv/lib/python3.12/site-packages/max/serve/queue/zmq_queue.py
+    echo "=== ZMQ CONFIGURATION AND ENDPOINTS ==="
+    grep -n -A 95 -B 5 "class ZmqConfig" "$FILE" | head -110
+    echo "=== SOCKET BIND / CONNECT ==="
+    grep -n -E "bind\(|connect\(|class ZmqSocket|def __init__" "$FILE" | head -35
   '

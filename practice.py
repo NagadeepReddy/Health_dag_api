@@ -3,78 +3,84 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
+import shutil
 
 base = Path("/application1/cta_max_true_batch_dev_20261028")
-src = base / "cta_max"
-entry = src / "grecbase_fusion_full_head_72_max.py"
-report = base / "BATCH2_CHANGE_MAP.txt"
+target = base / "maxserve_cta_extension/cta_batch2_contract.py"
 
-assert entry.is_file(), "STOP: Active graph missing"
-assert not report.exists(), "STOP: Batch map already exists"
+assert base.is_dir(), "STOP: Batch workspace missing"
+assert not target.exists(), "STOP: Batch adapter already exists"
+assert shutil.disk_usage("/application1").free > 1024**3, \
+    "STOP: Insufficient disk space"
 
-pending = [entry]
-visited = set()
-lines = ["CTA TRUE BATCH-2 IMPLEMENTATION MAP", ""]
+source = '''
+"""Batch-two tensor contract for CTA MAX development.
 
-while pending:
-    p = pending.pop(0)
-    if p in visited:
-        continue
+Integration-only code. Does not change the original DS pipeline.
+"""
 
-    visited.add(p)
-    source = p.read_text()
-    tree = ast.parse(source)
-    blockers = []
+EXPECTED_INPUTS = 72
+EXPECTED_FEATURES = 2048
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if node.module and node.module.startswith("cta_max."):
-                dependency = src / (
-                    node.module.removeprefix("cta_max.").replace(".", "/")
-                    + ".py"
-                )
-                if dependency.is_file() and dependency not in visited:
-                    pending.append(dependency)
 
-        if isinstance(node, ast.Call):
-            name = ast.unparse(node.func)
-            relevant = (
-                "TensorType" in name
-                or "reshape" in name
-                or "zeros" in name
-                or "ones" in name
-            )
-            if not relevant:
-                continue
+def pack_two_requests(first, second):
+    import numpy as np
 
-            fragment = ast.get_source_segment(source, node) or ""
-            if "[1," in fragment or "[1]" in fragment or "(1," in fragment:
-                blockers.append(
-                    f"  line {node.lineno}: "
-                    + fragment.splitlines()[0][:150]
-                )
+    if len(first) != EXPECTED_INPUTS or len(second) != EXPECTED_INPUTS:
+        raise ValueError("CTA MAX requires 72 inputs per request")
 
-    lines.append(f"FILE: {p.relative_to(base)}")
-    lines.append(f"SINGLETON-SHAPE CANDIDATES: {len(blockers)}")
-    lines.extend(blockers)
-    lines.append("")
+    packed = []
 
-report.write_text("\n".join(lines) + "\n")
+    for index, (a, b) in enumerate(zip(first, second)):
+        a = np.asarray(a)
+        b = np.asarray(b)
 
-print("ACTIVE GRAPH DEPENDENCY MAP: PASS")
-print("ACTIVE PYTHON MODULES:", len(visited))
-print("SINGLETON-SHAPE CANDIDATES:",
-      sum("SINGLETON-SHAPE CANDIDATES:" in x and
-          int(x.split(":")[-1]) or 0
-          for x in lines if x.startswith("SINGLETON-SHAPE CANDIDATES:")))
+        if a.ndim < 1 or a.shape[0] != 1:
+            raise ValueError(f"Input {index}: first batch dimension must be 1")
 
-print("\n=== MODULES REQUIRING REVIEW ===")
-for line in lines:
-    if line.startswith("FILE:") or line.startswith("SINGLETON-SHAPE"):
-        print(line)
+        if a.shape != b.shape:
+            raise ValueError(f"Input {index}: shapes differ")
 
-print("\nREPORT:", report)
+        if a.dtype != b.dtype:
+            raise ValueError(f"Input {index}: dtypes differ")
+
+        result = np.concatenate((a, b), axis=0)
+
+        if result.shape != (2, *a.shape[1:]):
+            raise AssertionError(f"Input {index}: unexpected batch shape")
+
+        packed.append(np.ascontiguousarray(result))
+
+    return packed
+
+
+def split_two_outputs(output):
+    import numpy as np
+
+    output = np.asarray(output)
+
+    if output.shape != (2, EXPECTED_FEATURES):
+        raise ValueError(
+            f"Expected MAX output (2, 2048), got {output.shape}"
+        )
+
+    if not np.isfinite(output).all():
+        raise ValueError("MAX output contains non-finite values")
+
+    return output[0:1].copy(), output[1:2].copy()
+'''
+
+ast.parse(source)
+target.write_text(source)
+ast.parse(target.read_text())
+
+print("BATCH-2 INPUT/OUTPUT ADAPTER: CREATED")
+print("INPUT CONTRACT: 2 x 72")
+print("EXPECTED MAX OUTPUT: (2, 2048)")
+print("SYNTAX: PASS")
+print("LOCATION:", target)
+print("BATCH-2 GRAPH: NOT YET IMPLEMENTED")
 print("WORKING HTTP 200: UNCHANGED")
-print("DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("MODEL STARTUP: NOT PERFORMED")
 PY

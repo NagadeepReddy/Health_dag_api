@@ -3,7 +3,7 @@ podman --root /application1/podman/storage \
   run --rm --pull=never \
   --memory=512m --cpus=1 --pids-limit=64 \
   --network=none --read-only --log-driver=none \
-  --entrypoint /bin/grep \
+  --entrypoint /bin/sed \
   localhost/cta-max-faiss:local \
-  -Rn -A 65 '^class PipelineArchitecture' \
-  /opt/venv/lib/python3.12/site-packages/max/pipelines/lib
+  -n '1,110p' \
+  /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/registry.py

@@ -1,1 +1,10 @@
-dmesg -T | grep -iE 'out of memory|oom-kill|killed process|memory cgroup' | tail -20
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --memory=512m --cpus=1 --pids-limit=64 \
+  --network=none --read-only --log-driver=none \
+  --entrypoint /bin/grep \
+  localhost/cta-max-faiss:local \
+  -Rn -B 10 -A 20 \
+  'Model Worker process is not healthy' \
+  /opt/venv/lib/python3.12/site-packages/max/serve

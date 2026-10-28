@@ -1,20 +1,76 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
+from pathlib import Path
+import ast
 
-echo "=== HTTP ROUTE: QUEUE SELECTION AND REQUEST REGISTRATION ==="
-nl -ba artifacts/v1.168-max/maxserve_cta_extension/cta_router.py \
-  | sed -n '18,90p'
+base = Path("artifacts/v1.168-max/maxserve_cta_extension")
+router = base / "cta_router.py"
+pipeline = base / "cta_http_pipeline.py"
 
-echo "=== HTTP PIPELINE: ENGINE QUEUE INITIALIZATION ==="
-nl -ba artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py \
-  | sed -n '35,90p'
+r = router.read_text()
+p = pipeline.read_text()
 
-echo "=== MAX: PENDING REQUEST REGISTRATION AND RESPONSE DISPATCH ==="
-timeout 15s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never \
-  --network=none --read-only \
-  --memory=128m --pids-limit=16 \
-  --entrypoint /bin/sh \
-  localhost/cta-max-faiss:local \
-  -c 'sed -n "153,173p;225,255p" /opt/venv/lib/python3.12/site-packages/max/serve/scheduler/queues.py'
+assert "CTA ROUTE QUEUE ID:" not in r, "STOP: route already instrumented"
+assert "CTA RECEIVER ENGINE ID:" not in p, "STOP: receiver already instrumented"
+
+route_anchor = "    request_id = request.state.request_id"
+receiver_anchor = '    print("CTA RESPONSE WORKER LOOP: START", flush=True)'
+socket_anchor = '                        "CTA RESPONSE ID MATCH:",'
+
+assert r.count(route_anchor) == 1, "STOP: route anchor changed"
+assert p.count(receiver_anchor) == 1, "STOP: receiver anchor changed"
+assert p.count(socket_anchor) == 1, "STOP: socket anchor changed"
+
+r2 = r.replace(
+    route_anchor,
+    route_anchor + '''
+    import time
+    print(
+        "CTA ROUTE QUEUE ID:", id(queue),
+        "TIME:", time.monotonic(),
+        "PENDING:", len(getattr(queue, "pending_out_queues", {})),
+        flush=True,
+    )''',
+    1
+)
+
+p2 = p.replace(
+    receiver_anchor,
+    '''    import time
+    print(
+        "CTA RECEIVER ENGINE ID:", id(self),
+        "TIME:", time.monotonic(),
+        flush=True,
+    )
+''' + receiver_anchor,
+    1
+)
+
+p2 = p2.replace(
+    socket_anchor,
+    '''                        "ENGINE_ID:", id(engine),
+                        "TIME:", __import__("time").monotonic(),
+''' + socket_anchor,
+    1
+)
+
+ast.parse(r2)
+ast.parse(p2)
+
+backups = [
+    (router, router.with_name(router.name + ".before_queue_identity.bak"), r2),
+    (pipeline, pipeline.with_name(pipeline.name + ".before_queue_identity.bak"), p2),
+]
+
+assert all(not backup.exists() for _, backup, _ in backups), \
+    "STOP: backup already exists"
+
+for original, backup, updated in backups:
+    backup.write_bytes(original.read_bytes())
+    original.write_text(updated)
+
+print("QUEUE IDENTITY DIAGNOSTICS: INSTALLED")
+print("BACKUPS: PASS")
+print("PYTHON SYNTAX: PASS")
+print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
+PY

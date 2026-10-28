@@ -1,56 +1,54 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
+import os
 
-base = Path("/application1/cta_max_true_batch_dev_20261028")
-roots = [
-    base / "cta_max",
-    base / "batch2_candidate/cta_max",
-]
+repo = Path.cwd()
+candidate = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+target = candidate / "grecbase_integration_weights"
+filename = "att_pooling.rotary_emb.inv_freq.npy"
 
-terms = (
-    "No exported 256-d",
-    "rotary",
-    "inv_freq",
-    "weights_registry",
-    "grecbase_integration_weights",
+assert candidate.is_dir(), "STOP: Batch candidate missing"
+
+matches = sorted(
+    (repo / "artifacts/v1.168-max").rglob(filename)
 )
 
-for root in roots:
-    print("\n=== SOURCE:", root, "===")
-    if not root.is_dir():
-        print("MISSING")
-        continue
+print("EXISTING ROTARY EXPORTS:", len(matches))
+for p in matches:
+    print("SOURCE:", p)
 
-    for name in (
-        "run_live_max_inference.py",
-        "run_batch2_live_max_inference.py",
-        "grecbase_fusion_full_head_72_max.py",
-        "grecbase_fusion_order_correct_max.py",
-    ):
-        p = root / name
-        if not p.is_file():
-            continue
-        lines = p.read_text().splitlines()
-        matches = [
-            i for i, line in enumerate(lines)
-            if any(term.lower() in line.lower() for term in terms)
-        ]
-        if matches:
-            print("\nFILE:", name)
-            shown = set()
-            for i in matches[:10]:
-                for j in range(max(0, i-2), min(len(lines), i+3)):
-                    if j not in shown:
-                        print(f"{j+1}: {lines[j][:180]}")
-                        shown.add(j)
+valid = [
+    p for p in matches
+    if p.parent.name == "grecbase_integration_weights"
+    and p.stat().st_size > 0
+    and p.open("rb").read(6) == b"\x93NUMPY"
+]
 
-    for folder in root.rglob("grecbase_integration_weights"):
-        if folder.is_dir():
-            print("\nEXPORTED ROTARY FILES:")
-            for p in sorted(folder.glob("*rotary*")):
-                print(p.name, p.stat().st_size, "bytes")
+assert len(valid) == 1, (
+    "STOP: Cannot identify exactly one valid original weight directory"
+)
 
-print("\nWORKING MODEL: UNCHANGED")
-print("BATCH MODEL: NOT STARTED")
+source = valid[0].parent
+files = list(source.glob("*.npy"))
+
+assert len(files) >= 1, "STOP: No exported NPY weights"
+
+container_source = "/workspace/" + source.relative_to(repo).as_posix()
+
+if target.is_symlink():
+    assert os.readlink(target) == container_source, \
+        "STOP: Existing link points somewhere else"
+    print("BATCH WEIGHT LINK: ALREADY CORRECT")
+else:
+    assert not target.exists(), \
+        "STOP: Candidate already contains a weight directory"
+    os.symlink(container_source, target)
+    print("BATCH WEIGHT LINK: CREATED")
+
+print("EXPORTED WEIGHT FILES:", len(files))
+print("ROTARY EXPORT: FOUND")
+print("CONTAINER WEIGHT PATH:", container_source)
+print("WORKING MODEL: UNCHANGED")
 print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
 PY

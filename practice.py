@@ -1,3 +1,5 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-nl -ba artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py \
-| sed -n '1,240p'
+echo "=== NATIVE RESPONSE RECEIVER DIAGNOSTICS ==="
+grep -nEi \
+'CTA RECEIVER|CTA QUEUE INITIALIZED|CTA ZMQ|response.worker|response.queue|worker.health|Traceback|Exception|KeyError|RuntimeError' \
+/application1/cta_native_corrected_1028.log \
+| tail -65

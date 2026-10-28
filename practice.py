@@ -1,25 +1,67 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  events --stream=false \
-  --since 2026-10-28T19:00:00Z \
-  --until 2026-10-28T20:00:00Z \
-  --filter container=cta_native_corrected_1028 \
-  --format json | \
-python3 -S -B -c '
-import sys, json
-for line in sys.stdin:
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
+from pathlib import Path
+import ast
+import shutil
+
+p = Path(
+    "artifacts/v1.168-max/maxserve_cta_extension/"
+    "cta_http_pipeline.py"
+)
+
+source = p.read_text()
+backup = p.with_name(p.name + ".before_response_trace.bak")
+
+anchor = "        return _cta_original_get_nowait(self)"
+marker = "CTA RESPONSE SOCKET RECEIVED"
+
+assert source.count(anchor) == 1, "STOP: unexpected receiver implementation"
+assert marker not in source, "STOP: tracing already installed"
+assert not backup.exists(), "STOP: backup already exists"
+
+updated = source.replace(
+    anchor,
+    """        item = _cta_original_get_nowait(self)
+        print(
+            "CTA RESPONSE SOCKET RECEIVED:",
+            type(item).__name__,
+            "ids=",
+            [str(k) for k in item.keys()] if isinstance(item, dict) else "N/A",
+            flush=True,
+        )
+        return item""",
+    1,
+)
+
+updated += """
+
+# CTA-only diagnostic: trace the MAX response-worker lifecycle.
+from max.serve.scheduler.queues import EngineQueue as _CTAEngineQueue
+
+_cta_original_response_worker = _CTAEngineQueue.response_worker
+
+async def _cta_traced_response_worker(self):
+    print("CTA RESPONSE WORKER LOOP: START", flush=True)
     try:
-        e = json.loads(line)
-    except ValueError:
-        continue
-    status = e.get("Status", e.get("status", ""))
-    attrs = e.get("Attributes", e.get("attributes", {})) or {}
-    print(
-        "TIME:", e.get("Time", e.get("time")),
-        "| EVENT:", status,
-        "| SIGNAL:", attrs.get("signal", "not recorded"),
-        "| EXIT:", attrs.get("exitCode", attrs.get("exit_code", "not recorded"))
-    )
-'
+        return await _cta_original_response_worker(self)
+    except BaseException as exc:
+        print(
+            "CTA RESPONSE WORKER LOOP: EXIT",
+            type(exc).__name__,
+            repr(exc),
+            flush=True,
+        )
+        raise
+
+_CTAEngineQueue.response_worker = _cta_traced_response_worker
+"""
+
+ast.parse(updated)
+shutil.copy2(p, backup)
+p.write_text(updated)
+
+print("RESPONSE RECEIVER DIAGNOSTICS: INSTALLED")
+print("BACKUP: PASS")
+print("SYNTAX: PASS")
+print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
+PY

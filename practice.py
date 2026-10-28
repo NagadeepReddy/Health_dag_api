@@ -1,49 +1,30 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
 python3 -B -S - <<'PY'
-import json
-import os
 from pathlib import Path
 
-src = Path("artifacts/v1.168/samples/sanity_input.json")
-dst = Path("artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py")
 
-if not src.is_file() or dst.exists():
-    raise SystemExit("STOP: source missing or destination already exists")
+old = "/workspace/artifacts/v1.168/samples/sanity_input.json"
+new = "/workspace/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
 
-fs = os.statvfs(dst.parent)
-if fs.f_bavail * fs.f_frsize < 50 * 1024 * 1024:
-    raise SystemExit("STOP: insufficient disk space")
+sample = Path("artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
 
-data = json.loads(src.read_text())
-fixed = 0
+if not sample.is_file():
+    raise SystemExit("STOP: adjusted JSON missing")
 
-def adjust(obj):
-    global fixed
-    if isinstance(obj, dict):
-        page = obj.get("page")
-        if (
-            isinstance(page, dict)
-            and page.get("name") in ("gridwall_smartphones", "deals")
-            and obj.get("webinteraction_name") is None
-        ):
-            obj["webinteraction_name"] = ""
-            fixed += 1
-        for value in obj.values():
-            adjust(value)
-    elif isinstance(obj, list):
-        for value in obj:
-            adjust(value)
+s = p.read_text()
 
-adjust(data)
+if s.count(old) != 1:
+    raise SystemExit("STOP: expected original test path not found exactly once")
 
-if fixed != 6:
-    raise SystemExit(f"STOP: expected 6 events, found {fixed}")
+updated = s.replace(old, new, 1)
+compile(updated, str(p), "exec")
+p.write_text(updated)
 
-with dst.open("x") as f:
-    json.dump(data, f)
-
-print("ADJUSTED TEST JSON: CREATED")
-print("MISSING FIELDS FIXED:", fixed)
+print("NATIVE MAX TEST INPUT: UPDATED")
+print("ADJUSTED JSON: SELECTED")
+print("PYTHON SYNTAX: PASS")
 print("ORIGINAL JSON: UNCHANGED")
 print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
 PY

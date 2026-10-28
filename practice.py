@@ -1,2 +1,9 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-sed -n '1,160p' artifacts/v1.168-max/maxserve_cta_extension/cta_context.py
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --memory=512m --cpus=1 --pids-limit=64 \
+  --network=none --read-only --log-driver=none \
+  --entrypoint /bin/grep \
+  localhost/cta-max-faiss:local \
+  -n -B 8 -A 25 -E 'class BaseContext|tag_field|tag=' \
+  /opt/venv/lib/python3.12/site-packages/max/interfaces/context.py

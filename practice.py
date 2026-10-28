@@ -1,42 +1,27 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
 python3 -B -S - <<'PY'
 from pathlib import Path
-import shutil
 
 p = Path("artifacts/v1.168-max/cta_max/run_live_max_inference.py")
-backup = p.with_name(p.name + ".pre_memory_cleanup.bak")
-
 s = p.read_text()
-target = '    model = getattr(infer_max_live, "_max_model", None)'
-replacement = '''    # Release temporary checkpoint references before MAX compilation.
-    # weights_registry retains the required NumPy weight arrays.
-    del state
-    import gc
-    gc.collect()
+backup = Path(str(p) + ".pre_memory_cleanup.bak")
 
-''' + target
+checks = {
+    "Backup exists": backup.is_file(),
+    "Checkpoint cleanup installed": "del state" in s,
+    "Garbage collection installed": "gc.collect()" in s,
+    "Weight registry preserved": "weights_registry=weights_registry" in s,
+    "MAX cache preserved": 'infer_max_live._max_model = model' in s,
+    "Cleanup before compilation": s.index("del state") < s.index("model = session.load("),
+}
 
-if s.count(target) != 1:
-    raise SystemExit("STOP: expected insertion point not unique")
+for name, passed in checks.items():
+    print(f"{name}: {'PASS' if passed else 'FAIL'}")
 
-if "del state\n    import gc" in s:
-    raise SystemExit("STOP: cleanup already installed")
-
-if backup.exists():
-    raise SystemExit("STOP: backup already exists")
-
-updated = s.replace(target, replacement, 1)
-compile(updated, str(p), "exec")
-
-if shutil.disk_usage("/application1").free < 1024**3:
-    raise SystemExit("STOP: insufficient disk space")
-
-shutil.copy2(p, backup)
-p.write_text(updated)
-
-print("MAX TEMPORARY CHECKPOINT CLEANUP: INSTALLED")
-print("BACKUP:", backup)
+compile(s, str(p), "exec")
 print("PYTHON SYNTAX: PASS")
-print("DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
+
+if not all(checks.values()):
+    raise SystemExit("STOP: validation failed")
 PY

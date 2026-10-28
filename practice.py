@@ -1,2 +1,5 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-python3 -I -S -B -c 'import ast,pathlib; d=pathlib.Path("artifacts/v1.168-max/maxserve_cta_extension"); files=sorted(d.glob("*.py")); [ast.parse(p.read_text(),filename=str(p)) for p in files]; print("MAX EXTENSION SYNTAX: PASS"); print("FILES CHECKED:",len(files)); print("NO MAX STARTUP OR DS EXECUTION")'
+df -h /application1 && \
+tar -czf /application1/cta_max_extension_postfix_20261027.tar.gz \
+artifacts/v1.168-max/maxserve_cta_extension && \
+ls -lh /application1/cta_max_extension_postfix_20261027.tar.gz

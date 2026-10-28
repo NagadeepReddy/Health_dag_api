@@ -1,14 +1,11 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
 BASE=/application1/cta_max_true_batch_dev_20261028
-LOG="$BASE/batch2_after_sibling_fix.log"
+LOG="$BASE/batch2_verified_execution.log"
 
-if [ ! -f "$BASE/batch2_candidate/cta_max/run_batch2_live_max_inference.py" ]; then
-  echo "STOP: Existing batch-2 runner missing"
-elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ]; then
-  echo "STOP: Insufficient available memory"
-elif [ "$(df -Pk /application1 | awk 'NR==2 {print $4}')" -lt 10485760 ]; then
-  echo "STOP: Insufficient /application1 disk space"
+if [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ] || \
+   [ "$(df -Pk /application1 | awk 'NR==2 {print $4}')" -lt 10485760 ]; then
+  echo "STOP: Insufficient RAM or disk"
 else
   timeout --signal=TERM --kill-after=10s 360s \
   podman --root /application1/podman/storage \
@@ -31,15 +28,46 @@ else
     -e OPENBLAS_NUM_THREADS=1 \
     -e PYTHONPATH=/batchdev:/workspace \
     --entrypoint /opt/venv/bin/python3 \
-    localhost/cta-max-faiss:local \
-    -B -m cta_max.run_batch2_live_max_inference \
-    > "$LOG" 2>&1
+    localhost/cta-max-faiss:local -B - <<'PY' > "$LOG" 2>&1
+from pathlib import Path
+import numpy as np
+import torch
+from cta_max.run_batch2_live_max_inference import infer_max_live
+
+paths = list(Path("artifacts/v1.168-max").rglob("real_sanity_model_in.pt"))
+assert len(paths) == 1, "STOP: Real input not uniquely located"
+
+data = torch.load(paths[0], map_location="cpu", weights_only=True)
+
+print("REAL BATCH-2: START", flush=True)
+output = infer_max_live(data)
+
+if isinstance(output, (tuple, list)) and len(output) == 1:
+    output = output[0]
+if isinstance(output, torch.Tensor):
+    output = output.detach().cpu().numpy()
+
+result = np.asarray(output)
+print("OUTPUT SHAPE:", result.shape, flush=True)
+
+assert result.shape == (2, 2048), "STOP: Incorrect batch output"
+assert np.isfinite(result).all(), "STOP: Non-finite output"
+
+diff = float(np.max(np.abs(result[0] - result[1])))
+print("DUPLICATE DIFFERENCE:", diff, flush=True)
+
+assert np.allclose(result[0], result[1], rtol=1e-5, atol=1e-5), \
+    "STOP: Duplicate output mismatch"
+
+print("REAL BATCH-2 INFERENCE: PASS", flush=True)
+print("DUPLICATE CONSISTENCY: PASS", flush=True)
+PY
 
   RC=$?
   echo "TEST EXIT CODE: $RC"
-  echo "=== BATCH-2 RESULTS ==="
-  grep -E 'PASS|FAILED|Error|Traceback|CTA BRANCH|OUTPUT SHAPE|DIFFERENCE|Killed|STOP:' \
-    "$LOG" | tail -35 || true
-  echo "=== FINAL LOG ==="
-  tail -12 "$LOG"
+  echo "=== RESULTS ==="
+  grep -E 'PASS|START|SHAPE|DIFFERENCE|STOP|Error|Traceback|Killed|Failed' \
+    "$LOG" | tail -30 || true
+  echo "=== LAST LOG LINES ==="
+  tail -8 "$LOG"
 fi

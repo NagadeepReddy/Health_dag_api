@@ -7,9 +7,9 @@ timeout 25s podman \
   --entrypoint /bin/sh \
   localhost/cta-max-faiss:local \
   -c '
-    echo "=== TOKEN GENERATOR SOURCE ==="
-    grep -RnE \
-      "class TokenGeneratorPipeline|def __aenter__|response_worker\(" \
-      /opt/venv/lib/python3.12/site-packages/max/serve/pipelines \
-      --include="*.py" | head -65
+    FILE=/opt/venv/lib/python3.12/site-packages/max/serve/pipelines/llm.py
+    echo "=== BASE PIPELINE LIFECYCLE ==="
+    nl -ba "$FILE" | sed -n "240,290p"
+    echo "=== TOKEN GENERATOR LIFECYCLE ==="
+    nl -ba "$FILE" | sed -n "400,455p"
   '

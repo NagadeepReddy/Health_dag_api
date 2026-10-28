@@ -1,58 +1,66 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
+from pathlib import Path
+import ast
 
-BASE=/application1/cta_max_true_batch_dev_20261028
-RUNNER="$BASE/native_concurrent2_realfile.py"
-CANDIDATE=/application1/cta_max_native_release_candidate_20261028
-LOG="$BASE/native_concurrent2_cachefix.log"
+base = Path("/application1/cta_max_true_batch_dev_20261028")
+source = Path("/application1/cta_max_native_release_candidate_20261028/cta_native_e2e_test.py")
+runner = base / "native_concurrent2_static.py"
+helper = base / "cta_native_benchmark_helper.py"
 
-if [ ! -f "$RUNNER" ] || [ ! -f "$CANDIDATE/cta_native_e2e_test.py" ]; then
-  echo "STOP: Required files missing"
-elif [ -e "$LOG" ]; then
-  echo "STOP: Log already exists"
-elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ]; then
-  echo "STOP: Available RAM below 20 GiB"
-elif [ "$(df -Pk /application1 | awk 'NR==2 {print $4}')" -lt 10485760 ]; then
-  echo "STOP: Insufficient disk space"
-else
-  timeout --signal=TERM --kill-after=10s 420s \
-  podman \
-    --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    run --rm -i --pull=never \
-    --network=none --read-only --log-driver=none \
-    --memory=12g --memory-swap=12g \
-    --cpus=2 --pids-limit=256 \
-    --tmpfs /tmp:rw,size=1g,mode=1777 \
-    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=512m,mode=1777 \
-    -v "$PWD:/workspace:ro" \
-    -v "$CANDIDATE:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
-    -v "$RUNNER:/batchdev/native_concurrent2_realfile.py:ro" \
-    -w /workspace \
-    -e HOME=/tmp \
-    -e TMPDIR=/tmp \
-    -e XDG_CACHE_HOME=/tmp/cache \
-    -e MODULAR_CACHE_DIR=/tmp/modular \
-    -e PYTHONDONTWRITEBYTECODE=1 \
-    -e PYTHONUNBUFFERED=1 \
-    -e OMP_NUM_THREADS=1 \
-    -e MKL_NUM_THREADS=1 \
-    -e OPENBLAS_NUM_THREADS=1 \
-    -e modelId=rt-pzaas-cta-offers-v1 \
-    -e expThrottleLabel=T \
-    -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
-    --entrypoint /opt/venv/bin/python3 \
-    localhost/cta-max-faiss:local \
-    -B /batchdev/native_concurrent2_realfile.py \
-    > "$LOG" 2>&1
+anchor = 'client.post("/v2/cta/predict", json=body)'
 
-  RC=$?
-  echo "BENCHMARK EXIT CODE: $RC"
-  echo "=== PERFORMANCE RESULTS ==="
-  grep -E 'REQUEST [12]:|HTTP STATUSES|WALL SECONDS|THROUGHPUT RPS|MEAN LATENCY|NATIVE CONCURRENT-2|Error|Traceback|Killed|STOP' "$LOG" | tail -25 || true
-  echo "=== LAST LOG LINES ==="
-  tail -12 "$LOG"
+assert source.is_file(), "STOP: Native source missing"
+assert not runner.exists() and not helper.exists(), "STOP: Benchmark files already exist"
 
-  if [ "$RC" -ne 0 ]; then
-    echo "BENCHMARK NOT PASSED - DO NOT RETRY AUTOMATICALLY"
-  fi
-fi
+original = source.read_text()
+assert original.count(anchor) == 1, "STOP: HTTP call structure differs"
+
+updated = original.replace(
+    anchor,
+    '__import__("cta_native_benchmark_helper").benchmark_post(client, body)'
+)
+
+helper_code = '''
+from concurrent.futures import ThreadPoolExecutor
+import copy
+import time
+
+def benchmark_post(client, body):
+    def send(number):
+        start = time.monotonic()
+        response = client.post(
+            "/v2/cta/predict",
+            json=copy.deepcopy(body)
+        )
+        elapsed = time.monotonic() - start
+        print(f"REQUEST {number}: HTTP {response.status_code} LATENCY {elapsed:.3f}s", flush=True)
+        return response, elapsed
+
+    start = time.monotonic()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(send, n) for n in (1, 2)]
+        results = [f.result() for f in futures]
+
+    elapsed = time.monotonic() - start
+    print("HTTP STATUSES:", [r.status_code for r, _ in results], flush=True)
+    print("WALL SECONDS:", round(elapsed, 3), flush=True)
+    print("THROUGHPUT RPS:", round(2 / elapsed, 3), flush=True)
+    print("MEAN LATENCY:", round(sum(t for _, t in results) / 2, 3), flush=True)
+
+    assert all(r.status_code == 200 for r, _ in results)
+    print("NATIVE CONCURRENT-2: PASS", flush=True)
+    return results[0][0]
+'''
+
+ast.parse(updated)
+ast.parse(helper_code)
+
+runner.write_text(updated)
+helper.write_text(helper_code)
+
+print("STATIC BENCHMARK LAUNCHER: CREATED")
+print("PYTHON SYNTAX: PASS")
+print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
+print("DYNAMIC EXEC: REMOVED")
+PY

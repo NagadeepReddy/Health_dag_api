@@ -1,67 +1,48 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-from pathlib import Path
-import ast
-import shutil
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-p = Path(
-    "artifacts/v1.168-max/maxserve_cta_extension/"
-    "cta_http_pipeline.py"
-)
+LOG=/application1/cta_native_response_trace_1028.log
+EXT=artifacts/v1.168-max/maxserve_cta_extension
 
-source = p.read_text()
-backup = p.with_name(p.name + ".before_response_trace.bak")
+if [ -e "$LOG" ]; then
+  echo "STOP: Trace log already exists"
+elif ! grep -q "CTA RESPONSE SOCKET RECEIVED" "$EXT/cta_http_pipeline.py"; then
+  echo "STOP: Receiver tracing not installed"
+elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 16777216 ]; then
+  echo "STOP: Available RAM below 16 GiB"
+else
+  timeout -s TERM -k 8s 170s podman \
+    --root /application1/podman/storage \
+    --runroot /run/containers/storage \
+    run --rm --pull=never \
+    --network=none --read-only --log-driver=none \
+    --memory=8g --memory-swap=8g \
+    --cpus=2 --pids-limit=64 \
+    --tmpfs /tmp:rw,size=256m,mode=1777 \
+    --tmpfs /root/.cache:rw,size=128m,mode=1777 \
+    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
+    -v "$PWD:/workspace:ro" \
+    -w /workspace \
+    -e modelId=rt-pzaas-cta-offers-v1 \
+    -e expThrottleLabel=T \
+    -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    -e PYTHONUNBUFFERED=1 \
+    -e OMP_NUM_THREADS=1 \
+    -e MKL_NUM_THREADS=1 \
+    -e OPENBLAS_NUM_THREADS=1 \
+    --entrypoint /opt/venv/bin/python3 \
+    localhost/cta-max-faiss:local \
+    -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+    > "$LOG" 2>&1
 
-anchor = "        return _cta_original_get_nowait(self)"
-marker = "CTA RESPONSE SOCKET RECEIVED"
+  RC=$?
+  echo "TEST EXIT CODE: $RC"
 
-assert source.count(anchor) == 1, "STOP: unexpected receiver implementation"
-assert marker not in source, "STOP: tracing already installed"
-assert not backup.exists(), "STOP: backup already exists"
+  echo "=== RECEIVER AND HTTP RESULTS ==="
+  grep -nE \
+    'CTA RESPONSE WORKER LOOP|CTA RESPONSE SOCKET RECEIVED|CTA HTTP FANOUT|CTA HTTP QUEUE ITEM|CTA RESPONSE QUEUE SEND|CTA NATIVE HTTP STATUS|CTA RESPONSE:|CTA NATIVE END-TO-END|Traceback|Exception|Error|Killed' \
+    "$LOG" | tail -45 || true
 
-updated = source.replace(
-    anchor,
-    """        item = _cta_original_get_nowait(self)
-        print(
-            "CTA RESPONSE SOCKET RECEIVED:",
-            type(item).__name__,
-            "ids=",
-            [str(k) for k in item.keys()] if isinstance(item, dict) else "N/A",
-            flush=True,
-        )
-        return item""",
-    1,
-)
-
-updated += """
-
-# CTA-only diagnostic: trace the MAX response-worker lifecycle.
-from max.serve.scheduler.queues import EngineQueue as _CTAEngineQueue
-
-_cta_original_response_worker = _CTAEngineQueue.response_worker
-
-async def _cta_traced_response_worker(self):
-    print("CTA RESPONSE WORKER LOOP: START", flush=True)
-    try:
-        return await _cta_original_response_worker(self)
-    except BaseException as exc:
-        print(
-            "CTA RESPONSE WORKER LOOP: EXIT",
-            type(exc).__name__,
-            repr(exc),
-            flush=True,
-        )
-        raise
-
-_CTAEngineQueue.response_worker = _cta_traced_response_worker
-"""
-
-ast.parse(updated)
-shutil.copy2(p, backup)
-p.write_text(updated)
-
-print("RESPONSE RECEIVER DIAGNOSTICS: INSTALLED")
-print("BACKUP: PASS")
-print("SYNTAX: PASS")
-print("DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
-PY
+  echo "=== LAST 15 LOG LINES ==="
+  tail -15 "$LOG"
+fi

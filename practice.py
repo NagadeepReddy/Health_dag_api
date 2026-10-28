@@ -2,11 +2,9 @@ podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   inspect sharp_gates \
-  --format 'NAME={{.Name}}
-STATUS={{.State.Status}}
-PID={{.State.Pid}}
-STARTED={{.State.StartedAt}}
-IMAGE={{.Config.Image}}
-COMMAND={{json .Config.Cmd}}
-MEMORY_LIMIT={{.HostConfig.Memory}}
-MOUNTS={{json .Mounts}}'
+  --format '{{json .Config.Cmd}}' \
+  | grep -Fq 'cta_native_e2e_test.py' && \
+podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  stop --time 10 sharp_gates

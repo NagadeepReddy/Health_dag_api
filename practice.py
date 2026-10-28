@@ -1,1 +1,1 @@
-grep -nE 'session\.load|session\.execute|session\.compile|model\.execute|infer_max_live|weights_registry|compiled' artifacts/v1.168-max/cta_max/run_live_max_inference.py | tail -35
+sed -n '1,200p' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py

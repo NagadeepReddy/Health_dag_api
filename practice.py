@@ -1,48 +1,63 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
+from pathlib import Path
+import ast
 
-LOG=/application1/cta_native_response_trace_1028.log
-EXT=artifacts/v1.168-max/maxserve_cta_extension
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py")
+s = p.read_text()
 
-if [ -e "$LOG" ]; then
-  echo "STOP: Trace log already exists"
-elif ! grep -q "CTA RESPONSE SOCKET RECEIVED" "$EXT/cta_http_pipeline.py"; then
-  echo "STOP: Receiver tracing not installed"
-elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 16777216 ]; then
-  echo "STOP: Available RAM below 16 GiB"
-else
-  timeout -s TERM -k 8s 170s podman \
-    --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    run --rm --pull=never \
-    --network=none --read-only --log-driver=none \
-    --memory=8g --memory-swap=8g \
-    --cpus=2 --pids-limit=64 \
-    --tmpfs /tmp:rw,size=256m,mode=1777 \
-    --tmpfs /root/.cache:rw,size=128m,mode=1777 \
-    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
-    -v "$PWD:/workspace:ro" \
-    -w /workspace \
-    -e modelId=rt-pzaas-cta-offers-v1 \
-    -e expThrottleLabel=T \
-    -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
-    -e PYTHONDONTWRITEBYTECODE=1 \
-    -e PYTHONUNBUFFERED=1 \
-    -e OMP_NUM_THREADS=1 \
-    -e MKL_NUM_THREADS=1 \
-    -e OPENBLAS_NUM_THREADS=1 \
-    --entrypoint /opt/venv/bin/python3 \
-    localhost/cta-max-faiss:local \
-    -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
-    > "$LOG" 2>&1
+assert "CTA RESPONSE SOCKET RECEIVED" in s, "STOP: tracing missing"
+assert "CTA RESPONSE ID MATCH:" not in s, "STOP: already instrumented"
 
-  RC=$?
-  echo "TEST EXIT CODE: $RC"
+anchor1 = "        return item"
+anchor2 = "_cta_original_response_worker = _CTAEngineQueue.response_worker"
+anchor3 = '    print("CTA RESPONSE WORKER LOOP: START", flush=True)'
 
-  echo "=== RECEIVER AND HTTP RESULTS ==="
-  grep -nE \
-    'CTA RESPONSE WORKER LOOP|CTA RESPONSE SOCKET RECEIVED|CTA HTTP FANOUT|CTA HTTP QUEUE ITEM|CTA RESPONSE QUEUE SEND|CTA NATIVE HTTP STATUS|CTA RESPONSE:|CTA NATIVE END-TO-END|Traceback|Exception|Error|Killed' \
-    "$LOG" | tail -45 || true
+assert s.count(anchor1) == 1, "STOP: return anchor changed"
+assert s.count(anchor2) == 1, "STOP: worker anchor changed"
+assert s.count(anchor3) == 1, "STOP: startup anchor changed"
 
-  echo "=== LAST 15 LOG LINES ==="
-  tail -15 "$LOG"
-fi
+s = s.replace(
+    anchor1,
+    '''        for engine in _CTA_ACTIVE_ENGINES:
+            if getattr(engine, "response_queue", None) is self:
+                pending = getattr(engine, "pending_out_queues", {})
+                if isinstance(item, dict):
+                    print(
+                        "CTA RESPONSE ID MATCH:",
+                        [(repr(k), type(k).__name__, k in pending)
+                         for k in item],
+                        "PENDING:",
+                        [(repr(k), type(k).__name__)
+                         for k in pending],
+                        flush=True,
+                    )
+        return item''',
+    1
+)
+
+s = s.replace(
+    anchor2,
+    "_CTA_ACTIVE_ENGINES = []\n" + anchor2,
+    1
+)
+
+s = s.replace(
+    anchor3,
+    "    _CTA_ACTIVE_ENGINES.append(self)\n" + anchor3,
+    1
+)
+
+ast.parse(s)
+
+backup = p.with_name(p.name + ".before_id_match_trace.bak")
+assert not backup.exists(), "STOP: backup exists"
+
+backup.write_bytes(p.read_bytes())
+p.write_text(s)
+
+print("REQUEST-ID MATCH DIAGNOSTIC: INSTALLED")
+print("BACKUP: PASS")
+print("SYNTAX: PASS")
+print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
+PY

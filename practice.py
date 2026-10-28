@@ -1,1 +1,1 @@
-sed -n '1,180p' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_native_http_entry.py
+grep -n -E 'install_cta_spawn_entry|register_cta_architecture|retrieve_factory|CTAFactoryWrapper|serve|sys.argv' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py

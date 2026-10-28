@@ -2,20 +2,18 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
 BASE=/application1/cta_max_true_batch_dev_20261028
 CANDIDATE=/application1/cta_max_native_release_candidate_20261028
-LOG="$BASE/native_concurrent2_static_test.log"
+LOG="$BASE/native_concurrent2_pipelinefix.log"
 
-echo "=== REAL NATIVE MAX SERVE BENCHMARK ==="
-
-if [ ! -f "$BASE/native_concurrent2_static.py" ] || \
-   [ ! -f "$BASE/cta_native_benchmark_helper.py" ] || \
-   [ ! -f "$CANDIDATE/cta_native_e2e_test.py" ]; then
-  echo "STOP: Benchmark files missing"
+if [ ! -f artifacts/v1.168/core-artifact/pipeline.py ] || \
+   [ ! -f "$BASE/native_concurrent2_static.py" ] || \
+   [ ! -f "$BASE/cta_native_benchmark_helper.py" ]; then
+  echo "STOP: Required files missing"
 elif [ -e "$LOG" ]; then
-  echo "STOP: Benchmark log already exists"
+  echo "STOP: Log already exists"
 elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ]; then
   echo "STOP: Available RAM below 20 GiB"
 elif [ "$(df -Pk /application1 | awk 'NR==2 {print $4}')" -lt 10485760 ]; then
-  echo "STOP: Less than 10 GiB free on /application1"
+  echo "STOP: Insufficient /application1 disk space"
 else
   timeout --signal=TERM --kill-after=10s 420s \
   podman \
@@ -42,7 +40,7 @@ else
     -e OPENBLAS_NUM_THREADS=1 \
     -e modelId=rt-pzaas-cta-offers-v1 \
     -e expThrottleLabel=T \
-    -e PYTHONPATH=/batchdev:/workspace:/workspace/artifacts/v1.168-max \
+    -e PYTHONPATH=/batchdev:/workspace:/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168-max/utils/dependency-utils:/workspace/artifacts/v1.168-max/maxserve_cta_extension \
     --entrypoint /opt/venv/bin/python3 \
     localhost/cta-max-faiss:local \
     -B /batchdev/native_concurrent2_static.py \
@@ -50,15 +48,12 @@ else
 
   RC=$?
   echo "BENCHMARK EXIT CODE: $RC"
-  echo "=== PERFORMANCE RESULTS ==="
-  grep -E \
-    'REQUEST [12]:|HTTP STATUSES|WALL SECONDS|THROUGHPUT RPS|MEAN LATENCY|NATIVE CONCURRENT-2|Error|Traceback|Killed|STOP' \
-    "$LOG" | tail -25 || true
-
-  echo "=== LAST LOG LINES ==="
-  tail -12 "$LOG"
+  echo "=== RESULTS ==="
+  grep -E 'REQUEST [12]:|HTTP STATUSES|WALL SECONDS|THROUGHPUT RPS|MEAN LATENCY|NATIVE CONCURRENT-2|ModuleNotFoundError|Error|Traceback|Killed' "$LOG" | tail -20 || true
+  echo "=== LAST LOG ==="
+  tail -15 "$LOG"
 
   if [ "$RC" -ne 0 ]; then
-    echo "BENCHMARK NOT PASSED - DO NOT RETRY AUTOMATICALLY"
+    echo "STOP: Benchmark failed; do not retry automatically"
   fi
 fi

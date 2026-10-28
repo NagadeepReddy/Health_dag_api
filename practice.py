@@ -5,5 +5,6 @@ podman --root /application1/podman/storage \
   --network=none --read-only --log-driver=none \
   --entrypoint /bin/grep \
   localhost/cta-max-faiss:local \
-  -n -A 12 -B 5 'supported_encodings' \
-  /opt/venv/lib/python3.12/site-packages/max/pipelines/architectures/llama3_arch.py
+  -Rn -m 3 -E 'supported_encodings|llama_arch =' \
+  /opt/venv/lib/python3.12/site-packages/max/pipelines/architectures \
+  | head -30

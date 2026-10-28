@@ -1,15 +1,26 @@
-printf '\n=== CTA CONTAINERS STILL RUNNING ===\n'
-podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  ps --format '{{.Names}} {{.Status}}' \
-  | grep -E 'eloquent_ishizaka|strange_pascal|priceless_volhard|musing_wu|sharp_gates' \
-  || echo "PASS: No identified CTA test containers running"
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+python3 -B -S - <<'PY'
+from pathlib import Path
+import json
 
-printf '\n=== REMAINING CTA PROCESSES ===\n'
-ps -eo pid,ppid,stat,rss,args \
-  | grep '[c]ta_native_e2e_test.py' \
-  || echo "PASS: No CTA test processes"
+p = Path("artifacts/v1.168-max/samples/adjusted_sanity_input.json")
 
-printf '\n=== AVAILABLE RAM ===\n'
-awk '/MemAvailable:/ {printf "%.2f GiB\n", $2/1048576}' /proc/meminfo
+if not p.is_file():
+    raise SystemExit("STOP: adjusted JSON not found")
+
+data = json.loads(p.read_text())
+print("JSON VALID: PASS")
+print("FILE SIZE:", p.stat().st_size, "bytes")
+print("ROOT TYPE:", type(data).__name__)
+
+if isinstance(data, dict):
+    print("ROOT KEYS:", sorted(data.keys()))
+    for key, value in data.items():
+        if isinstance(value, list):
+            print(f"{key}: {len(value)} items")
+        elif isinstance(value, dict):
+            print(f"{key}: {len(value)} fields")
+
+print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
+PY

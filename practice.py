@@ -1,12 +1,7 @@
-timeout 10s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  inspect cta-native-live \
-  --format 'Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}'
-
-echo "=== CTA NATIVE LAST LOGS ==="
-
-timeout 10s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  logs --tail 35 cta-native-live
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+grep -n -C 5 -E 'modelId|sanity_input|request\.json|payload|predict|_cta_adapter' \
+  artifacts/v1.168-max/maxserve_cta_extension/cta_router.py \
+  artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py \
+  artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py \
+  artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  | head -180

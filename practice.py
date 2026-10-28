@@ -1,86 +1,77 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-
-python3 -S -B - <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
-import shutil
 
-base = Path("/application1/cta_max_true_batch_dev_20261028")
-target = base / "maxserve_cta_extension/cta_batch2_contract.py"
+base = Path("/application1/cta_max_true_batch_dev_20261028/cta_max")
+src = base / "grecbase_fusion_full_head_72_max.py"
+dst = base / "grecbase_fusion_batch2_draft.py"
 
-assert base.is_dir(), "STOP: Batch workspace missing"
-assert not target.exists(), "STOP: Batch adapter already exists"
-assert shutil.disk_usage("/application1").free > 1024**3, \
-    "STOP: Insufficient disk space"
+assert src.is_file(), "STOP: Original batch graph missing"
+assert not dst.exists(), "STOP: Batch-2 draft already exists"
 
-source = '''
-"""Batch-two tensor contract for CTA MAX development.
+source = src.read_text()
+tree = ast.parse(source)
+graph_calls = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.Call)
+    and isinstance(n.func, ast.Name)
+    and n.func.id == "Graph"
+]
 
-Integration-only code. Does not change the original DS pipeline.
-"""
+assert len(graph_calls) == 1, "STOP: Graph definition differs"
 
-EXPECTED_INPUTS = 72
-EXPECTED_FEATURES = 2048
+graph = graph_calls[0]
+tensor_calls = [
+    n for n in ast.walk(graph)
+    if isinstance(n, ast.Call)
+    and isinstance(n.func, ast.Name)
+    and n.func.id == "TensorType"
+]
 
+lines = source.splitlines(keepends=True)
+offsets = [0]
+for line in lines:
+    offsets.append(offsets[-1] + len(line))
 
-def pack_two_requests(first, second):
-    import numpy as np
+replacements = []
 
-    if len(first) != EXPECTED_INPUTS or len(second) != EXPECTED_INPUTS:
-        raise ValueError("CTA MAX requires 72 inputs per request")
+for call in tensor_calls:
+    shapes = [
+        x for x in call.args
+        if isinstance(x, (ast.List, ast.Tuple))
+    ]
+    shapes += [
+        kw.value for kw in call.keywords
+        if kw.arg == "shape"
+        and isinstance(kw.value, (ast.List, ast.Tuple))
+    ]
 
-    packed = []
+    for shape in shapes:
+        if not shape.elts:
+            continue
+        first = shape.elts[0]
+        if isinstance(first, ast.Constant) and type(first.value) is int and first.value == 1:
+            start = offsets[first.lineno - 1] + first.col_offset
+            end = offsets[first.end_lineno - 1] + first.end_col_offset
+            assert source[start:end] == "1"
+            replacements.append((start, end))
 
-    for index, (a, b) in enumerate(zip(first, second)):
-        a = np.asarray(a)
-        b = np.asarray(b)
+assert replacements, "STOP: No static batch dimensions found"
 
-        if a.ndim < 1 or a.shape[0] != 1:
-            raise ValueError(f"Input {index}: first batch dimension must be 1")
+updated = source
+for start, end in sorted(set(replacements), reverse=True):
+    updated = updated[:start] + "2" + updated[end:]
 
-        if a.shape != b.shape:
-            raise ValueError(f"Input {index}: shapes differ")
+ast.parse(updated)
+dst.write_text(updated)
 
-        if a.dtype != b.dtype:
-            raise ValueError(f"Input {index}: dtypes differ")
-
-        result = np.concatenate((a, b), axis=0)
-
-        if result.shape != (2, *a.shape[1:]):
-            raise AssertionError(f"Input {index}: unexpected batch shape")
-
-        packed.append(np.ascontiguousarray(result))
-
-    return packed
-
-
-def split_two_outputs(output):
-    import numpy as np
-
-    output = np.asarray(output)
-
-    if output.shape != (2, EXPECTED_FEATURES):
-        raise ValueError(
-            f"Expected MAX output (2, 2048), got {output.shape}"
-        )
-
-    if not np.isfinite(output).all():
-        raise ValueError("MAX output contains non-finite values")
-
-    return output[0:1].copy(), output[1:2].copy()
-'''
-
-ast.parse(source)
-target.write_text(source)
-ast.parse(target.read_text())
-
-print("BATCH-2 INPUT/OUTPUT ADAPTER: CREATED")
-print("INPUT CONTRACT: 2 x 72")
-print("EXPECTED MAX OUTPUT: (2, 2048)")
+print("BATCH-2 GRAPH INPUT DRAFT: CREATED")
+print("INPUT SHAPE DECLARATIONS UPDATED:", len(set(replacements)))
 print("SYNTAX: PASS")
-print("LOCATION:", target)
-print("BATCH-2 GRAPH: NOT YET IMPLEMENTED")
+print("LOCATION:", dst)
+print("INTERNAL GRAPH BATCHING: STILL PENDING")
+print("TRUE BATCH INFERENCE: NOT YET TESTED")
 print("WORKING HTTP 200: UNCHANGED")
-print("ORIGINAL DS CODE: UNCHANGED")
+print("DS CODE: UNCHANGED")
 print("MODEL STARTUP: NOT PERFORMED")
 PY

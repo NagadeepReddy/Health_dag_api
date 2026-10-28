@@ -1,17 +1,43 @@
-timeout 25s podman \
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+timeout 30s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  run --rm --pull=never \
+  run -i --rm --pull=never \
   --network=none --read-only \
-  --memory=256m --pids-limit=32 \
-  --entrypoint /bin/sh \
-  localhost/cta-max-faiss:local \
-  -c '
-    echo "=== RESPONSE SOCKET SEND/RECEIVE ==="
-    grep -n -A 45 -B 5 -E "class ZmqPushSocket|class ZmqPullSocket|def put_nowait|def get_nowait" \
-      /opt/venv/lib/python3.12/site-packages/max/serve/queue/zmq_queue.py | head -150
+  --memory=512m --pids-limit=32 \
+  -v "$PWD":/workspace:ro \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  --entrypoint /opt/venv/bin/python3 \
+  localhost/cta-max-faiss:local -B - <<'PY'
+from max.serve.queue.zmq_queue import msgpack_numpy
+from max.interfaces.request import RequestID
+from max.interfaces.scheduler import SchedulerResult
+from maxserve_cta_extension.cta_native_scheduler import CTASerializableOutput
 
-    echo "=== WORKER QUEUE CONFIGURATION ==="
-    grep -n -A 45 -B 5 "def model_worker_queues" \
-      /opt/venv/lib/python3.12/site-packages/max/serve/scheduler/queues.py
-  '
+response_type = dict[
+    RequestID, SchedulerResult[CTASerializableOutput]
+]
+
+payload = {
+    RequestID("cta-test-1"): SchedulerResult.create(
+        CTASerializableOutput(
+            is_done=True,
+            result={"status": "ok", "items": [1, 2]}
+        )
+    )
+}
+
+encoded = msgpack_numpy.encoder()(payload)
+decoded = msgpack_numpy.decoder(response_type)(encoded)
+
+assert len(decoded) == 1
+output = next(iter(decoded.values())).result
+assert output.is_done is True
+assert output.result == {"status": "ok", "items": [1, 2]}
+
+print("CTA RESPONSE SERIALIZATION: PASS")
+print("ENCODED BYTES:", len(encoded))
+print("MODEL STARTUP: NOT PERFORMED")
+print("DS CODE: UNCHANGED")
+PY

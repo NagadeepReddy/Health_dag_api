@@ -1,126 +1,80 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-LOG=/application1/cta_native_concurrent2_benchmark.log
+BASE=/application1/cta_max_true_batch_dev_20261028
+RUNNER="$BASE/native_concurrent2_realfile.py"
 CANDIDATE=/application1/cta_max_native_release_candidate_20261028
-TEST=artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py
 
-echo "=== NATIVE MAX SERVE PERFORMANCE TEST ==="
+test -f "$CANDIDATE/cta_native_e2e_test.py" || {
+  echo "STOP: Native test source missing"
+  exit 1
+}
 
-if [ -e "$LOG" ]; then
-  echo "STOP: Benchmark log already exists"
-elif [ ! -f "$CANDIDATE/cta_router.py" ] || [ ! -f "$TEST" ]; then
-  echo "STOP: Validated integration or test missing"
-elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 16777216 ]; then
-  echo "STOP: Available RAM below 16 GiB"
-elif [ "$(df -Pk /application1 | awk 'NR==2 {print $4}')" -lt 10485760 ]; then
-  echo "STOP: Less than 10 GiB free on /application1"
-elif ps -eo stat=,args= | grep -E '[p]ython3 -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py' | grep -v '^[[:space:]]*Z' | grep -q .; then
-  echo "STOP: Another CTA test is running"
-else
-  timeout --signal=TERM --kill-after=10s 420s \
-  podman \
-    --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    run --rm -i --pull=never --init \
-    --network=none --read-only --log-driver=none \
-    --memory=8g --memory-swap=8g \
-    --cpus=2 --pids-limit=256 \
-    --tmpfs /tmp:rw,size=512m,mode=1777 \
-    --tmpfs /root/.cache:rw,size=128m,mode=1777 \
-    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
-    -v "$PWD:/workspace:ro" \
-    -v "$CANDIDATE:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
-    -w /workspace \
-    -e HOME=/tmp \
-    -e XDG_CACHE_HOME=/tmp \
-    -e modelId=rt-pzaas-cta-offers-v1 \
-    -e expThrottleLabel=T \
-    -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
-    -e PYTHONDONTWRITEBYTECODE=1 \
-    -e PYTHONUNBUFFERED=1 \
-    -e OMP_NUM_THREADS=1 \
-    -e MKL_NUM_THREADS=1 \
-    -e OPENBLAS_NUM_THREADS=1 \
-    --entrypoint /opt/venv/bin/python3 \
-    localhost/cta-max-faiss:local -B - <<'PY' > "$LOG" 2>&1
+test ! -e "$RUNNER" || {
+  echo "STOP: Benchmark launcher already exists"
+  exit 1
+}
 
+mkdir -p "$BASE" || exit 1
+
+cat > "$RUNNER" <<'PY'
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import time
+import ast
 
-path = Path(
+SOURCE = Path(
     "/workspace/artifacts/v1.168-max/"
     "maxserve_cta_extension/cta_native_e2e_test.py"
 )
 
-source = path.read_text()
-anchor = 'client.post("/v2/cta/predict", json=body)'
-
-assert source.count(anchor) == 1, (
-    "STOP: Unexpected native test structure"
-)
+ANCHOR = 'client.post("/v2/cta/predict", json=body)'
 
 def benchmark_post(client, body):
-    def request_one(number):
-        start = time.monotonic()
+    def send(number):
+        started = time.monotonic()
         response = client.post(
-            "/v2/cta/predict",
-            json=copy.deepcopy(body)
+            "/v2/cta/predict", json=copy.deepcopy(body)
         )
-        elapsed = time.monotonic() - start
+        elapsed = time.monotonic() - started
         print(
             f"REQUEST {number}: HTTP {response.status_code} "
             f"LATENCY {elapsed:.3f}s",
-            flush=True
+            flush=True,
         )
         return response, elapsed
 
-    start = time.monotonic()
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [
-            pool.submit(request_one, i)
-            for i in (1, 2)
-        ]
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(send, n) for n in (1, 2)]
         results = [f.result() for f in futures]
 
-    elapsed = time.monotonic() - start
-    statuses = [r.status_code for r, _ in results]
-    latencies = [t for _, t in results]
+    seconds = time.monotonic() - started
+    print("HTTP STATUSES:", [r.status_code for r, _ in results])
+    print("WALL SECONDS:", round(seconds, 3))
+    print("THROUGHPUT RPS:", round(2 / seconds, 3))
+    print("MEAN LATENCY:", round(sum(t for _, t in results) / 2, 3))
 
-    print("HTTP STATUSES:", statuses, flush=True)
-    print("TOTAL REQUESTS:", len(results), flush=True)
-    print("WALL SECONDS:", round(elapsed, 3), flush=True)
-    print("THROUGHPUT RPS:", round(2 / elapsed, 4), flush=True)
-    print("MEAN LATENCY:", round(sum(latencies) / 2, 3), flush=True)
-
-    assert statuses == [200, 200], (
-        "STOP: Concurrent HTTP requests failed"
-    )
-
+    assert all(r.status_code == 200 for r, _ in results)
     print("NATIVE CONCURRENT-2: PASS", flush=True)
     return results[0][0]
 
-updated = source.replace(anchor, "benchmark_post(client, body)")
-namespace = {
-    "__name__": "__main__",
-    "__file__": str(path),
-    "benchmark_post": benchmark_post,
-}
-exec(compile(updated, str(path), "exec"), namespace)
+if __name__ == "__main__":
+    source = SOURCE.read_text()
+    assert source.count(ANCHOR) == 1, "STOP: HTTP call differs"
+    modified = source.replace(ANCHOR, "benchmark_post(client, body)")
+    ast.parse(modified)
+    exec(
+        compile(modified, str(SOURCE), "exec"),
+        {
+            "__name__": "__main__",
+            "__file__": str(SOURCE),
+            "benchmark_post": benchmark_post,
+        },
+    )
 PY
 
-  RC=$?
-  echo "BENCHMARK EXIT CODE: $RC"
-
-  echo "=== PERFORMANCE RESULTS ==="
-  grep -E \
-    'REQUEST [12]:|HTTP STATUSES|TOTAL REQUESTS|WALL SECONDS|THROUGHPUT RPS|MEAN LATENCY|NATIVE CONCURRENT-2|CTA NATIVE HTTP STATUS|CTA NATIVE END-TO-END|Traceback|Error|Killed' \
-    "$LOG" | tail -25 || true
-
-  if [ "$RC" -ne 0 ]; then
-    echo "BENCHMARK NOT PASSED — DO NOT RETRY AUTOMATICALLY"
-    tail -10 "$LOG"
-  fi
-fi
+python3 -S -B -m py_compile "$RUNNER" && \
+echo "REAL-FILE BENCHMARK LAUNCHER: READY" && \
+echo "DS CODE: UNCHANGED" && \
+echo "MAX: NOT STARTED"

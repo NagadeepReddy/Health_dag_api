@@ -1,3 +1,2 @@
-journalctl -k --since "30 minutes ago" --no-pager 2>/dev/null | \
-grep -Ei 'out of memory|oom|killed process|memory cgroup' | \
-tail -20 || true
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+nl -ba artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py | sed -n '1,100p'

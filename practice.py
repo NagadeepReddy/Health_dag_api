@@ -5,6 +5,6 @@ podman --root /application1/podman/storage \
   --network=none --read-only --log-driver=none \
   --entrypoint /bin/grep \
   localhost/cta-max-faiss:local \
-  -Rn -B 10 -A 20 \
-  'Model Worker process is not healthy' \
-  /opt/venv/lib/python3.12/site-packages/max/serve
+  -Rni -B 5 -A 15 \
+  'def is_worker_healthy' \
+  /opt/venv/lib/python3.12/site-packages/max

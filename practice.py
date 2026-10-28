@@ -5,5 +5,5 @@ podman --root /application1/podman/storage \
   --network=none --read-only --log-driver=none \
   --entrypoint /bin/grep \
   localhost/cta-max-faiss:local \
-  -A 110 '^class SupportedArchitecture:' \
-  /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/registry.py
+  -n -B 15 -A 25 'quantization encoding.*not supported' \
+  /opt/venv/lib/python3.12/site-packages/max/pipelines/lib/config.py

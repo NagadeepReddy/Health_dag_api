@@ -1,8 +1,9 @@
-timeout 10s podman \
+timeout 25s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  events --stream=false \
-  --since 2026-10-28T00:00:00 \
-  --filter container=cta_env_e2e_1028 \
-  --format '{{.Time}} {{.Status}} {{.ContainerExitCode}}' \
-  | tail -20
+  run --rm --pull=never \
+  --network=none --read-only \
+  --memory=256m --pids-limit=32 \
+  --entrypoint /bin/sh \
+  localhost/cta-max-faiss:local \
+  -c 'grep -Rn -A 45 "async def response_worker\|def response_worker" /opt/venv/lib/python3.12/site-packages/max/serve --include="*.py" | head -100'

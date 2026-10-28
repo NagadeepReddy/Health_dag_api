@@ -1,32 +1,12 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-awk '/MemAvailable:/ {
-  if ($2 < 10485760) {
-    print "STOP: RAM below 10 GiB"
-    exit 1
-  }
-}' /proc/meminfo && \
-set -o pipefail && \
-timeout -s TERM -k 5s 55s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never \
-  --workdir /workspace \
-  --memory=4g --memory-swap=4g \
-  --cpus=2 --pids-limit=64 \
-  --network=none --read-only --log-driver=none \
-  --tmpfs /tmp:rw,size=256m,mode=1777 \
-  --tmpfs /root/.cache:rw,size=128m,mode=1777 \
-  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
-  -v /application1/sajjna8/rt-pzaas-cta-offers-v1:/workspace:ro \
-  -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -e PYTHONUNBUFFERED=1 \
-  -e OMP_NUM_THREADS=1 \
-  -e MKL_NUM_THREADS=1 \
-  -e OPENBLAS_NUM_THREADS=1 \
-  -e TOKENIZERS_PARALLELISM=false \
-  --entrypoint /opt/venv/bin/python3 \
-  localhost/cta-max-faiss:local \
-  -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
-  2>&1 | grep --line-buffered -E \
-  'CTA |Timeout|Thread |File "|line [0-9]+|Traceback|Exception|Error|Terminated|Killed|Current thread'
+printf '%s\n' '=== RECENT MEMORY ERRORS ==='
+journalctl -k --since "10 minutes ago" --no-pager 2>/dev/null \
+  | grep -iE 'out of memory|oom|killed process|memory cgroup' \
+  | tail -10 || true
+
+printf '%s\n' '=== REMAINING CTA/MAX PROCESSES ==='
+ps -eo pid,ppid,stat,etime,rss,args \
+  | grep -E '[c]ta_native_e2e_test|[c]ta_spawn_worker|[m]axserve_cta_extension|[p]odman.*run' \
+  | head -15
+
+printf '%s\n' '=== AVAILABLE MEMORY ==='
+awk '/MemAvailable:/ {printf "Available RAM: %.2f GiB\n", $2/1048576}' /proc/meminfo

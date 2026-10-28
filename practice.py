@@ -10,14 +10,15 @@ timeout 30s podman \
   -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint /opt/venv/bin/python3 \
   localhost/cta-max-faiss:local -B - <<'PY'
-from max.serve.queue.zmq_queue import msgpack_numpy
+from max.serve.queue.zmq_queue import (
+    msgpack_numpy_encoder,
+    msgpack_numpy_decoder,
+)
 from max.interfaces.request import RequestID
 from max.interfaces.scheduler import SchedulerResult
 from maxserve_cta_extension.cta_native_scheduler import CTASerializableOutput
 
-response_type = dict[
-    RequestID, SchedulerResult[CTASerializableOutput]
-]
+response_type = dict[RequestID, SchedulerResult[CTASerializableOutput]]
 
 payload = {
     RequestID("cta-test-1"): SchedulerResult.create(
@@ -28,8 +29,8 @@ payload = {
     )
 }
 
-encoded = msgpack_numpy.encoder()(payload)
-decoded = msgpack_numpy.decoder(response_type)(encoded)
+encoded = msgpack_numpy_encoder()(payload)
+decoded = msgpack_numpy_decoder(response_type)(encoded)
 
 assert len(decoded) == 1
 output = next(iter(decoded.values())).result
@@ -38,6 +39,6 @@ assert output.result == {"status": "ok", "items": [1, 2]}
 
 print("CTA RESPONSE SERIALIZATION: PASS")
 print("ENCODED BYTES:", len(encoded))
-print("MODEL STARTUP: NOT PERFORMED")
+print("MAX STARTUP: NOT PERFORMED")
 print("DS CODE: UNCHANGED")
 PY

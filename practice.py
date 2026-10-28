@@ -1,76 +1,54 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-from pathlib import Path
-import ast
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-base = Path("artifacts/v1.168-max/maxserve_cta_extension")
-router = base / "cta_router.py"
-pipeline = base / "cta_http_pipeline.py"
+LOG=/application1/cta_native_queue_identity_1028.log
+EXT=artifacts/v1.168-max/maxserve_cta_extension
 
-r = router.read_text()
-p = pipeline.read_text()
+if [ -e "$LOG" ]; then
+  echo "STOP: Log already exists"
+elif ! grep -q "CTA ROUTE QUEUE ID:" "$EXT/cta_router.py"; then
+  echo "STOP: Route diagnostic missing"
+elif ! grep -q "CTA RECEIVER ENGINE ID:" "$EXT/cta_http_pipeline.py"; then
+  echo "STOP: Receiver diagnostic missing"
+elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 16777216 ]; then
+  echo "STOP: Available memory below 16 GiB"
+else
+  echo "SAFETY CHECK: PASS"
 
-assert "CTA ROUTE QUEUE ID:" not in r, "STOP: route already instrumented"
-assert "CTA RECEIVER ENGINE ID:" not in p, "STOP: receiver already instrumented"
+  timeout -s TERM -k 8s 170s podman \
+    --root /application1/podman/storage \
+    --runroot /run/containers/storage \
+    run --rm --pull=never --init \
+    --network=none --read-only --log-driver=none \
+    --memory=8g --memory-swap=8g \
+    --cpus=2 --pids-limit=64 \
+    --tmpfs /tmp:rw,size=256m,mode=1777 \
+    --tmpfs /root/.cache:rw,size=128m,mode=1777 \
+    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
+    -v "$PWD:/workspace:ro" \
+    -w /workspace \
+    -e HOME=/tmp \
+    -e XDG_CACHE_HOME=/tmp \
+    -e modelId=rt-pzaas-cta-offers-v1 \
+    -e expThrottleLabel=T \
+    -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    -e PYTHONUNBUFFERED=1 \
+    -e OMP_NUM_THREADS=1 \
+    -e MKL_NUM_THREADS=1 \
+    -e OPENBLAS_NUM_THREADS=1 \
+    --entrypoint /opt/venv/bin/python3 \
+    localhost/cta-max-faiss:local \
+    -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+    > "$LOG" 2>&1
 
-route_anchor = "    request_id = request.state.request_id"
-receiver_anchor = '    print("CTA RESPONSE WORKER LOOP: START", flush=True)'
-socket_anchor = '                        "CTA RESPONSE ID MATCH:",'
+  RC=$?
+  echo "TEST EXIT CODE: $RC"
 
-assert r.count(route_anchor) == 1, "STOP: route anchor changed"
-assert p.count(receiver_anchor) == 1, "STOP: receiver anchor changed"
-assert p.count(socket_anchor) == 1, "STOP: socket anchor changed"
+  echo "=== QUEUE IDENTITY AND HTTP RESULT ==="
+  grep -nE \
+    'CTA ROUTE QUEUE ID|CTA RECEIVER ENGINE ID|CTA RESPONSE ID MATCH|CTA RESPONSE SOCKET RECEIVED|CTA HTTP QUEUE ITEM|CTA NATIVE HTTP STATUS|CTA NATIVE END-TO-END|CTA RESPONSE WORKER LOOP|Traceback|Exception|Timeout' \
+    "$LOG" | tail -35 || true
 
-r2 = r.replace(
-    route_anchor,
-    route_anchor + '''
-    import time
-    print(
-        "CTA ROUTE QUEUE ID:", id(queue),
-        "TIME:", time.monotonic(),
-        "PENDING:", len(getattr(queue, "pending_out_queues", {})),
-        flush=True,
-    )''',
-    1
-)
-
-p2 = p.replace(
-    receiver_anchor,
-    '''    import time
-    print(
-        "CTA RECEIVER ENGINE ID:", id(self),
-        "TIME:", time.monotonic(),
-        flush=True,
-    )
-''' + receiver_anchor,
-    1
-)
-
-p2 = p2.replace(
-    socket_anchor,
-    '''                        "ENGINE_ID:", id(engine),
-                        "TIME:", __import__("time").monotonic(),
-''' + socket_anchor,
-    1
-)
-
-ast.parse(r2)
-ast.parse(p2)
-
-backups = [
-    (router, router.with_name(router.name + ".before_queue_identity.bak"), r2),
-    (pipeline, pipeline.with_name(pipeline.name + ".before_queue_identity.bak"), p2),
-]
-
-assert all(not backup.exists() for _, backup, _ in backups), \
-    "STOP: backup already exists"
-
-for original, backup, updated in backups:
-    backup.write_bytes(original.read_bytes())
-    original.write_text(updated)
-
-print("QUEUE IDENTITY DIAGNOSTICS: INSTALLED")
-print("BACKUPS: PASS")
-print("PYTHON SYNTAX: PASS")
-print("DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
-PY
+  echo "=== LAST 12 LOG LINES ==="
+  tail -12 "$LOG"
+fi

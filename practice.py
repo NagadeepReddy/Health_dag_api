@@ -1,27 +1,17 @@
-echo "=== NVIDIA GPU DETECTION ==="
+echo "=== AVAILABLE MAX / FAISS IMAGES ==="
 
-if command -v nvidia-smi >/dev/null 2>&1; then
-  nvidia-smi --query-gpu=name,memory.total,driver_version \
-    --format=csv,noheader
-else
-  echo "NVIDIA-SMI: NOT INSTALLED"
-fi
+podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  images --format \
+  'IMAGE={{.Repository}}:{{.Tag}} ID={{.ID}} SIZE={{.Size}}' \
+  | grep -Ei 'max|modular|faiss' || true
 
-echo "=== NVIDIA DEVICE ACCESS ==="
-for d in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm; do
-  if [ -e "$d" ]; then
-    ls -l "$d"
-  else
-    echo "$d: NOT PRESENT"
-  fi
-done
+echo "=== BACKUP VERIFICATION ==="
 
-echo "=== NVIDIA PCI DEVICES ==="
-if command -v lspci >/dev/null 2>&1; then
-  lspci | grep -Ei 'NVIDIA|3D controller' || true
-else
-  echo "LSPCI: NOT INSTALLED"
-fi
+cd /application1 || exit 1
 
-echo "GPU READINESS CHECK COMPLETE"
-echo "NO FILES MODIFIED"
+sha256sum -c \
+  cta_max_native_http_pass_20261028.tar.gz.sha256
+
+echo "NO IMAGES STARTED OR MODIFIED"

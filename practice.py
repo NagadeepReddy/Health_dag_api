@@ -1,27 +1,23 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-python3 -S -B - <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
 
-log = Path("/application1/cta_max_true_batch_dev_20261028/batch2_all_weights_test.log")
-assert log.is_file(), "STOP: Batch log missing"
-
-lines = log.read_text(errors="replace").splitlines()
-
-print("=== FULL RESHAPE ERROR ===")
-matches = [
-    i for i, line in enumerate(lines)
-    if "Failed to create op 'reshape'" in line
+base = Path("/application1/cta_max_true_batch_dev_20261028")
+paths = [
+    ("BATCH FUSION", base / "batch2_candidate/cta_max/grecbase_fusion_full_head_72_max.py", 18, 78),
+    ("BATCH AUX BRANCHES", base / "batch2_candidate/cta_max/grecbase_aux_branches_max.py", 10, 75),
+    ("BATCH AUX FEATURES", base / "batch2_candidate/cta_max/grecbase_aux_features_max.py", 10, 65),
+    ("WORKING FUSION", base / "cta_max/grecbase_fusion_full_head_72_max.py", 35, 78),
 ]
 
-assert matches, "STOP: Reshape error not found"
+for title, path, start, end in paths:
+    print("\n===", title, "===")
+    if not path.is_file():
+        print("MISSING:", path)
+        continue
+    lines = path.read_text().splitlines()
+    for i in range(start - 1, min(end, len(lines))):
+        print(f"{i+1}: {lines[i]}")
 
-for i in matches[-2:]:
-    for line in lines[max(0, i-35):min(len(lines), i+25)]:
-        print(line)
-
-print("\n=== TEST STATUS ===")
-print("BATCH INPUTS: PASS 72")
-print("BATCH GRAPH COMPILATION: FAILED")
-print("FILES MODIFIED: NONE")
-print("MAX RESTARTED: NO")
+print("\nFILES MODIFIED: NONE")
+print("MAX STARTED: NO")
 PY

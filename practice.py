@@ -1,1 +1,1 @@
-grep -n -C 6 -E 'CTAFactoryWrapper|retrieve_factory' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py
+grep -RnE 'cta_native_launcher|cta_native_model|--model-path|--model ' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension --include='*.py' --include='*.sh' | head -35

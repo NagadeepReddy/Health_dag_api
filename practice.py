@@ -1,33 +1,25 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-python3 -B -S - <<'PY'
-from pathlib import Path
-
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py")
-s = p.read_text()
-
-old = """        try:
-            return pipeline.predict_raw(body)
-        finally:
-            print(f"CTA PREDICT_RAW: ELAPSED {time.monotonic()-started:.1f}s", flush=True)"""
-
-new = """        try:
-            return pipeline.predict_raw(body)
-        except Exception as exc:
-            import traceback
-            print(f"CTA PREDICT_RAW EXCEPTION: {type(exc).__name__}: {exc}", flush=True)
-            traceback.print_exc()
-            raise
-        finally:
-            print(f"CTA PREDICT_RAW: ELAPSED {time.monotonic()-started:.1f}s", flush=True)"""
-
-if s.count(old) != 1:
-    raise SystemExit("STOP: expected timing block not found; no changes made")
-
-updated = s.replace(old, new, 1)
-compile(updated, str(p), "exec")
-p.write_text(updated)
-
-print("CTA EXCEPTION LOGGING: INSTALLED")
-print("PYTHON SYNTAX: PASS")
-print("DS CODE: UNCHANGED")
-PY
+set -o pipefail && \
+timeout -s TERM -k 5s 40s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --memory=6g --memory-swap=6g \
+  --cpus=2 --pids-limit=64 \
+  --network=none --read-only --log-driver=none \
+  --tmpfs /tmp:rw,size=512m,mode=1777 \
+  --tmpfs /root/.cache:rw,size=128m,mode=1777 \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
+  -v /application1/sajjna8/rt-pzaas-cta-offers-v1:/workspace:ro \
+  -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONUNBUFFERED=1 \
+  -e OMP_NUM_THREADS=1 \
+  -e MKL_NUM_THREADS=1 \
+  -e OPENBLAS_NUM_THREADS=1 \
+  -e TOKENIZERS_PARALLELISM=false \
+  --entrypoint /opt/venv/bin/python3 \
+  localhost/cta-max-faiss:local \
+  -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  2>&1 | grep --line-buffered -E \
+  'CTA MODEL LOAD|CTA PREDICT_RAW|CTA preprocess|CTA postprocess|Traceback|Error|Exception|File "|CTA STATUS|CTA RESPONSE:|NATIVE CTA JSON E2E|Timeout|Terminated|Killed'

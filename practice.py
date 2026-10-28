@@ -1,38 +1,27 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-from pathlib import Path
-import re
+echo "=== NVIDIA GPU DETECTION ==="
 
-base = Path("artifacts/v1.168-max/cta_max")
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi --query-gpu=name,memory.total,driver_version \
+    --format=csv,noheader
+else
+  echo "NVIDIA-SMI: NOT INSTALLED"
+fi
 
-patterns = re.compile(
-    r"session\.execute|\.execute\(|batch_size|batch_dim|"
-    r"input_shape|output_shape|reshape\(|"
-    r"zeros\(|ones\(|stack\(|concatenate\(|"
-    r"TensorType|compile\(|inference|"
-    r"\(1,\s*4,\s*256\)|2048",
-    re.I
-)
+echo "=== NVIDIA DEVICE ACCESS ==="
+for d in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm; do
+  if [ -e "$d" ]; then
+    ls -l "$d"
+  else
+    echo "$d: NOT PRESENT"
+  fi
+done
 
-print("=== MAX INFERENCE BATCH COMPATIBILITY ===")
+echo "=== NVIDIA PCI DEVICES ==="
+if command -v lspci >/dev/null 2>&1; then
+  lspci | grep -Ei 'NVIDIA|3D controller' || true
+else
+  echo "LSPCI: NOT INSTALLED"
+fi
 
-for p in sorted(base.rglob("*.py")):
-    if "test" in p.name.lower() or "diag" in p.name.lower():
-        continue
-    lines = p.read_text(errors="replace").splitlines()
-    matches = [
-        (i, line) for i, line in enumerate(lines, 1)
-        if patterns.search(line)
-    ]
-    if not matches:
-        continue
-    print(f"\nFILE: {p}")
-    for i, line in matches[:35]:
-        print(f"{i}: {line.strip()[:200]}")
-    if len(matches) > 35:
-        print(f"... {len(matches)-35} additional matches omitted")
-
-print("\nINSPECTION COMPLETE")
-print("DS CODE: UNCHANGED")
-print("MAX MODEL: NOT STARTED")
-print("WORKING NATIVE HTTP CODE: UNCHANGED")
-PY
+echo "GPU READINESS CHECK COMPLETE"
+echo "NO FILES MODIFIED"

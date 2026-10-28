@@ -1,5 +1,5 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-timeout -k 5s 35s podman \
+timeout -k 5s 60s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm --pull=never \
@@ -9,7 +9,11 @@ timeout -k 5s 35s podman \
   --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,nosuid,size=256m \
   -e HOME=/tmp \
   -e TMPDIR=/tmp \
+  -e XDG_CACHE_HOME=/tmp/cache \
   -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+  -v "$PWD":/workspace:ro \
+  -w /workspace \
   --entrypoint /opt/venv/bin/python3 \
   localhost/cta-max-faiss:local \
-  -B -c 'import max._core_mojo; print("MOJO CACHE FIX: PASS", flush=True)'
+  -B artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py

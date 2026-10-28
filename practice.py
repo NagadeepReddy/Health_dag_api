@@ -1,57 +1,50 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-from pathlib import Path
-import re
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-base = Path("artifacts/v1.168-max/maxserve_cta_extension")
-files = [
-    "cta_router.py",
-    "cta_http_pipeline.py",
-    "cta_queue_scheduler.py",
-    "cta_scheduler.py",
-    "cta_spawn_worker.py",
-    "cta_native_e2e_test.py",
+timeout 20s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run -i --rm --pull=never \
+  --network=none --read-only \
+  --memory=256m --pids-limit=16 \
+  -v "$PWD/artifacts/v1.168-max/maxserve_cta_extension:/cta:ro" \
+  --entrypoint /opt/venv/bin/python3 \
+  localhost/cta-max-faiss:local -S -B - <<'PY'
+from pathlib import Path
+
+base = Path("/opt/venv/lib/python3.12/site-packages/max")
+targets = [
+    (Path("/cta/cta_router.py"), ["open_channel", "response_queue.get", "RequestID", "request_id"]),
+    (Path("/cta/cta_native_scheduler.py"), ["response", "RequestID", "send", "result"]),
 ]
 
-pattern = re.compile(
-    r"response_worker|response_queue|response_queue_config|"
-    r"request_id|requestId|RequestID|"
-    r"engine_queue|queue\.get|queue\.put|"
-    r"CTA HTTP FANOUT|CTA RECEIVER|"
-    r"async def|def .*predict|def .*response|"
-    r"schedule|wait_for|background_tasks|"
-    r"ZmqConfig|ZmqPullSocket",
-    re.I
-)
+for folder in [base / "serve/queue", base / "serve/scheduler"]:
+    if folder.exists():
+        for p in folder.rglob("*.py"):
+            s = p.read_text(errors="replace")
+            if any(x in s for x in (
+                "async def response_worker",
+                "def response_worker",
+                "class EngineQueue",
+                "class ZmqPullSocket",
+            )):
+                targets.append((p, [
+                    "response_worker", "open_channel",
+                    "response_queue", "get_nowait",
+                    "RequestID", "recv", "send",
+                ]))
 
-for name in files:
-    p = base / name
-    print(f"\n========== {name} ==========")
-    if not p.is_file():
+for p, terms in targets:
+    print(f"\n========== {p} ==========")
+    if not p.exists():
         print("MISSING")
         continue
-    lines = p.read_text().splitlines()
-    matches = [i for i, line in enumerate(lines) if pattern.search(line)]
-    positions = set()
-    for i in matches:
-        positions.update(range(max(0, i-3), min(len(lines), i+5)))
-    for i in sorted(positions):
-        print(f"{i+1:4}: {lines[i][:220]}")
+    lines = p.read_text(errors="replace").splitlines()
+    selected = set()
+    for i, line in enumerate(lines):
+        if any(t in line for t in terms):
+            selected.update(range(max(0, i-4), min(len(lines), i+9)))
+    for i in sorted(selected):
+        print(f"{i+1:4}: {lines[i][:180]}")
 
-log = Path("/application1/cta_native_corrected_1028.log")
-print("\n========== RUNTIME EVENT SEQUENCE ==========")
-if log.exists():
-    keys = re.compile(
-        r"CTA HTTP|CTA RECEIVER|CTA RESPONSE|CTA NATIVE|"
-        r"CTA QUEUE|CTA ZMQ|HTTP STATUS|"
-        r"Traceback|Exception|ERROR|Killed|"
-        r"response_worker|request_id",
-        re.I
-    )
-    found = [(i, s) for i, s in enumerate(log.read_text(errors="replace").splitlines(), 1) if keys.search(s)]
-    for i, s in found[-65:]:
-        print(f"{i}: {s[:250]}")
-else:
-    print("LOG MISSING")
-
-print("\nDIAGNOSTIC COMPLETE — NO FILES MODIFIED")
+print("\nSOURCE DIAGNOSTIC COMPLETE — NO CHANGES")
 PY

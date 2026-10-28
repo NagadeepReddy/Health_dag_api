@@ -1,1 +1,1 @@
-grep -nE 'start_model_worker|model_factory|CTAFactoryWrapper|install_cta_scheduler_hook|return ' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py
+find /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max/grecbase_integration_weights -maxdepth 1 -type f -name '*.npy' -printf '%f\n' | head -30

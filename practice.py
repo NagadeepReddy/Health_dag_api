@@ -1,77 +1,73 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-
-BASE=/application1/cta_max_true_batch_dev_20261028
-LOG="$BASE/batch2_after_nlp_fix.log"
-
-RAM=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
-DISK=$(df -Pk /application1 | awk 'NR==2 {print $4}')
-
-if [ "$RAM" -lt 20971520 ] || [ "$DISK" -lt 10485760 ]; then
-    echo "STOP: Insufficient available RAM or disk"
-elif [ ! -f "$BASE/batch2_candidate/cta_max/run_batch2_live_max_inference.py" ]; then
-    echo "STOP: Existing batch runner missing"
-else
-    timeout --signal=TERM --kill-after=10s 360s \
-    podman \
-      --root /application1/podman/storage \
-      --runroot /run/containers/storage \
-      run --rm -i --pull=never \
-      --network=none \
-      --memory=16g --memory-swap=16g \
-      --pids-limit=32 \
-      --tmpfs /tmp:rw,size=1g \
-      -v "$PWD:/workspace:ro" \
-      -v "$BASE/batch2_candidate:/batchdev:ro" \
-      -w /workspace \
-      -e HOME=/tmp \
-      -e TMPDIR=/tmp \
-      -e XDG_CACHE_HOME=/tmp/cache \
-      -e MODULAR_CACHE_DIR=/tmp/modular \
-      -e PYTHONDONTWRITEBYTECODE=1 \
-      -e OMP_NUM_THREADS=1 \
-      -e MKL_NUM_THREADS=1 \
-      -e OPENBLAS_NUM_THREADS=1 \
-      -e PYTHONPATH=/batchdev:/workspace \
-      --entrypoint /opt/venv/bin/python3 \
-      localhost/cta-max-faiss:local -B - <<'PY' > "$LOG" 2>&1
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
-import time
-import numpy as np
-import torch
-from cta_max.run_batch2_live_max_inference import infer_max_live
+import os
 
-paths = list(Path("artifacts/v1.168-max").rglob("real_sanity_model_in.pt"))
-assert len(paths) == 1, "STOP: Real input not uniquely located"
+repo = Path.cwd()
+source_root = repo / "artifacts/v1.168-max/cta_max"
+candidate = Path(
+    "/application1/cta_max_true_batch_dev_20261028/"
+    "batch2_candidate/cta_max"
+)
 
-data = torch.load(paths[0], map_location="cpu", weights_only=True)
+required = (
+    "main_context_weights",
+    "context_head.deep_embedding.0.weight.npy"
+)
 
-start = time.monotonic()
-output = infer_max_live(data)
+assert source_root.is_dir(), "STOP: Original MAX directory missing"
+assert candidate.is_dir(), "STOP: Batch candidate missing"
 
-if isinstance(output, (tuple, list)) and len(output) == 1:
-    output = output[0]
-if isinstance(output, torch.Tensor):
-    output = output.detach().cpu().numpy()
+folders = sorted(
+    p for p in source_root.iterdir()
+    if p.is_dir() and p.name.endswith("_weights")
+)
 
-result = np.asarray(output)
-print("BATCH OUTPUT SHAPE:", result.shape, flush=True)
-print("ELAPSED SECONDS:", round(time.monotonic() - start, 2), flush=True)
+assert folders, "STOP: No original exported weight directories"
 
-assert result.shape == (2, 2048), "STOP: Incorrect batch output"
-assert np.isfinite(result).all(), "STOP: Non-finite output"
+source = source_root / required[0]
+assert (source / required[1]).is_file(), (
+    "STOP: Main-context weight not found in original exports"
+)
 
-diff = float(np.max(np.abs(result[0] - result[1])))
-print("DUPLICATE MAX DIFFERENCE:", diff, flush=True)
-assert np.allclose(result[0], result[1], rtol=1e-5, atol=1e-5)
+changes = []
 
-print("REAL BATCH-2 INFERENCE: PASS", flush=True)
-print("DUPLICATE CONSISTENCY: PASS", flush=True)
+# Validate everything before creating links.
+for folder in folders:
+    files = sorted(folder.glob("*.npy"))
+    if not files:
+        continue
+
+    for p in files:
+        with p.open("rb") as f:
+            assert f.read(6) == b"\x93NUMPY", (
+                f"STOP: Invalid weight: {p}"
+            )
+
+    target = candidate / folder.name
+    container_source = (
+        "/workspace/" + folder.relative_to(repo).as_posix()
+    )
+
+    if target.is_symlink():
+        assert os.readlink(target) == container_source, (
+            f"STOP: Conflicting link: {target}"
+        )
+        print("ALREADY LINKED:", folder.name)
+    elif target.exists():
+        assert target.is_dir(), (
+            f"STOP: Unexpected existing file: {target}"
+        )
+        print("EXISTING DIRECTORY PRESERVED:", folder.name)
+    else:
+        changes.append((target, container_source, len(files)))
+
+for target, container_source, count in changes:
+    target.symlink_to(container_source, target_is_directory=True)
+    print("LINKED:", target.name, "| WEIGHTS:", count)
+
+print("MAIN-CONTEXT WEIGHT: FOUND")
+print("NEW WEIGHT LINKS:", len(changes))
+print("DS CODE: UNCHANGED")
+print("WORKING MODEL: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
 PY
-
-    RC=$?
-    echo "TEST EXIT CODE: $RC"
-    echo "=== RESULTS ==="
-    grep -E 'PASS|STOP:|Error|ERROR|Traceback|SHAPE|SECONDS|DIFFERENCE|Killed|Missing' \
-      "$LOG" | tail -25 || true
-    echo "LOG: $LOG"
-fi

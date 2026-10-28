@@ -1,104 +1,90 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
-
-python3 -S -B - <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
-import shutil
+import re
 
 base = Path("/application1/cta_max_true_batch_dev_20261028")
-original = base / "cta_max"
-candidate = base / "batch2_candidate/cta_max"
-graph = candidate / "grecbase_fusion_full_head_72_max.py"
+pkg = base / "batch2_candidate/cta_max"
+src = pkg / "run_live_max_inference.py"
+dst = pkg / "run_batch2_live_max_inference.py"
+graph = pkg / "grecbase_fusion_full_head_72_max.py"
+contract = base / "maxserve_cta_extension/cta_batch2_contract.py"
 
-assert original.is_dir() and candidate.is_dir()
-assert graph.is_file(), "STOP: Batch graph missing"
+assert src.is_file() and graph.is_file() and contract.is_file(), \
+    "STOP: Required batch files missing"
+assert not dst.exists(), "STOP: Batch runner already exists"
 
-source = graph.read_text()
+source = src.read_text()
 tree = ast.parse(source)
 
-offsets = [0]
-for line in source.splitlines(keepends=True):
-    offsets.append(offsets[-1] + len(line))
+functions = [
+    n for n in tree.body
+    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    and n.name == "infer_max_live"
+]
+assert len(functions) == 1, "STOP: Inference function differs"
 
-changes = set()
-unresolved = []
+fn = functions[0]
 
-for node in ast.walk(tree):
-    if not isinstance(node, ast.Call):
-        continue
-
-    name = ast.unparse(node.func)
-
-    if name != "ops.reshape" or len(node.args) < 2:
-        continue
-
-    shape = node.args[1]
-
-    if not isinstance(shape, (ast.List, ast.Tuple)):
-        unresolved.append(
-            f"Line {node.lineno}: dynamic reshape requires validation"
+assignments = [
+    n for n in ast.walk(fn)
+    if isinstance(n, (ast.Assign, ast.AnnAssign))
+    and any(
+        isinstance(t, ast.Name) and t.id == "arrays"
+        for t in (
+            n.targets if isinstance(n, ast.Assign)
+            else [n.target]
         )
-        continue
+    )
+]
+assert len(assignments) == 1, \
+    "STOP: Cannot safely locate real input preparation"
 
-    if not shape.elts:
-        continue
+a = assignments[0]
+lines = source.splitlines(keepends=True)
+indent = re.match(r"^\s*", lines[a.lineno - 1]).group()
+assert "\n" not in indent
 
-    first = shape.elts[0]
+insertion = (
+    f"{indent}assert len(arrays) == 72, "
+    '"Expected 72 CTA inputs"\n'
+    f"{indent}from cta_max.run_batch2_contract import "
+    "pack_two_requests\n"
+    f"{indent}arrays = pack_two_requests(arrays, arrays)\n"
+    f'{indent}print("REAL BATCH-2 INPUTS: PASS", '
+    'len(arrays), flush=True)\n'
+)
 
-    if not (
-        isinstance(first, ast.Constant)
-        and type(first.value) is int
-        and first.value == 1
-    ):
-        continue
+# Provide the contract inside the isolated import package.
+contract_dst = pkg / "run_batch2_contract.py"
+assert not contract_dst.exists(), "STOP: Contract copy exists"
 
-    start = offsets[first.lineno - 1] + first.col_offset
-    end = offsets[first.end_lineno - 1] + first.end_col_offset
+updated = "".join(
+    lines[:a.end_lineno]
+    + [insertion]
+    + lines[a.end_lineno:]
+)
 
-    assert source[start:end] == "1"
-    changes.add((start, end, node.lineno))
+updated = updated.replace(
+    "def infer_max_live(",
+    "def infer_max_batch2_duplicate(",
+    1
+)
 
-updated = source
-
-for start, end, lineno in sorted(changes, reverse=True):
-    updated = updated[:start] + "2" + updated[end:]
-
+# Keep the original working inference function untouched.
+assert updated != source
 ast.parse(updated)
+ast.parse(contract.read_text())
 
-backup = graph.with_suffix(".py.before_batch2_internal.bak")
+contract_dst.write_bytes(contract.read_bytes())
+dst.write_text(updated)
 
-if changes:
-    assert not backup.exists(), "STOP: Backup exists; no overwrite"
-    assert shutil.disk_usage("/application1").free > 1024**3, \
-        "STOP: Low disk space"
-
-    backup.write_bytes(graph.read_bytes())
-    graph.write_text(updated)
-
-syntax_count = 0
-for p in candidate.rglob("*.py"):
-    ast.parse(p.read_text())
-    syntax_count += 1
-
-# Ensure the original working graph remains unchanged.
-original_graph = original / graph.name
-assert original_graph.is_file()
-
-print("=== BATCH-2 IMPLEMENTATION ===")
-print("MAIN GRAPH CORRECTIONS:", len(changes))
-print("CORRECTED LINES:",
-      sorted(x[2] for x in changes))
-print("PYTHON FILES VALIDATED:", syntax_count)
-print("PYTHON SYNTAX: PASS")
-print("DYNAMIC RESHAPES REQUIRING REVIEW:", len(unresolved))
-
-for issue in unresolved[:15]:
-    print("REVIEW:", issue)
-
-print("ISOLATED BATCH CANDIDATE: UPDATED")
-print("COMPILED BATCH-2 GRAPH: NOT YET VALIDATED")
-print("TRUE BATCH INFERENCE: NOT YET PROVEN")
+print("BATCH-2 REAL INPUT RUNNER: CREATED")
+print("TWO IDENTICAL REAL REQUESTS: CONFIGURED")
+print("MAX GRAPH: ISOLATED CANDIDATE")
+print("RUNNER SYNTAX: PASS")
+print("TRUE BATCH INFERENCE: NOT YET EXECUTED")
 print("WORKING HTTP 200: UNCHANGED")
-print("ORIGINAL DS CODE: UNCHANGED")
+print("DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
 PY

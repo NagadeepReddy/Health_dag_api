@@ -15,11 +15,8 @@ timeout 30s podman \
   -v "$PWD/artifacts/v1.168-max/maxserve_cta_extension:/workspace/maxserve_cta_extension:ro" \
   --entrypoint /opt/venv/bin/python3 \
   localhost/cta-max-faiss:local -B - <<'PY'
-import asyncio
-import queue
-import zmq
+import asyncio, queue, zmq
 from types import SimpleNamespace
-
 from max.interfaces.request import RequestID
 from max.interfaces.scheduler import SchedulerResult
 from max.serve.queue.zmq_queue import ZmqConfig
@@ -49,23 +46,23 @@ class Configs:
         )
 
 async def main():
-    cfg = Configs()
+    config = Configs()
     engine = EngineQueue(
         worker_monitor=SimpleNamespace(is_healthy=lambda: True),
-        scheduler_zmq_configs=cfg,
+        scheduler_zmq_configs=config,
     )
+    request_in, response_out, cancel_in = config.model_worker_queues()
 
-    request_in, response_out, cancel_in = cfg.model_worker_queues()
-    rid = RequestID("cta-lifecycle-test")
+    raw_id = "cta-lifecycle-test"
+    rid = RequestID(raw_id)
 
     async def worker():
         while True:
             try:
                 context = request_in.get_nowait()
                 print("REQUEST RECEIVED: PASS", flush=True)
-                print("REQUEST ID:", repr(context.request_id), flush=True)
                 response_out.put_nowait({
-                    context.request_id: SchedulerResult.create(
+                    RequestID(context.request_id): SchedulerResult.create(
                         CTASerializableOutput(
                             is_done=True,
                             result={"status": "ok"}
@@ -77,34 +74,33 @@ async def main():
             except (queue.Empty, zmq.Again):
                 await asyncio.sleep(0.05)
 
-    receiver_task = asyncio.create_task(engine.response_worker())
+    receiver = asyncio.create_task(engine.response_worker())
     worker_task = asyncio.create_task(worker())
 
     try:
-        await asyncio.sleep(0.5)
-        print("RECEIVER STARTED:", not receiver_task.done(), flush=True)
-
-        with engine.open_channel(rid, CTAContext(rid, {"probe": True})) as pending:
+        await asyncio.sleep(0.3)
+        with engine.open_channel(
+            rid, CTAContext(raw_id, {"probe": True})
+        ) as pending:
             print("REQUEST SUBMITTED: PASS", flush=True)
-            try:
-                result = await asyncio.wait_for(pending.get(), timeout=8)
-                assert result.result.result["status"] == "ok"
-                print("HTTP PENDING RESPONSE: PASS", flush=True)
-            except asyncio.TimeoutError:
-                print("HTTP PENDING RESPONSE: TIMEOUT", flush=True)
-                print("WORKER TASK DONE:", worker_task.done(), flush=True)
-                if worker_task.done():
-                    print("WORKER ERROR:", repr(worker_task.exception()), flush=True)
-                print("RECEIVER TASK DONE:", receiver_task.done(), flush=True)
-                if receiver_task.done():
-                    print("RECEIVER ERROR:", repr(receiver_task.exception()), flush=True)
-                raise
+            result = await asyncio.wait_for(pending.get(), timeout=8)
+            assert result.result.result["status"] == "ok"
+            print("HTTP PENDING RESPONSE: PASS", flush=True)
 
         print("NATIVE QUEUE LIFECYCLE: PASS", flush=True)
+    except Exception as exc:
+        print("LIFECYCLE ERROR:", repr(exc), flush=True)
+        print("WORKER DONE:", worker_task.done(), flush=True)
+        if worker_task.done() and not worker_task.cancelled():
+            print("WORKER EXCEPTION:", repr(worker_task.exception()), flush=True)
+        print("RECEIVER DONE:", receiver.done(), flush=True)
+        if receiver.done() and not receiver.cancelled():
+            print("RECEIVER EXCEPTION:", repr(receiver.exception()), flush=True)
+        raise
     finally:
-        for task in (receiver_task, worker_task):
-            task.cancel()
-        await asyncio.gather(receiver_task, worker_task, return_exceptions=True)
+        receiver.cancel()
+        worker_task.cancel()
+        await asyncio.gather(receiver, worker_task, return_exceptions=True)
 
 asyncio.run(main())
 PY

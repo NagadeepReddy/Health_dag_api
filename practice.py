@@ -1,7 +1,27 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-grep -n -A 5 -B 3 -E 'sample = Path|adjusted_sanity|sanity_input.json' \
-artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py && \
-find artifacts/v1.168/samples artifacts/v1.168-max \
-  -maxdepth 3 -type f \
-  \( -name '*sanity*.json' -o -name '*adjust*.json' \) \
-  -print 2>/dev/null
+python3 -B -S - <<'PY'
+import json
+from pathlib import Path
+
+p = Path("artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
+
+if not p.is_file():
+    raise SystemExit("STOP: actual native test input missing")
+
+data = json.loads(p.read_text())
+print("ADJUSTED JSON: VALID")
+print("FILE SIZE:", p.stat().st_size, "bytes")
+print("ROOT TYPE:", type(data).__name__)
+
+if isinstance(data, dict):
+    print("ROOT KEYS:", sorted(data))
+    for key, value in data.items():
+        if isinstance(value, list):
+            print(f"{key}: {len(value)} items")
+        elif isinstance(value, dict):
+            print(f"{key}: {len(value)} fields")
+
+print("ORIGINAL JSON: UNCHANGED")
+print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
+PY

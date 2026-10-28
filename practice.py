@@ -1,6 +1,6 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-timeout 35s podman \
+timeout 30s podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run -i --rm --pull=never \
@@ -15,7 +15,9 @@ timeout 35s podman \
   -v "$PWD/artifacts/v1.168-max/maxserve_cta_extension:/workspace/maxserve_cta_extension:ro" \
   --entrypoint /opt/venv/bin/python3 \
   localhost/cta-max-faiss:local -B - <<'PY'
-import asyncio, queue, zmq
+import asyncio
+import queue
+import zmq
 from types import SimpleNamespace
 
 from max.interfaces.request import RequestID
@@ -27,9 +29,9 @@ from maxserve_cta_extension.cta_native_scheduler import CTASerializableOutput
 
 class Configs:
     def __init__(self):
-        response_type = dict[RequestID, SchedulerResult[CTASerializableOutput]]
+        output = dict[RequestID, SchedulerResult[CTASerializableOutput]]
         self.request_queue_config = ZmqConfig[CTAContext](CTAContext)
-        self.response_queue_config = ZmqConfig[response_type](response_type)
+        self.response_queue_config = ZmqConfig[output](output)
         self.cancel_queue_config = ZmqConfig[list[RequestID]](list[RequestID])
 
     def api_worker_queues(self):
@@ -52,49 +54,59 @@ async def main():
         worker_monitor=SimpleNamespace(is_healthy=lambda: True),
         scheduler_zmq_configs=cfg,
     )
-    request_in, response_out, cancel_in = cfg.model_worker_queues()
-    rid = RequestID("cta-http-delivery-smoke")
 
-    async def fake_worker():
-        for _ in range(200):
+    request_in, response_out, cancel_in = cfg.model_worker_queues()
+    rid = RequestID("cta-lifecycle-test")
+
+    async def worker():
+        while True:
             try:
                 context = request_in.get_nowait()
-                print("NATIVE REQUEST RECEIVED: PASS", flush=True)
+                print("REQUEST RECEIVED: PASS", flush=True)
+                print("REQUEST ID:", repr(context.request_id), flush=True)
                 response_out.put_nowait({
                     context.request_id: SchedulerResult.create(
                         CTASerializableOutput(
                             is_done=True,
-                            result={"status": "ok"},
+                            result={"status": "ok"}
                         )
                     )
                 })
-                print("NATIVE RESPONSE SENT: PASS", flush=True)
+                print("RESPONSE SENT: PASS", flush=True)
                 return
             except (queue.Empty, zmq.Again):
-                await asyncio.sleep(0.03)
-        raise TimeoutError("Request never reached model-side queue")
+                await asyncio.sleep(0.05)
 
-    receiver = asyncio.create_task(engine.response_worker())
-    worker = asyncio.create_task(fake_worker())
+    receiver_task = asyncio.create_task(engine.response_worker())
+    worker_task = asyncio.create_task(worker())
 
     try:
-        with engine.open_channel(rid, CTAContext(rid, {"probe": True})) as pending:
-            result = await asyncio.wait_for(pending.get(), timeout=8)
+        await asyncio.sleep(0.5)
+        print("RECEIVER STARTED:", not receiver_task.done(), flush=True)
 
-        await worker
-        assert result.result.result["status"] == "ok"
-        print("HTTP PENDING QUEUE DELIVERY: PASS", flush=True)
-        print("MAX RESPONSE LIFECYCLE: PASS", flush=True)
+        with engine.open_channel(rid, CTAContext(rid, {"probe": True})) as pending:
+            print("REQUEST SUBMITTED: PASS", flush=True)
+            try:
+                result = await asyncio.wait_for(pending.get(), timeout=8)
+                assert result.result.result["status"] == "ok"
+                print("HTTP PENDING RESPONSE: PASS", flush=True)
+            except asyncio.TimeoutError:
+                print("HTTP PENDING RESPONSE: TIMEOUT", flush=True)
+                print("WORKER TASK DONE:", worker_task.done(), flush=True)
+                if worker_task.done():
+                    print("WORKER ERROR:", repr(worker_task.exception()), flush=True)
+                print("RECEIVER TASK DONE:", receiver_task.done(), flush=True)
+                if receiver_task.done():
+                    print("RECEIVER ERROR:", repr(receiver_task.exception()), flush=True)
+                raise
+
+        print("NATIVE QUEUE LIFECYCLE: PASS", flush=True)
     finally:
-        receiver.cancel()
-        worker.cancel()
-        await asyncio.gather(receiver, worker, return_exceptions=True)
-        for sock in (request_in, response_out, cancel_in):
-            close = getattr(sock, "close", None)
-            if callable(close):
-                close()
+        for task in (receiver_task, worker_task):
+            task.cancel()
+        await asyncio.gather(receiver_task, worker_task, return_exceptions=True)
 
 asyncio.run(main())
 PY
 
-echo "RESPONSE LIFECYCLE EXIT CODE: $?"
+echo "LIFECYCLE EXIT CODE: $?"

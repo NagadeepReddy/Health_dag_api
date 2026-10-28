@@ -1,46 +1,38 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
-import ast
+import re
 
-base = Path("artifacts/v1.168-max/maxserve_cta_extension")
+base = Path("artifacts/v1.168-max/cta_max")
 
-for name in (
-    "cta_native_scheduler.py",
-    "cta_worker_adapter.py",
-):
-    p = base / name
-    print(f"\n=== {name} ===")
+patterns = re.compile(
+    r"session\.execute|\.execute\(|batch_size|batch_dim|"
+    r"input_shape|output_shape|reshape\(|"
+    r"zeros\(|ones\(|stack\(|concatenate\(|"
+    r"TensorType|compile\(|inference|"
+    r"\(1,\s*4,\s*256\)|2048",
+    re.I
+)
 
-    tree = ast.parse(p.read_text())
+print("=== MAX INFERENCE BATCH COMPATIBILITY ===")
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name in (
-                "run_iteration",
-                "predict",
-                "predict_batch",
-                "batch_predict",
-                "infer_batch",
-            ):
-                print(f"\nFUNCTION: {node.name}")
-                print(
-                    ast.get_source_segment(
-                        p.read_text(), node
-                    )[:6500]
-                )
+for p in sorted(base.rglob("*.py")):
+    if "test" in p.name.lower() or "diag" in p.name.lower():
+        continue
+    lines = p.read_text(errors="replace").splitlines()
+    matches = [
+        (i, line) for i, line in enumerate(lines, 1)
+        if patterns.search(line)
+    ]
+    if not matches:
+        continue
+    print(f"\nFILE: {p}")
+    for i, line in matches[:35]:
+        print(f"{i}: {line.strip()[:200]}")
+    if len(matches) > 35:
+        print(f"... {len(matches)-35} additional matches omitted")
 
-print("\n=== BATCH API REFERENCES ===")
-for p in base.glob("*.py"):
-    for i, line in enumerate(p.read_text().splitlines(), 1):
-        if any(x in line.lower() for x in (
-            "predict_batch",
-            "batch_predict",
-            "infer_batch",
-            "max_items_per_iteration",
-        )):
-            print(f"{p.name}:{i}: {line.strip()}")
-
-print("\nBATCH CAPABILITY INSPECTION: COMPLETE")
-print("NO FILES MODIFIED")
-print("MAX MODEL NOT STARTED")
+print("\nINSPECTION COMPLETE")
+print("DS CODE: UNCHANGED")
+print("MAX MODEL: NOT STARTED")
+print("WORKING NATIVE HTTP CODE: UNCHANGED")
 PY

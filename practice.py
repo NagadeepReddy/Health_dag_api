@@ -1,1 +1,1 @@
-free -h && ps -eo pid,rss,comm --sort=-rss | head -12
+ps -eo pid,ppid,nlwp,rss,comm --sort=-nlwp | head -15

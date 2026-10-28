@@ -1,54 +1,81 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+
+BASE=/application1/cta_max_true_batch_dev_20261028
+LOG="$BASE/batch2_after_weight_fix.log"
+
+echo "=== REAL BATCH-2 TEST ==="
+
+RAM=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+DISK=$(df -Pk /application1 | awk 'NR==2 {print $4}')
+
+if [ "$RAM" -lt 20971520 ]; then
+  echo "STOP: Less than 20 GiB available RAM"
+elif [ "$DISK" -lt 10485760 ]; then
+  echo "STOP: Less than 10 GiB available disk"
+elif [ ! -f "$BASE/batch2_candidate/cta_max/run_batch2_live_max_inference.py" ]; then
+  echo "STOP: Batch runner missing"
+else
+  timeout --signal=TERM --kill-after=10s 360s \
+  podman \
+    --root /application1/podman/storage \
+    --runroot /run/containers/storage \
+    run --rm -i --pull=never \
+    --network=none \
+    --memory=16g --memory-swap=16g \
+    --pids-limit=32 \
+    --tmpfs /tmp:rw,size=1g \
+    -v "$PWD:/workspace:ro" \
+    -v "$BASE/batch2_candidate:/batchdev:ro" \
+    -w /workspace \
+    -e HOME=/tmp \
+    -e TMPDIR=/tmp \
+    -e XDG_CACHE_HOME=/tmp/cache \
+    -e MODULAR_CACHE_DIR=/tmp/modular \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    -e OMP_NUM_THREADS=1 \
+    -e MKL_NUM_THREADS=1 \
+    -e OPENBLAS_NUM_THREADS=1 \
+    -e PYTHONPATH=/batchdev:/workspace \
+    --entrypoint /opt/venv/bin/python3 \
+    localhost/cta-max-faiss:local -B - <<'PY' > "$LOG" 2>&1
 from pathlib import Path
-import os
+import numpy as np
+import torch
+import time
+from cta_max.run_batch2_live_max_inference import infer_max_live
 
-repo = Path.cwd()
-candidate = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
-target = candidate / "grecbase_integration_weights"
-filename = "att_pooling.rotary_emb.inv_freq.npy"
+paths = list(Path("artifacts/v1.168-max").rglob("real_sanity_model_in.pt"))
+assert len(paths) == 1, "STOP: Real input not uniquely located"
 
-assert candidate.is_dir(), "STOP: Batch candidate missing"
+data = torch.load(paths[0], map_location="cpu", weights_only=True)
 
-matches = sorted(
-    (repo / "artifacts/v1.168-max").rglob(filename)
-)
+start = time.monotonic()
+output = infer_max_live(data)
+elapsed = time.monotonic() - start
 
-print("EXISTING ROTARY EXPORTS:", len(matches))
-for p in matches:
-    print("SOURCE:", p)
+if isinstance(output, (tuple, list)) and len(output) == 1:
+    output = output[0]
+if isinstance(output, torch.Tensor):
+    output = output.detach().cpu().numpy()
 
-valid = [
-    p for p in matches
-    if p.parent.name == "grecbase_integration_weights"
-    and p.stat().st_size > 0
-    and p.open("rb").read(6) == b"\x93NUMPY"
-]
+result = np.asarray(output)
+print("OUTPUT SHAPE:", result.shape, flush=True)
+print("ELAPSED SECONDS:", round(elapsed, 2), flush=True)
 
-assert len(valid) == 1, (
-    "STOP: Cannot identify exactly one valid original weight directory"
-)
+assert result.shape == (2, 2048), "STOP: Incorrect batch output"
+assert np.isfinite(result).all(), "STOP: Non-finite output"
 
-source = valid[0].parent
-files = list(source.glob("*.npy"))
+diff = float(np.max(np.abs(result[0] - result[1])))
+print("DUPLICATE MAX DIFFERENCE:", diff, flush=True)
+assert np.allclose(result[0], result[1], rtol=1e-5, atol=1e-5)
 
-assert len(files) >= 1, "STOP: No exported NPY weights"
-
-container_source = "/workspace/" + source.relative_to(repo).as_posix()
-
-if target.is_symlink():
-    assert os.readlink(target) == container_source, \
-        "STOP: Existing link points somewhere else"
-    print("BATCH WEIGHT LINK: ALREADY CORRECT")
-else:
-    assert not target.exists(), \
-        "STOP: Candidate already contains a weight directory"
-    os.symlink(container_source, target)
-    print("BATCH WEIGHT LINK: CREATED")
-
-print("EXPORTED WEIGHT FILES:", len(files))
-print("ROTARY EXPORT: FOUND")
-print("CONTAINER WEIGHT PATH:", container_source)
-print("WORKING MODEL: UNCHANGED")
-print("DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
+print("REAL BATCH-2 INFERENCE: PASS", flush=True)
+print("DUPLICATE CONSISTENCY: PASS", flush=True)
 PY
+
+  RC=$?
+  echo "TEST EXIT CODE: $RC"
+  echo "=== RESULTS ==="
+  grep -E 'PASS|STOP:|Error|ERROR|Traceback|SHAPE|SECONDS|DIFFERENCE|Killed' "$LOG" | tail -20 || true
+  echo "LOG: $LOG"
+fi

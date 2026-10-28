@@ -1,37 +1,27 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-python3 -B -S - <<'PY'
-from pathlib import Path
-import re
-
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py")
-sample = Path("artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
-new_path = "/workspace/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
-
-if not sample.is_file():
-    raise SystemExit("STOP: adjusted JSON missing")
-
-s = p.read_text()
-pattern = re.compile(
-    r"""(\bsample\s*=\s*Path\s*\(\s*)(['"])([^'"\r\n]*sanity_input\.json)\2(\s*\))"""
-)
-matches = list(pattern.finditer(s))
-
-if len(matches) != 1:
-    raise SystemExit(f"STOP: expected one sample assignment, found {len(matches)}")
-
-m = matches[0]
-old_path = m.group(3)
-
-if old_path == new_path:
-    print("NATIVE TEST INPUT: ALREADY UPDATED")
-else:
-    updated = s[:m.start(3)] + new_path + s[m.end(3):]
-    compile(updated, str(p), "exec")
-    p.write_text(updated)
-    print("NATIVE TEST INPUT: UPDATED")
-
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL JSON: UNCHANGED")
-print("DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
-PY
+df -h /application1 && \
+awk '/MemAvailable:/ {if ($2 < 800000) {print "STOP: insufficient available memory"; exit 1}}' /proc/meminfo && \
+set -o pipefail && \
+timeout -s TERM -k 5s 70s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --memory=1g --memory-swap=1g \
+  --cpus=1 --pids-limit=64 \
+  --network=none --read-only --log-driver=none \
+  --tmpfs /tmp:rw,size=256m,mode=1777 \
+  --tmpfs /root/.cache:rw,size=128m,mode=1777 \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
+  -v /application1/sajjna8/rt-pzaas-cta-offers-v1:/workspace:ro \
+  -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONUNBUFFERED=1 \
+  -e OMP_NUM_THREADS=1 \
+  -e MKL_NUM_THREADS=1 \
+  -e OPENBLAS_NUM_THREADS=1 \
+  -e TOKENIZERS_PARALLELISM=false \
+  --entrypoint /opt/venv/bin/python3 \
+  localhost/cta-max-faiss:local \
+  -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  2>&1 | grep --line-buffered -E \
+  'CTA MODEL LOAD|CTA PREDICT_RAW|CTA preprocess|CTA postprocess|CTA STATUS|CTA RESPONSE:|NATIVE CTA JSON E2E|EXCEPTION|Error|Traceback|Timeout|Terminated|Killed'

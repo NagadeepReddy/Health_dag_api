@@ -8,6 +8,7 @@ timeout -s TERM -k 10s 120s podman \
   --network=none --read-only --log-driver=none \
   --tmpfs /tmp:rw,size=512m,mode=1777 \
   --tmpfs /root/.cache:rw,size=128m,mode=1777 \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
   -v /application1/sajjna8/rt-pzaas-cta-offers-v1:/workspace:ro \
   -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
   -e PYTHONDONTWRITEBYTECODE=1 \

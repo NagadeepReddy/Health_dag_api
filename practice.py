@@ -14,7 +14,6 @@ timeout -k 5s 45s podman \
   --entrypoint /opt/venv/bin/python3 \
   localhost/cta-max-faiss:local \
   -m maxserve_cta_extension.cta_native_launcher \
-  serve \
   --model-path /workspace/artifacts/v1.168-max/cta_native_model \
   --devices cpu \
   --quantization-encoding float32 \

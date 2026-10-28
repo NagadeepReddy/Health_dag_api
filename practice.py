@@ -1,1 +1,1 @@
-tar -tzf /application1/cta_max_extension_postfix_20261027.tar.gz >/dev/null && echo "BACKUP INTEGRITY: PASS"
+scp root@10-119-98-21:/application1/cta_max_extension_postfix_20261027.tar.gz "$env:USERPROFILE\Downloads\"

@@ -1,1 +1,1 @@
-sed -n '1,200p' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py
+grep -nE 'start_model_worker|model_factory|CTAFactoryWrapper|install_cta_scheduler_hook|return ' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_worker.py

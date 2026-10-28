@@ -5,6 +5,5 @@ podman --root /application1/podman/storage \
   --network=none --read-only --log-driver=none \
   --entrypoint /bin/grep \
   localhost/cta-max-faiss:local \
-  -Rni -B 5 -A 15 \
-  'def is_worker_healthy' \
-  /opt/venv/lib/python3.12/site-packages/max
+  -Rni -B 8 -A 22 'def is_healthy' \
+  /opt/venv/lib/python3.12/site-packages/max/serve

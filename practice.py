@@ -4,24 +4,19 @@ import json
 from pathlib import Path
 
 p = Path("artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
+d = json.loads(p.read_text())
 
-if not p.is_file():
-    raise SystemExit("STOP: actual native test input missing")
+events = d.get("Events", {})
+print("EVENTS TYPE:", type(events).__name__)
 
-data = json.loads(p.read_text())
-print("ADJUSTED JSON: VALID")
-print("FILE SIZE:", p.stat().st_size, "bytes")
-print("ROOT TYPE:", type(data).__name__)
-
-if isinstance(data, dict):
-    print("ROOT KEYS:", sorted(data))
-    for key, value in data.items():
+if isinstance(events, dict):
+    for key, value in events.items():
+        print("EVENT FIELD:", key, "| TYPE:", type(value).__name__,
+              "| COUNT:", len(value) if isinstance(value, (list, dict)) else "N/A")
         if isinstance(value, list):
-            print(f"{key}: {len(value)} items")
-        elif isinstance(value, dict):
-            print(f"{key}: {len(value)} fields")
+            print("ITEM TYPES:", [type(x).__name__ for x in value[:5]])
 
-print("ORIGINAL JSON: UNCHANGED")
+print("JSON STRUCTURE CHECK: COMPLETE")
 print("DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
 PY

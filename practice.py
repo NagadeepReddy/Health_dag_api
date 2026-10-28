@@ -1,1 +1,3 @@
-find /application1/sajjna8/rt-pzaas-cta-offers-v1 -type f -name 'pipeline.py' -print 2>/dev/null | head -20
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+grep -n -C 5 'modelId' \
+artifacts/v1.168/core-artifact/pipeline.py

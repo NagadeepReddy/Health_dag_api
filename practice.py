@@ -1,1 +1,1 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && grep -RnE 'def attach_max|attach_max[[:space:]]*=|attach_max\(' artifacts/v1.168-max --include='*.py' | head -30
+sed -n '1,85p' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max/live_cta_pipeline_bridge.py

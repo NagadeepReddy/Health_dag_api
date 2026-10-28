@@ -3,78 +3,60 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 BASE=/application1/cta_max_true_batch_dev_20261028
 RUNNER="$BASE/native_concurrent2_realfile.py"
 CANDIDATE=/application1/cta_max_native_release_candidate_20261028
+LOG="$BASE/native_concurrent2_realfile_test.log"
 
-test -f "$CANDIDATE/cta_native_e2e_test.py" || {
-  echo "STOP: Native test source missing"
-  exit 1
-}
+echo "=== NATIVE MAX SERVE CONCURRENCY TEST ==="
 
-test ! -e "$RUNNER" || {
-  echo "STOP: Benchmark launcher already exists"
-  exit 1
-}
+if [ ! -f "$RUNNER" ] || \
+   [ ! -f "$CANDIDATE/cta_native_e2e_test.py" ]; then
+  echo "STOP: Required benchmark files missing"
+elif [ -e "$LOG" ]; then
+  echo "STOP: Test log already exists"
+elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ]; then
+  echo "STOP: Less than 20 GiB available RAM"
+elif [ "$(df -Pk /application1 | awk 'NR==2 {print $4}')" -lt 10485760 ]; then
+  echo "STOP: Less than 10 GiB free disk"
+else
+  timeout --signal=TERM --kill-after=10s 420s \
+  podman \
+    --root /application1/podman/storage \
+    --runroot /run/containers/storage \
+    run --rm -i --pull=never \
+    --network=none --read-only --log-driver=none \
+    --memory=12g --memory-swap=12g \
+    --cpus=2 --pids-limit=256 \
+    --tmpfs /tmp:rw,size=1g,mode=1777 \
+    -v "$PWD:/workspace:ro" \
+    -v "$CANDIDATE:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
+    -v "$RUNNER:/batchdev/native_concurrent2_realfile.py:ro" \
+    -w /workspace \
+    -e HOME=/tmp \
+    -e TMPDIR=/tmp \
+    -e XDG_CACHE_HOME=/tmp/cache \
+    -e MODULAR_CACHE_DIR=/tmp/modular \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    -e PYTHONUNBUFFERED=1 \
+    -e OMP_NUM_THREADS=1 \
+    -e MKL_NUM_THREADS=1 \
+    -e OPENBLAS_NUM_THREADS=1 \
+    -e modelId=rt-pzaas-cta-offers-v1 \
+    -e expThrottleLabel=T \
+    -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+    --entrypoint /opt/venv/bin/python3 \
+    localhost/cta-max-faiss:local \
+    -B /batchdev/native_concurrent2_realfile.py \
+    > "$LOG" 2>&1
 
-mkdir -p "$BASE" || exit 1
+  RC=$?
+  echo "BENCHMARK EXIT CODE: $RC"
+  echo "=== RESULTS ==="
+  grep -E \
+    'REQUEST [12]:|HTTP STATUSES|WALL SECONDS|THROUGHPUT RPS|MEAN LATENCY|NATIVE CONCURRENT-2|Error|Traceback|Killed|STOP' \
+    "$LOG" | tail -25 || true
+  echo "=== LAST LOG LINES ==="
+  tail -12 "$LOG"
 
-cat > "$RUNNER" <<'PY'
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-import copy
-import time
-import ast
-
-SOURCE = Path(
-    "/workspace/artifacts/v1.168-max/"
-    "maxserve_cta_extension/cta_native_e2e_test.py"
-)
-
-ANCHOR = 'client.post("/v2/cta/predict", json=body)'
-
-def benchmark_post(client, body):
-    def send(number):
-        started = time.monotonic()
-        response = client.post(
-            "/v2/cta/predict", json=copy.deepcopy(body)
-        )
-        elapsed = time.monotonic() - started
-        print(
-            f"REQUEST {number}: HTTP {response.status_code} "
-            f"LATENCY {elapsed:.3f}s",
-            flush=True,
-        )
-        return response, elapsed
-
-    started = time.monotonic()
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(send, n) for n in (1, 2)]
-        results = [f.result() for f in futures]
-
-    seconds = time.monotonic() - started
-    print("HTTP STATUSES:", [r.status_code for r, _ in results])
-    print("WALL SECONDS:", round(seconds, 3))
-    print("THROUGHPUT RPS:", round(2 / seconds, 3))
-    print("MEAN LATENCY:", round(sum(t for _, t in results) / 2, 3))
-
-    assert all(r.status_code == 200 for r, _ in results)
-    print("NATIVE CONCURRENT-2: PASS", flush=True)
-    return results[0][0]
-
-if __name__ == "__main__":
-    source = SOURCE.read_text()
-    assert source.count(ANCHOR) == 1, "STOP: HTTP call differs"
-    modified = source.replace(ANCHOR, "benchmark_post(client, body)")
-    ast.parse(modified)
-    exec(
-        compile(modified, str(SOURCE), "exec"),
-        {
-            "__name__": "__main__",
-            "__file__": str(SOURCE),
-            "benchmark_post": benchmark_post,
-        },
-    )
-PY
-
-python3 -S -B -m py_compile "$RUNNER" && \
-echo "REAL-FILE BENCHMARK LAUNCHER: READY" && \
-echo "DS CODE: UNCHANGED" && \
-echo "MAX: NOT STARTED"
+  if [ "$RC" -ne 0 ]; then
+    echo "BENCHMARK NOT PASSED - DO NOT RETRY AUTOMATICALLY"
+  fi
+fi

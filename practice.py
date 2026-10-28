@@ -1,6 +1,12 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-echo "=== ACTUAL SEQUENCE WEIGHTS ===" && \
-ls -lah artifacts/v1.168-max/cta_max/sequence_weights/ && \
-echo "=== WEIGHT FILE COUNT ===" && \
-find artifacts/v1.168-max/cta_max/sequence_weights \
-  -maxdepth 1 -type f -name '*.npy' | wc -l
+timeout 20s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --network=none --read-only \
+  --memory=256m --pids-limit=32 \
+  --workdir /workspace \
+  -v "$PWD":/workspace:ro \
+  --entrypoint /bin/sh \
+  localhost/cta-max-faiss:local \
+  -c 'pwd; ls -lh artifacts/v1.168-max/cta_max/sequence_weights/fn_norm1_g.npy; echo "WEIGHT PATH CHECK: PASS"'

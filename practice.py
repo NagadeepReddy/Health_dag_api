@@ -1,15 +1,19 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+echo "=== NATIVE CONTAINER EXIT EVENTS ==="
 
-echo "=== KERNEL OOM / PROCESS KILL EVENTS ==="
-journalctl -k \
-  --since "2026-10-28 18:45:00 UTC" \
-  --until "2026-10-28 20:00:00 UTC" \
-  --no-pager 2>&1 |
-grep -Ei 'oom|out of memory|killed process|memory cgroup|segfault|podman|conmon|crun' |
-tail -40
+podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  events --stream=false \
+  --since 2026-10-28T19:00:00Z \
+  --until 2026-10-28T20:00:00Z \
+  --filter container=cta_native_corrected_1028 \
+  2>&1 | grep -Ei 'oom|kill|die|exit|stop|error|remove'
 
-echo "=== REAL E2E LAST EVENTS ==="
-tail -35 /application1/cta_native_corrected_1028.log
-
-echo "=== CURRENT MEMORY ==="
-free -h
+echo "=== CGROUP MEMORY EVENTS ==="
+for f in /sys/fs/cgroup/memory.events \
+         /sys/fs/cgroup/memory.swap.events; do
+  if [ -r "$f" ]; then
+    echo "$f"
+    cat "$f"
+  fi
+done

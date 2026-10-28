@@ -1,52 +1,34 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
+import os
 
-base = Path("/application1/cta_max_true_batch_dev_20261028")
-roots = [
-    Path("artifacts/v1.168-max"),
-    base / "cta_max",
-    base / "batch2_candidate/cta_max",
-]
+source = Path.cwd() / "artifacts/v1.168-max/cta_max/sibling_context_weights"
+target = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max/sibling_context_weights")
 
-expected = "sibling_context_head_deep_embedding_0.weight.npy"
+assert source.is_dir(), "STOP: Original sibling weights missing"
+assert target.parent.is_dir(), "STOP: Batch candidate missing"
 
-print("=== SIBLING WEIGHT SOURCE CHECK ===")
+files = sorted(source.glob("*.npy"))
+assert len(files) == 20, f"STOP: Expected 20 weights, found {len(files)}"
 
-for root in roots:
-    print("\nROOT:", root)
-    if not root.is_dir():
-        print("MISSING")
-        continue
+for p in files:
+    with p.open("rb") as f:
+        assert f.read(6) == b"\x93NUMPY", f"STOP: Invalid weight {p.name}"
 
-    matches = [
-        p for p in root.rglob("*.npy")
-        if "sibling" in p.name.lower()
-        or "sibling" in str(p.parent).lower()
-    ]
+container_source = "/workspace/" + source.relative_to(Path.cwd()).as_posix()
 
-    print("SIBLING NPY FILES:", len(matches))
-    for p in matches[:25]:
-        print(p, p.stat().st_size, "bytes")
+if target.is_symlink():
+    assert os.readlink(target) == container_source, "STOP: Existing link differs"
+    print("SIBLING WEIGHT LINK: ALREADY CORRECT")
+else:
+    assert not target.exists(), "STOP: Existing candidate directory"
+    target.symlink_to(container_source, target_is_directory=True)
+    print("SIBLING WEIGHT LINK: CREATED")
 
-print("\n=== CODE EXPECTING SIBLING WEIGHTS ===")
-
-candidate = base / "batch2_candidate/cta_max"
-
-for p in sorted(candidate.glob("*.py")):
-    lines = p.read_text().splitlines()
-    positions = [
-        i for i, line in enumerate(lines)
-        if "sibling_context_weights" in line
-        or expected in line
-    ]
-    for i in positions[:5]:
-        print("\nFILE:", p.name)
-        for j in range(max(0, i-3), min(len(lines), i+5)):
-            print(f"{j+1}: {lines[j][:180]}")
-
-print("\n=== RESULT ===")
-print("WEIGHTS SEARCH: COMPLETE")
-print("ORIGINAL MODEL: UNCHANGED")
+print("SIBLING WEIGHT FILES: 20 VALIDATED")
+print("SOURCE:", source)
+print("CONTAINER TARGET:", container_source)
 print("DS CODE: UNCHANGED")
+print("WORKING HTTP 200: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
 PY

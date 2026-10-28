@@ -4,19 +4,29 @@ import json
 from pathlib import Path
 
 p = Path("artifacts/v1.168/model-settings.json")
-config = json.loads(p.read_text())
+data = json.loads(p.read_text())
 
-for key in ("modelId", "expThrottleLabel"):
-    value = config.get(key)
-    print(f"{key}: {value}")
-    if not isinstance(value, str) or not value:
-        raise SystemExit(f"STOP: invalid {key}")
+print("ROOT TYPE:", type(data).__name__)
+found = []
 
-test = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py")
-assert test.is_file(), "Native test missing"
+def walk(obj, path="$"):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            location = f"{path}.{key}"
+            if key.lower() in ("modelid", "expthrottlelabel"):
+                found.append((location, value))
+            if isinstance(value, (dict, list)):
+                walk(value, location)
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj):
+            walk(value, f"{path}[{i}]")
 
-print("MODEL SETTINGS: PASS")
-print("NATIVE TEST: EXISTS")
+walk(data)
+
+for location, value in found[:20]:
+    print(f"{location} = {value!r}")
+
+print("MATCHES:", len(found))
 print("DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
 PY

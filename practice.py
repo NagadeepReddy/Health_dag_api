@@ -6,4 +6,12 @@ timeout 25s podman \
   --memory=256m --pids-limit=32 \
   --entrypoint /bin/sh \
   localhost/cta-max-faiss:local \
-  -c 'grep -Rn -A 45 "async def response_worker\|def response_worker" /opt/venv/lib/python3.12/site-packages/max/serve --include="*.py" | head -100'
+  -c '
+    echo "=== RESPONSE SOCKET SEND/RECEIVE ==="
+    grep -n -A 45 -B 5 -E "class ZmqPushSocket|class ZmqPullSocket|def put_nowait|def get_nowait" \
+      /opt/venv/lib/python3.12/site-packages/max/serve/queue/zmq_queue.py | head -150
+
+    echo "=== WORKER QUEUE CONFIGURATION ==="
+    grep -n -A 45 -B 5 "def model_worker_queues" \
+      /opt/venv/lib/python3.12/site-packages/max/serve/scheduler/queues.py
+  '

@@ -1,1 +1,1 @@
-grep -nE 'cta_native_model|core-artifact|model_path|sys.argv|run_module' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py
+grep -nE 'attach_max|InferenceSession|execute|def predict|infer_max|pipeline.predict' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py

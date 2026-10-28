@@ -1,80 +1,59 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-import os, signal, subprocess, time
-from pathlib import Path
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-MARK = b"/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py"
+LOG=/application1/cta_native_id_match_1028.log
+EXT=artifacts/v1.168-max/maxserve_cta_extension
 
-podman = subprocess.run(
-    ["podman", "--root", "/application1/podman/storage",
-     "--runroot", "/run/containers/storage",
-     "ps", "--format", "{{.Names}}"],
-    capture_output=True, text=True
-)
+echo "=== CHECK REMAINING CTA PROCESSES ==="
 
-if podman.returncode != 0:
-    raise SystemExit("STOP: Cannot verify active containers")
+ps -p 121339,121386,121387,121394,123853,123905,123913,148527,148578,148579,148589 \
+  -o pid,ppid,stat,rss,comm 2>/dev/null || true
 
-if any("cta" in name.lower() for name in podman.stdout.splitlines()):
-    raise SystemExit("STOP: Active CTA container detected")
+echo "=== SAFETY CHECK ==="
 
-procs = {}
+if [ -e "$LOG" ]; then
+  echo "STOP: Diagnostic log already exists"
+elif ! grep -q "CTA RESPONSE ID MATCH:" "$EXT/cta_http_pipeline.py"; then
+  echo "STOP: ID tracing missing"
+elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 16777216 ]; then
+  echo "STOP: Available memory below 16 GiB"
+elif ps -p 121339,121386,121387,121394,123853,123905,123913,148527,148578,148579,148589 \
+  -o stat= 2>/dev/null | grep -Eq '^[^Z[:space:]]'; then
+  echo "STOP: Previous CTA processes still active"
+else
+  echo "SAFETY CHECK: PASS"
 
-for entry in Path("/proc").iterdir():
-    if not entry.name.isdigit():
-        continue
-    try:
-        pid = int(entry.name)
-        args = (entry / "cmdline").read_bytes().split(b"\0")
-        stat = (entry / "stat").read_text()
-        ppid = int(stat.rsplit(")", 1)[1].split()[1])
-        procs[pid] = (ppid, args)
-    except (OSError, ValueError, IndexError):
-        continue
+  timeout -s TERM -k 8s 170s podman \
+    --root /application1/podman/storage \
+    --runroot /run/containers/storage \
+    run --rm --pull=never \
+    --network=none --read-only --log-driver=none \
+    --memory=8g --memory-swap=8g \
+    --cpus=2 --pids-limit=64 \
+    --tmpfs /tmp:rw,size=256m,mode=1777 \
+    --tmpfs /root/.cache:rw,size=128m,mode=1777 \
+    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
+    -v "$PWD:/workspace:ro" \
+    -w /workspace \
+    -e modelId=rt-pzaas-cta-offers-v1 \
+    -e expThrottleLabel=T \
+    -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    -e PYTHONUNBUFFERED=1 \
+    -e OMP_NUM_THREADS=1 \
+    -e MKL_NUM_THREADS=1 \
+    -e OPENBLAS_NUM_THREADS=1 \
+    --entrypoint /opt/venv/bin/python3 \
+    localhost/cta-max-faiss:local \
+    -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+    > "$LOG" 2>&1
 
-roots = [
-    pid for pid, (_, args) in procs.items()
-    if MARK in args and b"-B" in args
-]
+  echo "TEST EXIT CODE: $?"
+  echo "=== IMPORTANT RESULTS ==="
 
-if not roots:
-    print("NO LEFTOVER CTA TEST PROCESSES FOUND")
-    raise SystemExit(0)
+  grep -nE \
+    'CTA RESPONSE ID MATCH|CTA RESPONSE SOCKET RECEIVED|CTA HTTP QUEUE ITEM|CTA RESPONSE QUEUE SEND|CTA NATIVE HTTP STATUS|CTA NATIVE END-TO-END|Traceback|Exception' \
+    "$LOG" | tail -25 || true
 
-targets = set(roots)
-
-changed = True
-while changed:
-    changed = False
-    for pid, (ppid, args) in procs.items():
-        if ppid in targets and pid not in targets:
-            if any(b"python" in a or b"multiprocessing" in a for a in args):
-                targets.add(pid)
-                changed = True
-
-print("=== CTA TEST PROCESSES TO STOP ===")
-for pid in sorted(targets):
-    print("PID:", pid, "PPID:", procs[pid][0])
-
-print("=== SENDING GRACEFUL SIGTERM ===")
-
-for pid in sorted(targets, reverse=True):
-    try:
-        os.kill(pid, signal.SIGTERM)
-        print("SIGTERM SENT:", pid)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
-        print("PERMISSION DENIED:", pid)
-
-time.sleep(2)
-
-remaining = [pid for pid in targets if Path(f"/proc/{pid}").exists()]
-
-print("REMAINING PIDS:", remaining)
-print("NO SIGKILL USED")
-print("NO CONTAINERS DELETED")
-print("DS CODE UNCHANGED")
-PY
-
-echo "=== MEMORY AFTER CTA CLEANUP ==="
-free -h
+  echo "=== LAST LOGS ==="
+  tail -10 "$LOG"
+fi

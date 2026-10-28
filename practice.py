@@ -1,10 +1,11 @@
-echo "=== CGROUP PROCESS LIMITS ==="
-for f in /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids.events; do
-  if [ -r "$f" ]; then
-    echo "$f: $(cat "$f")"
-  fi
-done
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+timeout 15s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --network=none --read-only \
+  --memory=128m --pids-limit=16 \
+  --entrypoint /bin/true \
+  localhost/cta-max-faiss:local
 
-echo "=== SYSTEM PROCESS LIMITS ==="
-cat /proc/sys/kernel/threads-max
-cat /proc/sys/kernel/pid_max
+echo "OCI TEST EXIT CODE: $?"

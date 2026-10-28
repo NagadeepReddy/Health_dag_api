@@ -17,22 +17,29 @@ timeout 35s podman \
   --entrypoint /opt/venv/bin/python3 \
   localhost/cta-max-faiss:local -B - <<'PY'
 from queue import Queue, Empty
+
+from max.interfaces.request import RequestID
 from maxserve_cta_extension.cta_context import CTAContext
 from maxserve_cta_extension.cta_native_scheduler import CTANativeScheduler
 
 class FakeAdapter:
     def __init__(self):
-        self.calls = 0
+        self.calls = []
 
     def predict(self, body):
-        self.calls += 1
-        return {"request": body["number"], "status": "ok"}
+        self.calls.append(body["number"])
+        return {"number": body["number"], "status": "ok"}
 
 class FakeDrainer:
     def __init__(self, contexts):
         self.items = list(contexts)
+        self.started = False
+
+    def start_draining(self):
+        self.started = True
 
     def retrieve_item(self):
+        assert self.started, "Drainer not started"
         if not self.items:
             raise Empty()
         return self.items.pop(0)
@@ -48,22 +55,39 @@ scheduler = CTANativeScheduler(
     max_items_per_iteration=2,
 )
 
-scheduler.drainer = FakeDrainer([
+drainer = FakeDrainer([
     CTAContext("cta-batch-1", {"number": 1}),
     CTAContext("cta-batch-2", {"number": 2}),
 ])
 
+scheduler.drainer = drainer
 scheduler.run_iteration()
 
-assert adapter.calls == 2, f"Expected 2 requests, got {adapter.calls}"
-assert not responses.empty(), "No scheduler response"
+assert drainer.started, "Drainer startup failed"
+assert adapter.calls == [1, 2], f"Unexpected calls: {adapter.calls}"
 
 batch = responses.get_nowait()
 
 assert len(batch) == 2, f"Expected 2 responses, got {len(batch)}"
 
-print("SCHEDULER REQUEST COUNT: 2")
-print("SCHEDULER RESPONSE COUNT:", len(batch))
+expected = {
+    RequestID("cta-batch-1"): 1,
+    RequestID("cta-batch-2"): 2,
+}
+
+assert set(batch.keys()) == set(expected), "Request IDs mismatch"
+
+for rid, number in expected.items():
+    output = batch[rid].result
+    assert output.is_done is True
+    assert output.result == {"number": number, "status": "ok"}
+
+assert responses.empty(), "Unexpected extra response batch"
+
+print("DRAINER STARTUP: PASS")
+print("TWO REQUESTS PROCESSED: PASS")
+print("TWO RESPONSES RETURNED: PASS")
+print("REQUEST ID MATCHING: PASS")
 print("TWO-REQUEST SCHEDULING: PASS")
 print("REAL MODEL BATCHING: NOT YET TESTED")
 print("DS CODE: UNCHANGED")

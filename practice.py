@@ -1,34 +1,20 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -B - <<'PY'
-import ast
-from pathlib import Path
-
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_http_pipeline.py")
-s = p.read_text()
-
-old = '''        self.create_background_task(
-            lambda: _cta_wait_for_healthy_worker(self._engine_queue)
-        )
-        print("CTA RECEIVER WAIT HOOK INSTALLED", flush=True)
-'''
-
-new = '''        # MAX starts its response worker inside __aenter__().
-'''
-
-if s.count(old) != 1:
-    raise SystemExit("STOP: Expected lifecycle block not found exactly once; no changes")
-
-updated = s.replace(old, new)
-ast.parse(updated)
-
-backup = p.with_name(p.name + ".pre_lifecycle_fix")
-if backup.exists():
-    raise SystemExit("STOP: Backup already exists; no changes")
-
-backup.write_text(s)
-p.write_text(updated)
-
-print("CTA LIFECYCLE FIX: APPLIED")
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL MAX FILE: UNCHANGED")
-print("DS CODE: UNCHANGED")
-PY
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
+timeout -k 5s 60s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --memory=2g --cpus=2 --pids-limit=128 \
+  --network=none --read-only --log-driver=none \
+  --tmpfs /tmp:rw,size=256m,mode=1777 \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=64m,mode=1777 \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+  -e OMP_NUM_THREADS=1 \
+  -e OPENBLAS_NUM_THREADS=1 \
+  -e MKL_NUM_THREADS=1 \
+  -e TOKENIZERS_PARALLELISM=false \
+  -v "$PWD":/workspace:ro \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python3 \
+  localhost/cta-max-faiss:local \
+  /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_spawn_safe_probe.py

@@ -1,1 +1,1 @@
-find /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max/grecbase_integration_weights -maxdepth 1 -type f -name '*.npy' -printf '%f\n' | head -30
+scp root@10-119-98-21:/application1/cta_max_extension_backup_20261027.tar.gz "$HOME\Downloads\"

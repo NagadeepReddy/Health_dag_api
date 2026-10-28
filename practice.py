@@ -1,1 +1,1 @@
-df -h /application1 /var /home; free -h; ps -eo pid,rss,comm --sort=-rss | head -12
+tail -n 24 /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py

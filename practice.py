@@ -1,28 +1,32 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-python3 -B -S - <<'PY'
-from pathlib import Path
-
-p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py")
-s = p.read_text()
-
-old = 'print("CTA PREDICT_RAW: START", flush=True)'
-new = '''print("CTA PREDICT_RAW: START", flush=True)
-        import faulthandler
-        faulthandler.dump_traceback_later(20, repeat=False)'''
-
-if s.count(old) != 1:
-    raise SystemExit("STOP: prediction entry not found exactly once")
-
-if "faulthandler.dump_traceback_later" in s:
-    raise SystemExit("STOP: diagnostic already configured in adapter")
-
-updated = s.replace(old, new, 1)
-compile(updated, str(p), "exec")
-p.write_text(updated)
-
-print("CTA PREDICTION DIAGNOSTIC: INSTALLED")
-print("TIMER: RESTARTS WHEN PREDICTION BEGINS")
-print("PYTHON SYNTAX: PASS")
-print("DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
-PY
+awk '/MemAvailable:/ {
+  if ($2 < 10485760) {
+    print "STOP: RAM below 10 GiB"
+    exit 1
+  }
+}' /proc/meminfo && \
+set -o pipefail && \
+timeout -s TERM -k 5s 55s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --workdir /workspace \
+  --memory=4g --memory-swap=4g \
+  --cpus=2 --pids-limit=64 \
+  --network=none --read-only --log-driver=none \
+  --tmpfs /tmp:rw,size=256m,mode=1777 \
+  --tmpfs /root/.cache:rw,size=128m,mode=1777 \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=256m,mode=1777 \
+  -v /application1/sajjna8/rt-pzaas-cta-offers-v1:/workspace:ro \
+  -e PYTHONPATH=/workspace:/workspace/artifacts/v1.168-max \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONUNBUFFERED=1 \
+  -e OMP_NUM_THREADS=1 \
+  -e MKL_NUM_THREADS=1 \
+  -e OPENBLAS_NUM_THREADS=1 \
+  -e TOKENIZERS_PARALLELISM=false \
+  --entrypoint /opt/venv/bin/python3 \
+  localhost/cta-max-faiss:local \
+  -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_e2e_test.py \
+  2>&1 | grep --line-buffered -E \
+  'CTA |Timeout|Thread |File "|line [0-9]+|Traceback|Exception|Error|Terminated|Killed|Current thread'

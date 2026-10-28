@@ -1,1 +1,1 @@
-scp root@10.119.98.21:/application1/cta_max_extension_backup_20261027.tar.gz "$env:USERPROFILE\Downloads\"
+sed -n '1,200p' /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py

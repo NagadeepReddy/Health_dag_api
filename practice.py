@@ -1,60 +1,57 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-bash <<'SH'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && bash <<'SH'
 set -eu
 
-REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
+REPO="$PWD"
 DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
-NAME=context_head.deep_embedding_0.weight.npy
-MAIN=""
-
-for DIR in \
-  "$REPO/artifacts/v1.168-max/cta_max/main_context_weights" \
-  /application1/cta_max_true_batch_dev_20261028/cta_max/main_context_weights
-do
-  if [ -f "$DIR/$NAME" ]; then
-    MAIN=$(readlink -f "$DIR")
-    break
-  fi
-done
-
-if [ -z "$MAIN" ]; then
-  echo "STOP: Exact trained main-context weight not found"
-  echo "=== AVAILABLE MAIN-CONTEXT EXPORTS ==="
-  for DIR in \
-    "$REPO/artifacts/v1.168-max/cta_max/main_context_weights" \
-    /application1/cta_max_true_batch_dev_20261028/cta_max/main_context_weights
-  do
-    if [ -d "$DIR" ]; then
-      echo "DIRECTORY: $DIR"
-      find "$DIR" -maxdepth 1 -type f -name '*.npy' | head -25
-    fi
-  done
-  echo "FILES MODIFIED: NONE"
-  exit 1
-fi
-
-echo "TRAINED MAIN WEIGHTS: FOUND"
-echo "SOURCE: $MAIN"
+WEIGHTS="$REPO/artifacts/v1.168-max/cta_max/main_context_weights"
+ALIAS="$DEV/main_context_weights"
 
 test -f "$DEV/grecbase_fusion_full_head_72_max_batch2_mainfix.py"
+test -d "$WEIGHTS"
 
-LINK="$DEV/main_context_weights"
+python3 -S -B - "$WEIGHTS" "$ALIAS" <<'PY'
+from pathlib import Path
+import sys
 
-if [ -L "$LINK" ]; then
-  [ "$(readlink "$LINK")" = /weights_main ] || {
-    echo "STOP: Existing link differs"
-    exit 1
-  }
-elif [ -e "$LINK" ]; then
-  echo "STOP: Existing main-context directory; refusing overwrite"
-  exit 1
-else
-  ln -s /weights_main "$LINK"
-fi
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
 
-echo "MAIN WEIGHT MOUNT: READY"
+assert not dst.is_symlink(), "STOP: Existing directory link needs review"
+assert not dst.exists() or dst.is_dir(), "STOP: Invalid destination"
 
-echo "=== REAL BATCH-2 GRAPH CONSTRUCTION ==="
+# The real exports use deep_embedding.0, deep_embedding.1, etc.
+# Our development graph requests deep_embedding_0, deep_embedding_1.
+for i in range(17):
+    original = src / f"context_head.deep_embedding.{i}.weight.npy"
+    assert original.is_file(), f"STOP: Missing trained weight {original}"
+
+dst.mkdir(exist_ok=True)
+
+count = 0
+for original in sorted(src.glob("*.npy")):
+    names = {original.name}
+    if ".deep_embedding." in original.name:
+        names.add(original.name.replace(".deep_embedding.", ".deep_embedding_", 1))
+
+    for name in names:
+        link = dst / name
+        target = Path("/weights_main") / original.name
+
+        if link.is_symlink():
+            assert link.readlink() == target, f"STOP: Different link: {link}"
+        elif link.exists():
+            raise SystemExit(f"STOP: Refusing overwrite: {link}")
+        else:
+            link.symlink_to(target)
+        count += 1
+
+print("TRAINED EMBEDDING WEIGHTS: 17/17 FOUND")
+print("MAIN-CONTEXT WEIGHT LINKS:", count)
+print("ORIGINAL WEIGHTS: UNCHANGED")
+print("DS CODE: UNCHANGED")
+PY
+
+echo "=== RETRY REAL BATCH-2 GRAPH ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -66,13 +63,13 @@ timeout 120s podman --root /application1/podman/storage \
   -e PYTHONPATH=/batch2:/workspace/artifacts/v1.168-max \
   -v "$REPO:/workspace:ro" \
   -v "$DEV:/batch2:ro" \
-  -v "$MAIN:/weights_main:ro" \
+  -v "$WEIGHTS:/weights_main:ro" \
   -v /application1/cta_max_true_batch_dev_20261028/cta_max/sibling_context_weights:/weights_sibling:ro \
   -w /workspace \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -B - <<'PY'
-import sys
 import traceback
+import sys
 
 try:
     from max.driver import CPU
@@ -81,17 +78,15 @@ try:
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
-    print("BATCH-2 GRAPH BUILD: START", flush=True)
-
+    print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
     graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
         DeviceRef.from_device(CPU())
     )
 
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
-    print("INPUT COUNT:", len(graph.inputs))
-
-    for i, item in enumerate(graph.inputs):
-        print("INPUT", i, "SHAPE:", item.type.shape)
+    print("GRAPH INPUT COUNT:", len(graph.inputs))
+    for i, value in enumerate(graph.inputs):
+        print("INPUT", i, "SHAPE:", value.type.shape)
 
 except Exception:
     print("BATCH-2 GRAPH CONSTRUCTION: FAIL")
@@ -99,7 +94,6 @@ except Exception:
     sys.exit(1)
 
 print("REAL BATCH-2 INFERENCE: NOT YET PERFORMED")
-print("ORIGINAL DS CODE: UNCHANGED")
 print("WORKING NATIVE RELEASE: UNCHANGED")
 PY
 SH

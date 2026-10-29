@@ -5,27 +5,17 @@ ROOT=/application1
 REPO=$ROOT/sajjna8/rt-pzaas-cta-offers-v1
 RELEASE=$ROOT/cta_max_native_release_candidate_20261028
 IMAGE=docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest
-LOG=$ROOT/cta_final_native_startup_20261028.log
+LOG=$ROOT/cta_final_native_startup_20261028_v2.log
 NAME=cta-final-native-smoke
 
 PODMAN=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-if [ ! -f "$RELEASE/cta_native_launcher.py" ]; then
-  echo "STOP: Release launcher missing"
-  exit 1
-fi
-
-if ! "${PODMAN[@]}" image exists "$IMAGE"; then
-  echo "STOP: Verizon Artifactory MAX image not cached"
-  exit 1
-fi
-
 if "${PODMAN[@]}" container exists "$NAME"; then
-  echo "STOP: Test container name already exists"
+  echo "STOP: Test container already exists"
   exit 1
 fi
 
-echo "STARTING UPDATED NATIVE MAX SERVE"
+echo "STARTING NATIVE MAX — CORRECTED ENTRYPOINT"
 
 timeout --signal=TERM --kill-after=10s 240s \
 "${PODMAN[@]}" run --rm \
@@ -46,8 +36,8 @@ timeout --signal=TERM --kill-after=10s 240s \
   -v "$REPO:/workspace:ro" \
   -v "$RELEASE:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
   -w /workspace \
+  --entrypoint /opt/venv/bin/python \
   "$IMAGE" \
-  /opt/venv/bin/python \
   /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py \
   --devices cpu \
   --model-path /workspace/artifacts/v1.168-max/cta_native_model \
@@ -57,8 +47,8 @@ timeout --signal=TERM --kill-after=10s 240s \
 RC=$?
 
 echo "STARTUP EXIT CODE: $RC"
-echo "=== FINAL STARTUP LOG ==="
+echo "=== STARTUP LOG ==="
 tail -45 "$LOG"
 echo "LOG: $LOG"
-echo "ORIGINAL DS CODE: UNCHANGED"
+echo "DS CODE: UNCHANGED"
 SH

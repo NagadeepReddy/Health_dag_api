@@ -1,116 +1,142 @@
-python3 -S -B - <<'PY'
+bash <<'SH'
+set -Eeuo pipefail
+
+B=/application1
+R=$B/sajjna8/rt-pzaas-cta-offers-v1
+E=$B/cta_max_native_release_candidate_20261028
+M=$R/artifacts/v1.168-max/cta_native_model
+T=$R/artifacts/v1.168-max/test-results
+NAME=cta-dual-queue-retest
+LOG=$B/cta_dual_queue_retest_20261029.log
+P=(podman --root "$B/podman/storage" --runroot /run/containers/storage)
+
+test -s "$E/cta_native_launcher.py"
+test -s "$M/cta_real_fp32.safetensors"
+test -s "$T/cta_max_tiles_smoketest_input.json"
+test -s "$T/cta_max_tiles_response.json"
+
+grep -q '_CTA_EXTRA_RESPONSE_QUEUES' "$E/cta_http_pipeline.py"
+grep -q '_CTA_EXTRA_RESPONSE_QUEUES.append(queue)' "$E/cta_router.py"
+
+if "${P[@]}" container exists "$NAME"; then
+  echo "STOP: Test container already exists"
+  exit 1
+fi
+
+cleanup() {
+  "${P[@]}" logs "$NAME" > "$LOG" 2>&1 || true
+  "${P[@]}" stop -t 5 "$NAME" >/dev/null 2>&1 || true
+  "${P[@]}" rm "$NAME" >/dev/null 2>&1 || true
+  echo "=== RESPONSE DELIVERY EVENTS ==="
+  grep -E 'CTA HTTP RESPONSE DELIVERED|CTA RESPONSE QUEUE SEND|CTA RESPONSE WITHOUT PENDING REQUEST|CTA RESPONSE WORKER LOOP: EXIT' "$LOG" | tail -15 || true
+  echo "LOG: $LOG"
+}
+trap cleanup EXIT
+
+echo "STARTING PATCHED NATIVE MAX SERVE"
+
+"${P[@]}" run -d \
+  --name "$NAME" --network bridge \
+  -p 127.0.0.1:18084:8000 \
+  --memory 12g --memory-swap 12g \
+  --cpus 2 --pids-limit 128 --read-only \
+  --tmpfs /tmp:rw,size=1g,mode=1777 \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=2g,mode=1777 \
+  -e HOME=/tmp -e XDG_CACHE_HOME=/tmp -e TMPDIR=/tmp \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e 'API_TYPES=["openai","sagemaker","kserve"]' \
+  -e 'MAX_SERVE_API_TYPES=["openai","sagemaker","kserve"]' \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max:/workspace \
+  -v "$R:/workspace:ro" \
+  -v "$E:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py \
+  --devices cpu \
+  --model-path /workspace/artifacts/v1.168-max/cta_native_model \
+  --weight-path /workspace/artifacts/v1.168-max/cta_native_model/cta_real_fp32.safetensors \
+  --quantization-encoding float32 \
+  --port 8000 >/dev/null
+
+READY=0
+for i in $(seq 1 120); do
+  STATUS=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' \
+    --max-time 2 http://127.0.0.1:18084/health || true)
+  if [ "$STATUS" = 200 ]; then READY=1; break; fi
+
+  RUNNING=$("${P[@]}" inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)
+  if [ "$RUNNING" != true ]; then
+    echo "STOP: MAX server exited"
+    exit 1
+  fi
+  sleep 2
+done
+
+test "$READY" = 1 || { echo "STOP: MAX server not ready"; exit 1; }
+
+echo "SENDING TWO REAL CTA REQUESTS"
+
+python3 -S -B - "$T" "$B" <<'PY'
+import json, sys, time, threading
+import urllib.request, urllib.error
 from pathlib import Path
-import ast
+from concurrent.futures import ThreadPoolExecutor
 
-root = Path("/application1/cta_max_native_release_candidate_20261028")
-http = root / "cta_http_pipeline.py"
-router = root / "cta_router.py"
+tests, base = map(Path, sys.argv[1:])
+body = (tests / "cta_max_tiles_smoketest_input.json").read_bytes()
 
-assert http.is_file() and router.is_file(), "STOP: Release files missing"
+baseline = json.loads((tests / "cta_max_tiles_response.json").read_text())
+expected = baseline.get("jsonData", baseline)["prediction"]
+barrier = threading.Barrier(2)
 
-h = http.read_text()
-r = router.read_text()
+def send(n):
+    barrier.wait()
+    start = time.monotonic()
+    req = urllib.request.Request(
+        "http://127.0.0.1:18084/v2/cta/predict",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=335) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read()
+    except Exception as exc:
+        status, raw = 0, str(exc).encode()
 
-assert h.count("_CTA_ACTIVE_ENGINES = []") == 1
-assert h.count("async def _cta_fast_response_worker(self):") == 1
-assert h.count("async def _cta_traced_response_worker(self):") == 1
-assert r.count("receiver_queue.pending_out_queues = queue.pending_out_queues") == 1
-assert "_CTA_EXTRA_RESPONSE_QUEUES" not in h
-assert "_CTA_EXTRA_RESPONSE_QUEUES" not in r
+    elapsed = round(time.monotonic() - start, 2)
+    (base / f"cta_dual_queue_response_{n}.json").write_bytes(raw)
 
-start = h.index("async def _cta_fast_response_worker(self):")
-end = h.index("async def _cta_traced_response_worker(self):", start)
+    try:
+        data = json.loads(raw)
+        prediction = data.get("jsonData", data)["prediction"]
+        parity = prediction == expected
+        offers = len(prediction["offerList"])
+    except Exception:
+        parity, offers = False, None
 
-replacement = '''async def _cta_fast_response_worker(self):
-    """Receive CTA replies from both native MAX queue connections."""
-    import asyncio
-    import queue as std_queue
+    return n, status, elapsed, offers, parity
 
-    while True:
-        received = False
-        sources = [self] + [
-            q for q in _CTA_EXTRA_RESPONSE_QUEUES if q is not self
-        ]
+start = time.monotonic()
+with ThreadPoolExecutor(max_workers=2) as pool:
+    results = list(pool.map(send, (1, 2)))
 
-        for source in sources:
-            try:
-                responses = source.response_queue.get_nowait()
-            except std_queue.Empty:
-                continue
+wall = time.monotonic() - start
+print("\n=== DUAL-QUEUE NATIVE CONCURRENCY RESULTS ===")
+for n, status, sec, offers, parity in results:
+    print(f"REQUEST {n}: HTTP {status} | {sec}s | OFFERS {offers} | PARITY {parity}")
 
-            received = True
+passed = all(s == 200 and p for _, s, _, _, p in results)
+print("WALL SECONDS:", round(wall, 2))
+print("THROUGHPUT RPS:", round(2 / wall, 4))
+print("CONCURRENT-2:", "PASS" if passed else "FAIL")
+print("ORIGINAL DS CODE: UNCHANGED BY TEST")
 
-            for request_id, response in responses.items():
-                pending = self.pending_out_queues.get(request_id)
-
-                if pending is not None:
-                    await pending.put(response)
-                    print(
-                        "CTA HTTP RESPONSE DELIVERED:",
-                        request_id,
-                        "source:",
-                        id(source),
-                        flush=True,
-                    )
-                else:
-                    self.cancel_queue.put_nowait([request_id])
-                    print(
-                        "CTA RESPONSE WITHOUT PENDING REQUEST:",
-                        request_id,
-                        flush=True,
-                    )
-
-        if not received:
-            if not self.is_worker_healthy():
-                raise RuntimeError("CTA native worker unhealthy")
-            await asyncio.sleep(0.01)
-
-
-'''
-
-new_h = h.replace(
-    "_CTA_ACTIVE_ENGINES = []",
-    "_CTA_ACTIVE_ENGINES = []\n_CTA_EXTRA_RESPONSE_QUEUES = []",
-    1,
-)
-new_h = new_h[:new_h.index(
-    "async def _cta_fast_response_worker(self):"
-)] + replacement + new_h[new_h.index(
-    "async def _cta_traced_response_worker(self):"
-):]
-
-anchor = "receiver_queue.pending_out_queues = queue.pending_out_queues"
-new_r = r.replace(
-    anchor,
-    anchor + '''
-        from .cta_http_pipeline import _CTA_EXTRA_RESPONSE_QUEUES
-        if all(q is not queue for q in _CTA_EXTRA_RESPONSE_QUEUES):
-            _CTA_EXTRA_RESPONSE_QUEUES.append(queue)
-''',
-    1,
-)
-
-ast.parse(new_h)
-ast.parse(new_r)
-
-for p in (http, router):
-    backup = p.with_name(p.name + ".before_dual_queue_fix.bak")
-    assert not backup.exists(), f"STOP: Backup exists: {backup}"
-
-for p in (http, router):
-    backup = p.with_name(p.name + ".before_dual_queue_fix.bak")
-    backup.write_bytes(p.read_bytes())
-
-http.write_text(new_h)
-router.write_text(new_r)
-
-print("DUAL-QUEUE RESPONSE FIX: INSTALLED")
-print("REQUEST PATH: PRESERVED")
-print("BOTH RESPONSE SOCKETS: POLLED")
-print("REQUEST-ID MATCHING: PRESERVED")
-print("PYTHON SYNTAX: PASS")
-print("BACKUPS: CREATED")
-print("ORIGINAL DS CODE: UNCHANGED")
-print("MAX PACKAGE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
+if not passed:
+    raise SystemExit(1)
 PY
+SH

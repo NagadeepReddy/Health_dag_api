@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage images --format '{{.Repository}}:{{.Tag}}'
+podman --root /application1/podman/storage --runroot /run/containers/storage run --rm --network=none --read-only --tmpfs /tmp:rw,size=128m --tmpfs /root:rw,size=64m --entrypoint /opt/venv/bin/python localhost/cta-max-faiss:local -c "import torch; print('TORCH READY:', torch.__version__)"

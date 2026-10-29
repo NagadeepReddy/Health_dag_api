@@ -1,1 +1,1 @@
-sed -n '60,180p' /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2/cta_worker_adapter.py
+find /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029 -maxdepth 3 -type f \( -name '*test*.py' -o -name '*run*.py' \) -print

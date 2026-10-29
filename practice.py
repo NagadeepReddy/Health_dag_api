@@ -1,67 +1,68 @@
 python3 -S -B - <<'PY'
 from pathlib import Path
-import json, tarfile, hashlib, io
+import ast
 
-base = Path("/application1")
-repo = base / "sajjna8/rt-pzaas-cta-offers-v1"
-tests = repo / "artifacts/v1.168-max/test-results"
-release = base / "cta_max_native_release_candidate_20261028"
+root = Path("/application1/cta_max_native_release_candidate_20261028")
 
-input_file = tests / "cta_max_tiles_smoketest_input.json"
-baseline = tests / "cta_max_tiles_response.json"
-log = base / "cta_dual_queue_retest_20261029.log"
-responses = [
-    base / "cta_dual_queue_response_1.json",
-    base / "cta_dual_queue_response_2.json",
-]
+files = (
+    "cta_native_scheduler.py",
+    "cta_worker_adapter.py",
+    "cta_scheduler_factory.py",
+)
 
-required = [input_file, baseline, log, *responses]
-assert release.is_dir(), "STOP: Release directory missing"
-assert all(p.is_file() for p in required), "STOP: Evidence missing"
+for filename in files:
+    p = root / filename
+    assert p.is_file(), f"STOP: Missing {p}"
 
-expected = json.loads(baseline.read_text())
-expected = expected.get("jsonData", expected)["prediction"]
+    source = p.read_text()
+    tree = ast.parse(source)
+    lines = source.splitlines()
 
-for i, p in enumerate(responses, 1):
-    result = json.loads(p.read_text())
-    actual = result.get("jsonData", result)["prediction"]
-    assert actual == expected, f"STOP: Request {i} parity failed"
-    print(f"REQUEST {i}: EXACT BUSINESS PARITY PASS")
+    print(f"\n=== {filename} ===")
 
-events = log.read_text(errors="replace")
-assert events.count("CTA HTTP RESPONSE DELIVERED:") == 2, \
-    "STOP: Two deliveries not confirmed"
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
 
-archive = base / "CTA_MAX_NATIVE_CONCURRENT2_PASS_20261029.tar.gz"
-assert not archive.exists(), "STOP: Archive already exists"
+        if node.name not in (
+            "__init__",
+            "run_iteration",
+            "predict",
+            "predict_batch",
+            "create_cta_scheduler",
+        ):
+            continue
 
-manifest = {
-    "milestone": "Native built-in MAX Serve concurrent-2 PASS",
-    "requests": 2,
-    "http_statuses": [200, 200],
-    "business_parity": [True, True],
-    "latency_seconds": [113.72, 111.92],
-    "throughput_rps": 0.0176,
-    "ds_code_changed_by_test": False,
-    "native_batching_verified": False,
-    "gpu_verified": False,
-    "image_approved": False,
-}
+        print(f"\nFUNCTION: {node.name} | line {node.lineno}")
 
-with tarfile.open(archive, "w:gz") as tar:
-    tar.add(release, arcname="release_candidate")
-    for p in required:
-        tar.add(p, arcname="evidence/" + p.name)
+        for lineno in range(node.lineno, node.end_lineno + 1):
+            line = lines[lineno - 1]
+            if (
+                lineno == node.lineno
+                or any(term in line for term in (
+                    "max_items_per_iteration",
+                    "adapter.predict",
+                    "predict_batch",
+                    "pipeline.predict",
+                    "request_queue",
+                    "drainer",
+                    "processed",
+                    "batch",
+                    "return",
+                ))
+            ):
+                print(f"{lineno}: {line.strip()[:180]}")
 
-    content = json.dumps(manifest, indent=2).encode()
-    info = tarfile.TarInfo("evidence/milestone.json")
-    info.size = len(content)
-    tar.addfile(info, io.BytesIO(content))
+    batch_names = sorted({
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and "batch" in node.name.lower()
+    })
+    print("EXPLICIT BATCH METHODS:", batch_names or "NONE")
 
-print("NATIVE CONCURRENT-2: PASS")
-print("WORKING RELEASE AND EVIDENCE: ARCHIVED")
-print("ARCHIVE:", archive)
-print("SHA256:", hashlib.sha256(archive.read_bytes()).hexdigest())
+print("\nTRUE BATCHING REVIEW: COMPLETE")
+print("FILES MODIFIED: NONE")
 print("MAX STARTUP: NOT PERFORMED")
 print("DS CODE: UNCHANGED")
 PY

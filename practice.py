@@ -1,21 +1,44 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
+from pathlib import Path
 
-LOG=/application1/cta_max_true_batch_dev_20261028/native_concurrent2_timeout_trace.log
+candidate = Path("/application1/cta_max_native_release_candidate_20261028")
+base = Path("/application1/cta_max_true_batch_dev_20261028")
 
-if [ ! -f "$LOG" ]; then
-  echo "STOP: Diagnostic log missing"
-else
-  echo "=== REQUEST AND QUEUE EVENTS ==="
-  grep -nEi \
-    'REQUEST [12]:|CTA HTTP QUEUE ITEM|CTA RESPONSE QUEUE|REQUEST ID|RequestID|CTA PREDICT|CTA TIMEOUT TRACEBACK|CTA RESPONSE WORKER|CTA QUEUE|cancelled|timed out|HTTP 504' \
-    "$LOG" | tail -65
+files = [
+    candidate / "cta_router.py",
+    candidate / "cta_native_scheduler.py",
+    candidate / "cta_queue_scheduler.py",
+    candidate / "cta_http_pipeline.py",
+    base / "native_concurrent2_static.py",
+    base / "cta_native_benchmark_helper.py",
+]
 
-  echo "=== EVENT COUNTS ==="
-  printf "Response queue sends: "
-  grep -c 'CTA RESPONSE QUEUE SEND: COMPLETED' "$LOG" || true
+terms = (
+    "response_queue", "receiver_queue", "response worker",
+    "request_id", "requestid", "pending", "cancelled",
+    "timeout", "wait_for", "504", "benchmark_post",
+    "threadpoolexecutor", "schedulerresult"
+)
 
-  printf "Timeout tracebacks: "
-  grep -c 'CTA TIMEOUT TRACEBACK' "$LOG" || true
+for path in files:
+    if not path.is_file():
+        continue
+    lines = path.read_text().splitlines()
+    matched = [
+        i for i, line in enumerate(lines)
+        if any(term in line.lower() for term in terms)
+    ]
+    if not matched:
+        continue
 
-  echo "CHECK COMPLETE — NO CHANGES"
-fi
+    print(f"\n=== {path.name} ===")
+    selected = set()
+    for i in matched:
+        selected.update(range(max(0, i-2), min(len(lines), i+4)))
+
+    for i in sorted(selected):
+        print(f"{i+1}: {lines[i][:180]}")
+
+print("\nSOURCE REVIEW COMPLETE — NO CHANGES")
+print("MAX NOT STARTED")
+PY

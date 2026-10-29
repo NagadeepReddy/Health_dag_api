@@ -4,56 +4,83 @@ from pathlib import Path
 import ast
 
 dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-p = dev / "nlp_bert_in_graph_batch2_contextfix.py"
+src = Path("artifacts/v1.168-max/cta_max/main_context_max.py")
 graph = dev / "grecbase_fusion_full_head_72_max_batch2_bertcontextfix.py"
 
-assert p.is_file() and graph.is_file(), "STOP: Verified files missing"
+dst = dev / "main_context_max_batch2_fix.py"
+newgraph = dev / "grecbase_fusion_full_head_72_max_batch2_mainfix.py"
 
-code = p.read_text()
-tree = ast.parse(code)
+assert src.is_file() and graph.is_file(), "STOP: Required source missing"
+
+tree = ast.parse(src.read_text())
+functions = [
+    n for n in tree.body
+    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    and n.name == "main_context_forward"
+]
+assert len(functions) == 1, "STOP: Main context function differs"
+
 matches = []
+for n in ast.walk(functions[0]):
+    if not isinstance(n, ast.Call) or len(n.args) < 2:
+        continue
+    if not isinstance(n.func, ast.Attribute) or n.func.attr != "reshape":
+        continue
+    try:
+        shape = ast.literal_eval(n.args[1])
+    except (ValueError, TypeError):
+        continue
+    if shape == [1, 128]:
+        matches.append(n.args[1])
 
-for node in ast.walk(tree):
-    if not isinstance(node, ast.Assign):
-        continue
-    if not any(isinstance(t, ast.Name) and t.id == "cls" for t in node.targets):
-        continue
-    call = node.value
-    if not isinstance(call, ast.Call) or len(call.args) < 2:
-        continue
-    if not isinstance(call.func, ast.Attribute) or call.func.attr != "reshape":
-        continue
-    matches.append(call.args[1])
+assert len(matches) == 1, \
+    f"STOP: Expected one [1,128] reshape; found {len(matches)}"
 
-assert len(matches) == 1, f"STOP: CLS reshape count = {len(matches)}"
 shape = matches[0]
+shape.elts[0] = ast.Constant(value=2)
 
-if ast.unparse(shape) == "[2, 384]":
-    print("CLS BATCH-2 FIX: ALREADY INSTALLED")
-else:
-    assert ast.unparse(shape) == "[1, 384]", \
-        f"STOP: Unexpected CLS shape: {ast.unparse(shape)}"
+# Preserve imports of original MAX integration dependencies.
+for n in ast.walk(tree):
+    if isinstance(n, ast.ImportFrom) and n.level == 1:
+        assert n.module, "STOP: Unsupported relative import"
+        n.module = "cta_max." + n.module
+        n.level = 0
 
-    lines = code.splitlines(keepends=True)
-    start = sum(map(len, lines[:shape.lineno - 1])) + shape.col_offset
-    end = sum(map(len, lines[:shape.end_lineno - 1])) + shape.end_col_offset
+ast.fix_missing_locations(tree)
+updated = ast.unparse(tree) + "\n"
+compile(updated, str(dst), "exec")
 
-    updated = code[:start] + "[2, 384]" + code[end:]
-    compile(updated, str(p), "exec")
+gtree = ast.parse(graph.read_text())
+imports = [
+    n for n in ast.walk(gtree)
+    if isinstance(n, ast.ImportFrom)
+    and n.module == "cta_max.main_context_max"
+    and any(a.name == "main_context_forward" for a in n.names)
+]
+assert len(imports) == 1, \
+    f"STOP: Main context import count = {len(imports)}"
 
-    backup = p.with_name(p.name + ".before_clsfix.bak")
-    assert not backup.exists(), "STOP: Existing backup requires review"
-    backup.write_bytes(p.read_bytes())
-    p.write_text(updated)
-    print("CLS BATCH-2 FIX: INSTALLED")
+imports[0].module = "main_context_max_batch2_fix"
+ast.fix_missing_locations(gtree)
+gcode = ast.unparse(gtree) + "\n"
+compile(gcode, str(newgraph), "exec")
 
-print("CLS SHAPE: [1,384] -> [2,384]")
+for p, content in ((dst, updated), (newgraph, gcode)):
+    if p.exists():
+        assert p.read_text() == content, \
+            f"STOP: Existing candidate differs: {p}"
+        print("VERIFIED:", p.name)
+    else:
+        p.write_text(content)
+        print("CREATED:", p.name)
+
+print("MAIN CONTEXT BATCH FIX: INSTALLED")
+print("SHAPE: [1,128] -> [2,128]")
 print("PYTHON SYNTAX: PASS")
-print("ORIGINAL DS CODE: UNCHANGED")
-print("WORKING NATIVE RELEASE: UNCHANGED")
+print("ORIGINAL DS AND MAX FILES: UNCHANGED")
 PY
 
-echo "=== RETRY TRUE BATCH-2 GRAPH ==="
+echo "=== TRUE BATCH-2 GRAPH REBUILD ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -72,15 +99,14 @@ timeout 120s podman --root /application1/podman/storage \
 import traceback
 import sys
 
-print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
-
 try:
     from max.driver import CPU
     from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max_batch2_bertcontextfix import (
+    from grecbase_fusion_full_head_72_max_batch2_mainfix import (
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
+    print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
     graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
         DeviceRef.from_device(CPU())
     )
@@ -96,6 +122,6 @@ except Exception:
     sys.exit(1)
 
 print("REAL BATCH-2 INFERENCE: NOT YET PERFORMED")
-print("ORIGINAL DS CODE: UNCHANGED")
 print("WORKING NATIVE RELEASE: UNCHANGED")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY

@@ -1,16 +1,16 @@
-echo "=== DISTINCT BATCH-2 PROCESS STATUS ==="
-ps -eo pid,ppid,stat,etime,%cpu,%mem,args |
-grep -E '[r]un_distinct_batch2_live_max_inference|[t]imeout 300s podman|[c]onmon' |
-head -20
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && {
+  echo "=== RECENT MAX CONTAINER EVENTS ==="
+  timeout 15s podman \
+    --root /application1/podman/storage \
+    --runroot /run/containers/storage \
+    events --since 2h --stream=false \
+    --filter type=container --format '{{json .}}' \
+    2>&1 | grep -Ei 'cta-max-faiss|oom|died|die|exit|kill' | tail -25 || true
 
-echo "=== MEMORY AVAILABLE ==="
-free -h
+  echo "=== KERNEL OOM / PROCESS KILL EVENTS ==="
+  journalctl -k --since "2 hours ago" --no-pager 2>/dev/null |
+    grep -Ei 'out of memory|oom-kill|killed process|memory cgroup' |
+    tail -15 || true
 
-echo "=== CONTAINER STATUS ==="
-timeout 10s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' |
-grep -E 'NAMES|cta-max|MAX|faiss' || true
-
-echo "=== STATUS CHECK COMPLETE ==="
+  echo "DIAGNOSTIC COMPLETE"
+}

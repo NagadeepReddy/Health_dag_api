@@ -1,106 +1,89 @@
 python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
+import copy
 
 dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-out = dev / "cta_batch2_input_pack.py"
+src = dev / "grecbase_fusion_full_head_72_max.py"
+dst = dev / "grecbase_fusion_full_head_72_max_batch2_candidate.py"
 
-required = [
-    "grecbase_fusion_full_head_72_max.py",
-    "run_real_sanity_input_adapter.py",
-    "run_live_max_inference.py",
-    "live_cta_pipeline_bridge.py",
+assert src.is_file(), f"STOP: Missing {src}"
+assert not dst.exists(), "STOP: Batch-2 candidate already exists"
+
+tree = ast.parse(src.read_text())
+
+name = "build_grecbase_fusion_graph_order_correct"
+functions = [
+    n for n in tree.body
+    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    and n.name == name
 ]
+assert len(functions) == 1, "STOP: Graph builder not uniquely found"
 
-assert dev.is_dir(), "STOP: Batch-2 development directory missing"
-assert all((dev / name).is_file() for name in required), \
-    "STOP: Required staged MAX source missing"
-assert not out.exists(), "STOP: Input packer already exists"
+fn = functions[0]
 
-code = '''
-"""Batch-2 input/output preparation for isolated CTA MAX development.
+graph_calls = [
+    n for n in ast.walk(fn)
+    if isinstance(n, ast.Call)
+    and any(k.arg == "input_types" for k in n.keywords)
+]
+assert len(graph_calls) == 1, "STOP: Graph input declaration ambiguous"
 
-Does not modify the original CTA DS pipeline or production MAX serving.
-"""
+graph_call = graph_calls[0]
+input_kw = next(
+    k for k in graph_call.keywords if k.arg == "input_types"
+)
 
-def pack_two_real_inputs(first, second):
-    import numpy as np
+class BatchTwoInputs(ast.NodeTransformer):
+    def __init__(self):
+        self.changed = 0
 
-    labels_a, arrays_a = first
-    labels_b, arrays_b = second
+    def visit_Call(self, node):
+        self.generic_visit(node)
 
-    if list(labels_a) != list(labels_b):
-        raise ValueError("Input names/order differ")
-
-    if len(arrays_a) != len(arrays_b) or len(arrays_a) != len(labels_a):
-        raise ValueError("Input counts differ")
-
-    packed = []
-
-    for name, left, right in zip(labels_a, arrays_a, arrays_b):
-        a = np.asarray(left)
-        b = np.asarray(right)
-
-        if a.ndim == 0 or b.ndim == 0:
-            raise ValueError(f"{name}: scalar input cannot be stacked")
-
-        if a.shape[0] != 1 or b.shape[0] != 1:
-            raise ValueError(f"{name}: expected singleton leading axis")
-
-        if a.shape[1:] != b.shape[1:]:
-            raise ValueError(f"{name}: incompatible trailing shapes")
-
-        if a.dtype != b.dtype:
-            raise ValueError(f"{name}: input dtype mismatch")
-
-        combined = np.concatenate((a, b), axis=0)
-
-        if combined.shape[0] != 2:
-            raise AssertionError(f"{name}: invalid batch dimension")
-
-        packed.append(combined)
-
-    return list(labels_a), packed
-
-
-def split_two_max_outputs(output):
-    import numpy as np
-
-    result = np.asarray(output)
-
-    if result.shape != (2, 2048):
-        raise ValueError(
-            f"Expected batched MAX output (2,2048), got {result.shape}"
+        func = node.func
+        is_tensor_type = (
+            isinstance(func, ast.Name) and func.id == "TensorType"
+        ) or (
+            isinstance(func, ast.Attribute) and func.attr == "TensorType"
         )
 
-    return result[0:1], result[1:2]
-'''
+        if is_tensor_type and len(node.args) >= 2:
+            shape = node.args[1]
 
-ast.parse(code)
-compile(code, str(out), "exec")
+            if isinstance(shape, (ast.List, ast.Tuple)) and shape.elts:
+                first = shape.elts[0]
 
-# Validate both helper contracts without importing MAX or NumPy.
-tree = ast.parse(code)
-names = {
-    node.name for node in tree.body
-    if isinstance(node, ast.FunctionDef)
-}
-assert names == {
-    "pack_two_real_inputs",
-    "split_two_max_outputs"
-}
+                if isinstance(first, ast.Constant) and first.value == 1:
+                    shape.elts[0] = ast.Constant(value=2)
+                    self.changed += 1
 
-out.write_text(code)
-assert out.read_text() == code
+        return node
 
-print("BATCH-2 INPUT PACKER: CREATED")
-print("INPUT BATCH DIMENSION: 2")
-print("EXPECTED OUTPUT: (2, 2048)")
-print("INPUT ORDER AND DTYPES: GUARDED")
+transform = BatchTwoInputs()
+input_kw.value = transform.visit(input_kw.value)
+
+assert transform.changed > 0, (
+    "STOP: No explicit singleton graph input dimensions found"
+)
+
+fn.name = name + "_batch2"
+
+ast.fix_missing_locations(tree)
+candidate = ast.unparse(tree) + "\n"
+compile(candidate, str(dst), "exec")
+
+dst.write_text(candidate)
+assert ast.parse(dst.read_text())
+
+print("BATCH-2 GRAPH CANDIDATE: CREATED")
+print("GRAPH INPUT SHAPE DECLARATIONS UPDATED:", transform.changed)
+print("NEW FUNCTION:", fn.name)
 print("PYTHON SYNTAX: PASS")
-print("RUNTIME BATCHING TEST: NOT YET PERFORMED")
+print("OTHER GRAPH OPERATIONS: REQUIRE BATCH-2 ADAPTATION")
+print("BATCH-2 INFERENCE: NOT YET TESTED")
 print("WORKING NATIVE RELEASE: UNCHANGED")
 print("ORIGINAL DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
-print("FILE:", out)
+print("FILE:", dst)
 PY

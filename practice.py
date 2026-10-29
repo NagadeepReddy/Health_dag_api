@@ -1,47 +1,70 @@
-R=/application1/cta_max_native_release_candidate_20261028
-
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --network none --read-only \
-  --memory 512m --pids-limit 32 \
-  -v "$R:/release:ro" \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -S -B - <<'PY'
-import ast
+python3 -S -B - <<'PY'
 from pathlib import Path
+import ast
 
-files = {
-    "MAX RESPONSE RECEIVER":
-        Path("/opt/venv/lib/python3.12/site-packages/max/serve/scheduler/queues.py"),
-    "CTA HTTP ROUTER":
-        Path("/release/cta_router.py"),
-    "CTA RESPONSE BRIDGE":
-        Path("/release/cta_http_pipeline.py"),
-}
+p = Path(
+    "/application1/cta_max_native_release_candidate_20261028/"
+    "cta_http_pipeline.py"
+)
 
-for title, path in files.items():
-    print(f"\n=== {title} ===")
-    assert path.is_file(), f"STOP: Missing {path}"
-    lines = path.read_text().splitlines()
-    tree = ast.parse("\n".join(lines))
+assert p.is_file(), f"STOP: Missing {p}"
+source = p.read_text()
 
-    targets = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if (
-                node.name in ("response_worker", "open_channel", "cta_infer")
-                or "response_worker" in node.name
-            ):
-                targets.append(node)
+old = "return await _cta_original_response_worker(self)"
+anchor = "async def _cta_traced_response_worker(self):"
 
-    if targets:
-        for node in targets:
-            print(f"\nFUNCTION: {node.name}")
-            for i in range(node.lineno, min(node.end_lineno, node.lineno + 115) + 1):
-                print(f"{i}: {lines[i-1]}")
-    else:
-        print("No matching functions")
+assert source.count(old) == 1, "STOP: Receiver differs or is already changed"
+assert source.count(anchor) == 1, "STOP: Receiver definition differs"
+assert "_cta_fast_response_worker" not in source, "STOP: Fix already installed"
 
-print("\nFILES MODIFIED: NONE")
-print("MAX MODEL STARTUP: NOT PERFORMED")
+helper = '''
+async def _cta_fast_response_worker(self):
+    """CTA-only response polling; preserve MAX request-ID dispatch."""
+    import asyncio
+    import queue as std_queue
+
+    while True:
+        try:
+            responses = self.response_queue.get_nowait()
+        except std_queue.Empty:
+            if not self.is_worker_healthy():
+                raise RuntimeError("CTA native model worker is not healthy")
+            await asyncio.sleep(0.01)
+            continue
+
+        for request_id, response in responses.items():
+            pending = self.pending_out_queues.get(request_id)
+            if pending is not None:
+                await pending.put(response)
+                print("CTA HTTP RESPONSE DELIVERED:", request_id, flush=True)
+            else:
+                self.cancel_queue.put_nowait([request_id])
+                print("CTA RESPONSE WITHOUT PENDING REQUEST:", request_id, flush=True)
+
+
+'''
+
+updated = source.replace(anchor, helper + anchor, 1)
+updated = updated.replace(
+    old,
+    "return await _cta_fast_response_worker(self)",
+    1
+)
+
+ast.parse(updated)
+
+backup = p.with_name("cta_http_pipeline.py.before_concurrency_fix.bak")
+assert not backup.exists(), "STOP: Backup already exists"
+
+backup.write_bytes(p.read_bytes())
+p.write_text(updated)
+
+print("CTA RESPONSE RECEIVER FIX: INSTALLED")
+print("RESPONSE POLLING: 10 ms")
+print("REQUEST-ID MATCHING: PRESERVED")
+print("BACKUP: CREATED")
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("MAX PACKAGE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
 PY

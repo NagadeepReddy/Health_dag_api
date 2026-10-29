@@ -6,14 +6,13 @@ REPO=$ROOT/sajjna8/rt-pzaas-cta-offers-v1
 RELEASE=$ROOT/cta_max_native_release_candidate_20261028
 IMAGE=docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest
 NAME=cta-final-native-smoke
-LOG=$ROOT/cta_final_native_startup_20261028_v5.log
-
-WEIGHTS=$REPO/artifacts/v1.168-max/cta_native_model/cta_real_fp32.safetensors
+LOG=$ROOT/cta_final_native_startup_20261028_v6.log
 
 PODMAN=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-if [ ! -s "$WEIGHTS" ]; then
-  echo "STOP: Real FP32 weights missing"
+if [ ! -s "$REPO/artifacts/v1.168-max/cta_native_model/cta_real_fp32.safetensors" ] ||
+   [ ! -f "$RELEASE/cta_native_launcher.py" ]; then
+  echo "STOP: Release launcher or real FP32 weights missing"
   exit 1
 fi
 
@@ -22,7 +21,7 @@ if "${PODMAN[@]}" container exists "$NAME"; then
   exit 1
 fi
 
-echo "NATIVE MAX STARTUP WITH REAL FP32 WEIGHTS"
+echo "STARTING NATIVE MAX WITH EXPLICIT FLOAT32 ENCODING"
 
 timeout --signal=TERM --kill-after=10s 240s \
 "${PODMAN[@]}" run --rm \
@@ -50,13 +49,14 @@ timeout --signal=TERM --kill-after=10s 240s \
   --devices cpu \
   --model-path /workspace/artifacts/v1.168-max/cta_native_model \
   --weight-path /workspace/artifacts/v1.168-max/cta_native_model/cta_real_fp32.safetensors \
+  --quantization-encoding float32 \
   --port 8000 \
   >"$LOG" 2>&1
 
 RC=$?
 echo "STARTUP EXIT CODE: $RC"
-echo "=== FINAL LOG ==="
-tail -35 "$LOG"
+echo "=== FINAL STARTUP LOG ==="
+tail -45 "$LOG"
 echo "LOG: $LOG"
 echo "DS CODE: UNCHANGED"
 SH

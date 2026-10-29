@@ -1,72 +1,62 @@
 bash <<'SH'
-set -euo pipefail
+set -u
 
-REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
+ROOT=/application1
+REPO=$ROOT/sajjna8/rt-pzaas-cta-offers-v1
+RELEASE=$ROOT/cta_max_native_release_candidate_20261028
 IMAGE=docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest
+NAME=cta-final-native-smoke
+LOG=$ROOT/cta_final_native_startup_20261028_v5.log
 
-test -f "$REPO/artifacts/v1.168/core-artifact/model_0_base.pt"
-test -d "$REPO/artifacts/v1.168-max/cta_native_model"
+WEIGHTS=$REPO/artifacts/v1.168-max/cta_native_model/cta_real_fp32.safetensors
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i \
-  --network none \
-  --read-only \
+PODMAN=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+
+if [ ! -s "$WEIGHTS" ]; then
+  echo "STOP: Real FP32 weights missing"
+  exit 1
+fi
+
+if "${PODMAN[@]}" container exists "$NAME"; then
+  echo "STOP: Test container already exists"
+  exit 1
+fi
+
+echo "NATIVE MAX STARTUP WITH REAL FP32 WEIGHTS"
+
+timeout --signal=TERM --kill-after=10s 240s \
+"${PODMAN[@]}" run --rm \
+  --name "$NAME" \
+  --network bridge \
+  -p 127.0.0.1:18080:8000 \
   --memory 12g \
+  --memory-swap 12g \
   --cpus 2 \
-  --pids-limit 64 \
-  --tmpfs /tmp:rw,size=512m,mode=1777 \
+  --pids-limit 128 \
+  --read-only \
+  --tmpfs /tmp:rw,size=1g,mode=1777 \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=2g,mode=1777 \
   -e HOME=/tmp \
+  -e XDG_CACHE_HOME=/tmp \
+  -e TMPDIR=/tmp \
   -e PYTHONDONTWRITEBYTECODE=1 \
-  -v "$REPO/artifacts/v1.168/core-artifact/model_0_base.pt:/src/model_0_base.pt:ro" \
-  -v "$REPO/artifacts/v1.168-max/cta_native_model:/out:rw" \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max:/workspace \
+  -v "$REPO:/workspace:ro" \
+  -v "$RELEASE:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
+  -w /workspace \
   --entrypoint /opt/venv/bin/python \
-  "$IMAGE" -B - <<'PY'
-from pathlib import Path
-import torch
-from safetensors.torch import save_file
-from safetensors import safe_open
+  "$IMAGE" \
+  /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_launcher.py \
+  --devices cpu \
+  --model-path /workspace/artifacts/v1.168-max/cta_native_model \
+  --weight-path /workspace/artifacts/v1.168-max/cta_native_model/cta_real_fp32.safetensors \
+  --port 8000 \
+  >"$LOG" 2>&1
 
-src = Path("/src/model_0_base.pt")
-dst = Path("/out/cta_real_fp32.safetensors")
-tmp = Path("/out/.cta_real_fp32.safetensors.part")
-
-if dst.exists() or tmp.exists():
-    raise SystemExit("STOP: Output already exists; nothing overwritten")
-
-state = torch.load(src, map_location="cpu", weights_only=True)
-if isinstance(state, dict) and "state_dict" in state:
-    state = state["state_dict"]
-
-if not isinstance(state, dict):
-    raise SystemExit("STOP: Unexpected checkpoint structure")
-
-weights = {}
-for name, value in state.items():
-    if isinstance(value, torch.Tensor):
-        value = value.detach().cpu()
-        if value.is_floating_point():
-            value = value.float()
-        weights[name] = value.contiguous().clone()
-
-if len(weights) < 100:
-    raise SystemExit("STOP: Checkpoint tensor count unexpectedly low")
-
-save_file(weights, str(tmp))
-with safe_open(str(tmp), framework="pt", device="cpu") as f:
-    count = len(f.keys())
-
-if count != len(weights):
-    raise SystemExit("STOP: Safetensors verification failed")
-
-tmp.rename(dst)
-
-print("REAL TRAINED WEIGHTS:", count)
-print("FP32 SAFETENSORS: CREATED")
-print("OUTPUT:", dst)
-print("SIZE BYTES:", dst.stat().st_size)
-print("ORIGINAL CHECKPOINT: UNCHANGED")
-print("DS CODE: UNCHANGED")
-print("MAX SERVER: NOT STARTED")
-PY
+RC=$?
+echo "STARTUP EXIT CODE: $RC"
+echo "=== FINAL LOG ==="
+tail -35 "$LOG"
+echo "LOG: $LOG"
+echo "DS CODE: UNCHANGED"
 SH

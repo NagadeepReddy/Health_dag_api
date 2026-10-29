@@ -1,33 +1,19 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+cd /application1 || exit 1
 
-python3 -S -B - <<'PY'
-from pathlib import Path
+PKG=/application1/CTA_MAX_VALIDATED_RELEASE_20261028.tar.gz
+SRC=/application1/cta_max_native_release_candidate_20261028
 
-roots = [
-    Path("/application1/cta_max_native_release_candidate_20261028"),
-    Path("artifacts/v1.168-max/maxserve_cta_extension"),
-]
+if [ ! -s "$PKG" ] || [ ! -d "$SRC" ]; then
+  echo "STOP: Validated package or source missing"
+else
+  echo "=== CODE CHANGES SINCE RELEASE PACKAGE ==="
+  find "$SRC" -type f \
+    \( -name '*.py' -o -name '*.json' -o -name '*.yaml' \) \
+    -newer "$PKG" -print
 
-for name in ("cta_pipeline_model.py", "cta_architecture_registration.py"):
-    files = [r / name for r in roots if (r / name).is_file()]
-    print(f"\n=== {name} ===")
-    if not files:
-        print("MISSING")
-        continue
+  echo "=== PACKAGE ==="
+  ls -lh "$PKG" "$PKG.sha256"
 
-    p = files[0]
-    print("SOURCE:", p)
-    lines = p.read_text().splitlines()
-
-    for i, line in enumerate(lines, 1):
-        if any(term in line.lower() for term in (
-            "weight", "load", "modelconfig", "pipeline",
-            "encoding", "architecture", "register"
-        )):
-            lo, hi = max(0, i-3), min(len(lines), i+4)
-            for j in range(lo, hi):
-                print(f"{j+1}: {lines[j][:180]}")
-
-print("\nMODEL STARTED: NO")
-print("FILES MODIFIED: NONE")
-PY
+  echo "CHECK COMPLETE — NO FILES MODIFIED"
+  echo "MAX NOT STARTED"
+fi

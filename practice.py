@@ -1,35 +1,56 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-import json
 from pathlib import Path
+import shutil
+import ast
 
-files = {
-    "WORKING REQUEST": Path("artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"),
-    "SECOND REQUEST": Path("artifacts/v1.168-max/test-results/cta_max_tiles_smoketest_input.json"),
-    "THIRD REQUEST": Path("artifacts/v1.168/samples/sanity_input.json"),
-}
+src = Path("artifacts/v1.168-max/maxserve_cta_extension")
+dst = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2")
 
-def inspect(obj, path="$"):
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            current = f"{path}.{key}"
-            if "webinteraction" in key.lower():
-                print(
-                    "FIELD:", current,
-                    "| TYPE:", type(value).__name__,
-                    "| HAS VALUE:", value not in (None, "")
-                )
-            inspect(value, current)
-    elif isinstance(obj, list):
-        for i, value in enumerate(obj):
-            inspect(value, f"{path}[{i}]")
+names = [
+    "cta_native_scheduler.py",
+    "cta_scheduler_factory.py",
+    "cta_worker_adapter.py",
+]
 
-for name, path in files.items():
-    print("\n===", name, "===")
-    data = json.loads(path.read_text())
-    inspect(data)
-    print("ROOT KEYS:", sorted(data.keys()))
+for name in names:
+    original = src / name
+    assert original.is_file(), f"STOP: Missing {original}"
 
-print("\nFILES MODIFIED: NONE")
-print("DS CODE: UNCHANGED")
+    code = original.read_text()
+    ast.parse(code, filename=str(original))
+
+    destination = dst / name
+    if destination.exists():
+        assert destination.read_bytes() == original.read_bytes(), (
+            f"STOP: Existing development copy differs: {destination}"
+        )
+
+dst.mkdir(parents=True, exist_ok=True)
+
+for name in names:
+    original = src / name
+    destination = dst / name
+
+    if not destination.exists():
+        shutil.copy2(original, destination)
+
+    print("DEV COPY:", destination)
+
+scheduler = (src / "cta_native_scheduler.py").read_text().splitlines()
+
+print("\n=== NATIVE BATCHING IMPLEMENTATION POINTS ===")
+for i, line in enumerate(scheduler, 1):
+    if any(x in line for x in (
+        "max_items_per_iteration",
+        "batching not yet supported",
+        "retrieve_item(",
+        "adapter.predict(",
+        "run_iteration("
+    )):
+        print(f"{i}: {line.strip()}")
+
+print("\nDEV IMPLEMENTATION FILES: READY")
+print("WORKING NATIVE RELEASE: UNCHANGED")
+print("ORIGINAL DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
 PY

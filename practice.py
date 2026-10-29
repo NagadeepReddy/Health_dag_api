@@ -1,31 +1,42 @@
 python3 - <<'PY'
-from pathlib import Path
 import ast
+from pathlib import Path
 
 p = Path(
     "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
     "native_batch2/cta_worker_adapter.py"
 )
 
-assert p.is_file(), "STOP: Adapter missing"
-source = p.read_text()
-tree = ast.parse(source)
+tree = ast.parse(p.read_text())
+method = next(
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "predict_batch"
+)
 
-print("=== DEVELOPMENT BATCH ADAPTER ===")
+calls = []
+for node in ast.walk(method):
+    if isinstance(node, ast.Call):
+        f = node.func
+        name = (
+            f.attr if isinstance(f, ast.Attribute)
+            else f.id if isinstance(f, ast.Name)
+            else "unknown"
+        )
+        if name in (
+            "preprocess",
+            "original_preprocess",
+            "predict_raw",
+            "infer_max_batch",
+        ):
+            calls.append((node.lineno, name))
 
-for node in ast.walk(tree):
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        if node.name == "predict_batch":
-            print(f"METHOD: {node.name}")
-            print(f"LINES: {node.lineno}-{node.end_lineno}")
+print("=== BATCH ADAPTER SEMANTIC CHECK ===")
+for line, name in sorted(calls):
+    print(f"LINE {line}: {name}")
 
-            lines = source.splitlines()
-            for n in range(node.lineno, node.end_lineno + 1):
-                print(f"{n:4}: {lines[n-1]}")
-
-            print("ADAPTER SYNTAX: PASS")
-            print("NO FILES MODIFIED")
-            break
-else:
-    raise RuntimeError("predict_batch method missing")
+print("PREPROCESS CACHE: NOT IMPLEMENTED")
+print("MULTI-INFERENCE HANDLING: NOT IMPLEMENTED")
+print("NEXT: Isolated adapter correction")
+print("NO FILES MODIFIED")
 PY

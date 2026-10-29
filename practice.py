@@ -1,36 +1,55 @@
 python3 -S -B - <<'PY'
 from pathlib import Path
-import json, tarfile, hashlib
+import json
 
-base = Path("/application1")
-release = base / "cta_max_native_release_candidate_20261028"
-response = base / "cta_queue_bridge_response.json"
-log = base / "cta_queue_bridge_live.log"
-archive = base / "CTA_MAX_NATIVE_E2E_PASS_20261028.tar.gz"
+root = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max")
+native = Path("/application1/cta_queue_bridge_response.json")
 
-assert release.is_dir(), "STOP: release missing"
-assert response.is_file(), "STOP: response missing"
-assert log.is_file(), "STOP: log missing"
-assert not archive.exists(), "STOP: archive already exists"
+assert native.is_file(), "STOP: Native response missing"
+result = json.loads(native.read_text())
 
-launcher = (release / "cta_native_launcher.py").read_text()
-assert "CTA_NATIVE_TYPED_QUEUE_BRIDGE" in launcher
+def prediction(data):
+    if not isinstance(data, dict):
+        return None
+    body = data.get("jsonData", data)
+    if not isinstance(body, dict):
+        return None
+    value = body.get("prediction")
+    return value if isinstance(value, dict) and isinstance(value.get("offerList"), list) else None
 
-data = json.loads(response.read_text())
-assert isinstance(data["jsonData"]["prediction"]["offerList"], list)
+current = prediction(result)
+assert current is not None, "STOP: Native CTA response contract invalid"
 
-with tarfile.open(archive, "w:gz") as tar:
-    for p in (release, response, log):
-        tar.add(p, arcname=p.name)
+print("NATIVE RESPONSE: VALID")
+print("NATIVE OFFER COUNT:", len(current["offerList"]))
 
-with tarfile.open(archive, "r:gz") as tar:
-    assert tar.getmembers()
+candidates = []
+for p in root.rglob("*.json"):
+    if not any(word in p.name.lower() for word in
+               ("response", "output", "result", "fastapi", "e2e")):
+        continue
+    if p.stat().st_size > 5_000_000:
+        continue
+    try:
+        saved = json.loads(p.read_text())
+    except (ValueError, UnicodeError, OSError):
+        continue
+    prior = prediction(saved)
+    if prior is not None:
+        candidates.append((p, prior))
 
-print("NATIVE CTA E2E: PASS")
-print("QUEUE FIX: INCLUDED")
-print("UPDATED RELEASE ARCHIVE: CREATED")
-print("ARCHIVE:", archive)
-print("SHA256:", hashlib.sha256(archive.read_bytes()).hexdigest())
-print("DS CODE: UNCHANGED")
+print("SAVED BUSINESS OUTPUT BASELINES:", len(candidates))
+
+for p, prior in candidates[:15]:
+    print("BASELINE:", p)
+    print("BASELINE OFFER COUNT:", len(prior["offerList"]))
+    print("PREDICTION MATCH:", current == prior)
+
+if not candidates:
+    print("BUSINESS PARITY: PENDING - no saved response baseline found")
+else:
+    print("BUSINESS PARITY: comparison shown; confirm identical test input")
+
+print("FILES MODIFIED: NONE")
 print("MAX STARTUP: NOT PERFORMED")
 PY

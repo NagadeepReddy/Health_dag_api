@@ -1,50 +1,40 @@
 python3 - <<'PY'
 from pathlib import Path
 import ast
-import shutil
 
 p = Path(
     "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
     "native_batch2/cta_worker_adapter.py"
 )
-backup = p.with_name("cta_worker_adapter_before_cache_fix.py")
 
 assert p.is_file(), "STOP: Adapter missing"
-assert not backup.exists(), "STOP: Backup already exists"
-
 source = p.read_text()
+tree = ast.parse(source)
 
-old = """                response = pipeline.predict_raw(body)"""
-new = """                cached_result = prepared[i]
-                original_method = pipeline.preprocess
-                calls = [0]
+method = next(
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "predict_batch"
+)
 
-                def cached_preprocess(request_body):
-                    calls[0] += 1
-                    if calls[0] != 1 or request_body is not body:
-                        raise RuntimeError(
-                            "Unexpected CTA preprocessing call"
-                        )
-                    return cached_result
+print("=== CURRENT ADAPTER IMPLEMENTATION ===")
 
-                pipeline.preprocess = cached_preprocess
-                try:
-                    response = pipeline.predict_raw(body)
-                finally:
-                    pipeline.preprocess = original_method"""
+for number, line in enumerate(source.splitlines(), 1):
+    if method.lineno <= number <= method.end_lineno:
+        if any(x in line for x in (
+            "preprocess",
+            "predict_raw",
+            "model.calls",
+            "model_base",
+            "model_atc",
+            "finally:",
+            "cached_result",
+            "infer_max_batch",
+        )):
+            print(f"{number}: {line.strip()}")
 
-assert source.count(old) == 1, "STOP: Expected call not found exactly once"
-
-updated = source.replace(old, new)
-ast.parse(updated)
-
-shutil.copy2(p, backup)
-p.write_text(updated)
-
-print("BACKUP:", backup)
-print("PREPROCESS CACHE FIX: INSTALLED")
+print("CACHE FIX:", "PRESENT" if "cached_preprocess" in source else "MISSING")
+print("BATCH METHOD: PRESENT")
 print("SYNTAX: PASS")
-print("MULTI-INFERENCE HANDLING: STILL PENDING")
-print("ORIGINAL DS: UNCHANGED")
-print("WORKING NATIVE RELEASE: UNCHANGED")
+print("NO FILES MODIFIED")
 PY

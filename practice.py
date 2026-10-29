@@ -1,34 +1,49 @@
-python3 - <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && bash <<'SH'
+set -eu
+
+CAND=/application1/cta_max_true_batch_dev_20261028/batch2_candidate
+
+test -s "$CAND/cta_max/run_batch2_contract.py"
+
+timeout 60s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --network none \
+  --memory 1g --cpus 1 --pids-limit 64 \
+  --read-only \
+  --tmpfs /tmp:rw,size=64m \
+  -e HOME=/tmp \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONPATH="/workspace/artifacts/v1.168-max:$CAND" \
+  -v "$PWD:/workspace:ro" \
+  -v "$CAND:$CAND:ro" \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -B - <<'PY'
+import cta_max
 from pathlib import Path
-import ast
 
-base = Path("/application1")
-candidate = base / "cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
-backend = base / "CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py"
+print("CTA PACKAGE:", list(cta_max.__path__))
 
-contract = candidate / "run_batch2_contract.py"
+candidate = (
+    "/application1/cta_max_true_batch_dev_20261028/"
+    "batch2_candidate/cta_max"
+)
 
-assert contract.is_file(), "Contract missing"
-assert backend.is_file(), "Backend missing"
+if candidate not in cta_max.__path__:
+    cta_max.__path__.append(candidate)
 
-tree = ast.parse(backend.read_text())
-imports = [
-    node for node in ast.walk(tree)
-    if isinstance(node, ast.ImportFrom)
-    and node.module == "cta_max.run_batch2_contract"
-]
+from cta_max.run_batch2_contract import pack_two_requests
 
-assert len(imports) == 1, "Unexpected backend import"
-assert any(
-    alias.name == "pack_two_requests"
-    for alias in imports[0].names
-), "Packer import missing"
-
-ast.parse(contract.read_text())
-
-print("CONTRACT FILE: PASS")
-print("BACKEND IMPORT: PASS")
-print("CONTRACT SYNTAX: PASS")
-print("NEXT: Container package-resolution test")
+assert callable(pack_two_requests)
+print("CONTAINER CONTRACT IMPORT: PASS")
+print("CONTRACT LOCATION:", Path(
+    __import__(
+        "cta_max.run_batch2_contract",
+        fromlist=[""]
+    ).__file__
+))
 print("NO FILES MODIFIED")
 PY
+SH

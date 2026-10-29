@@ -1,49 +1,47 @@
-python3 -S -B - <<'PY'
+R=/application1/cta_max_native_release_candidate_20261028
+
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --network none --read-only \
+  --memory 512m --pids-limit 32 \
+  -v "$R:/release:ro" \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -S -B - <<'PY'
+import ast
 from pathlib import Path
-import re
 
-p = Path("/application1/cta_native_concurrency_final.log")
-assert p.is_file(), "STOP: Existing concurrency log missing"
+files = {
+    "MAX RESPONSE RECEIVER":
+        Path("/opt/venv/lib/python3.12/site-packages/max/serve/scheduler/queues.py"),
+    "CTA HTTP ROUTER":
+        Path("/release/cta_router.py"),
+    "CTA RESPONSE BRIDGE":
+        Path("/release/cta_http_pipeline.py"),
+}
 
-terms = (
-    "QUEUE BRIDGE",
-    "QUEUE ITEM",
-    "REQUEST UNWRAPPED",
-    "PREDICT_RAW",
-    "RESPONSE IDS",
-    "RESPONSE QUEUE SEND",
-    "RESPONSE WORKER LOOP",
-    "HTTP QUEUE",
-    "TIMEOUT",
-    "CANCELLED",
-    "ERROR",
-    "EXCEPTION",
-    "request_id",
-    "wire_request_id",
-    "pending_out_queues",
-)
+for title, path in files.items():
+    print(f"\n=== {title} ===")
+    assert path.is_file(), f"STOP: Missing {path}"
+    lines = path.read_text().splitlines()
+    tree = ast.parse("\n".join(lines))
 
-lines = p.read_text(errors="replace").splitlines()
+    targets = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if (
+                node.name in ("response_worker", "open_channel", "cta_infer")
+                or "response_worker" in node.name
+            ):
+                targets.append(node)
 
-print("=== TWO-REQUEST DELIVERY TIMELINE ===")
-for number, line in enumerate(lines, 1):
-    if any(term.lower() in line.lower() for term in terms):
-        if "telemetry.modular.com" in line:
-            continue
-        print(f"{number}: {line[:350]}")
-
-print("\n=== EVENT COUNTS ===")
-for term in (
-    "CTA MAX REQUEST UNWRAPPED",
-    "CTA PREDICT_RAW: START",
-    "CTA RESPONSE WORKER IDS",
-    "CTA RESPONSE QUEUE SEND: COMPLETED",
-    "CTA HTTP QUEUE ITEM",
-    "CTA TIMEOUT TRACEBACK",
-):
-    count = sum(term in line for line in lines)
-    print(f"{term}: {count}")
+    if targets:
+        for node in targets:
+            print(f"\nFUNCTION: {node.name}")
+            for i in range(node.lineno, min(node.end_lineno, node.lineno + 115) + 1):
+                print(f"{i}: {lines[i-1]}")
+    else:
+        print("No matching functions")
 
 print("\nFILES MODIFIED: NONE")
-print("MAX STARTUP: NOT PERFORMED")
+print("MAX MODEL STARTUP: NOT PERFORMED")
 PY

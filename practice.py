@@ -5,17 +5,17 @@ ROOT=/application1
 REPO=$ROOT/sajjna8/rt-pzaas-cta-offers-v1
 RELEASE=$ROOT/cta_max_native_release_candidate_20261028
 IMAGE=docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest
-LOG=$ROOT/cta_final_native_startup_20261028_v2.log
+LOG=$ROOT/cta_final_native_startup_20261028_v3.log
 NAME=cta-final-native-smoke
 
 PODMAN=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
 if "${PODMAN[@]}" container exists "$NAME"; then
-  echo "STOP: Test container already exists"
+  echo "STOP: Existing test container found"
   exit 1
 fi
 
-echo "STARTING NATIVE MAX — CORRECTED ENTRYPOINT"
+echo "STARTING NATIVE MAX — WRITABLE CONTAINER CACHE"
 
 timeout --signal=TERM --kill-after=10s 240s \
 "${PODMAN[@]}" run --rm \
@@ -26,7 +26,6 @@ timeout --signal=TERM --kill-after=10s 240s \
   --memory-swap 12g \
   --cpus 2 \
   --pids-limit 128 \
-  --read-only \
   --tmpfs /tmp:rw,size=1g,mode=1777 \
   -e HOME=/tmp \
   -e XDG_CACHE_HOME=/tmp \
@@ -45,10 +44,9 @@ timeout --signal=TERM --kill-after=10s 240s \
   >"$LOG" 2>&1
 
 RC=$?
-
 echo "STARTUP EXIT CODE: $RC"
 echo "=== STARTUP LOG ==="
-tail -45 "$LOG"
+tail -35 "$LOG"
 echo "LOG: $LOG"
-echo "DS CODE: UNCHANGED"
+echo "ORIGINAL DS CODE: UNCHANGED"
 SH

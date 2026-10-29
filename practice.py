@@ -1,87 +1,106 @@
 python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
-import shutil
-import json
 
-repo = Path.cwd()
-assert repo.name == "rt-pzaas-cta-offers-v1", (
-    f"STOP: Unexpected working directory: {repo}"
-)
+dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+out = dev / "cta_batch2_input_pack.py"
 
-root = repo / "artifacts/v1.168-max/cta_max"
-dest = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+required = [
+    "grecbase_fusion_full_head_72_max.py",
+    "run_real_sanity_input_adapter.py",
+    "run_live_max_inference.py",
+    "live_cta_pipeline_bridge.py",
+]
 
-runner = root / "run_live_max_inference.py"
-bridge = root / "live_cta_pipeline_bridge.py"
+assert dev.is_dir(), "STOP: Batch-2 development directory missing"
+assert all((dev / name).is_file() for name in required), \
+    "STOP: Required staged MAX source missing"
+assert not out.exists(), "STOP: Input packer already exists"
 
-assert runner.is_file(), f"STOP: Missing {runner}"
-assert bridge.is_file(), f"STOP: Missing {bridge}"
-assert not dest.exists(), "STOP: Development directory already exists"
+code = '''
+"""Batch-2 input/output preparation for isolated CTA MAX development.
 
-tree = ast.parse(runner.read_text())
+Does not modify the original CTA DS pipeline or production MAX serving.
+"""
 
-required = (
-    "build_grecbase_fusion_graph_order_correct",
-    "build_real_inputs",
-)
+def pack_two_real_inputs(first, second):
+    import numpy as np
 
-sources = {runner, bridge}
+    labels_a, arrays_a = first
+    labels_b, arrays_b = second
 
-for function in required:
-    modules = [
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and any(alias.name == function for alias in node.names)
-    ]
+    if list(labels_a) != list(labels_b):
+        raise ValueError("Input names/order differ")
 
-    assert len(modules) == 1 and modules[0], (
-        f"STOP: Cannot uniquely resolve import for {function}: {modules}"
-    )
+    if len(arrays_a) != len(arrays_b) or len(arrays_a) != len(labels_a):
+        raise ValueError("Input counts differ")
 
-    filename = modules[0].split(".")[-1] + ".py"
-    source = root / filename
+    packed = []
 
-    assert source.is_file(), f"STOP: Imported source missing: {source}"
+    for name, left, right in zip(labels_a, arrays_a, arrays_b):
+        a = np.asarray(left)
+        b = np.asarray(right)
 
-    source_tree = ast.parse(source.read_text())
-    assert any(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == function
-        for node in source_tree.body
-    ), f"STOP: Function not defined in {source}"
+        if a.ndim == 0 or b.ndim == 0:
+            raise ValueError(f"{name}: scalar input cannot be stacked")
 
-    sources.add(source)
-    print("RESOLVED:", function, "->", source.name)
+        if a.shape[0] != 1 or b.shape[0] != 1:
+            raise ValueError(f"{name}: expected singleton leading axis")
 
-for source in sources:
-    ast.parse(source.read_text())
+        if a.shape[1:] != b.shape[1:]:
+            raise ValueError(f"{name}: incompatible trailing shapes")
 
-dest.mkdir()
+        if a.dtype != b.dtype:
+            raise ValueError(f"{name}: input dtype mismatch")
 
-for source in sorted(sources):
-    target = dest / source.name
-    shutil.copy2(source, target)
-    assert target.read_bytes() == source.read_bytes()
-    print("STAGED:", source.name)
+        combined = np.concatenate((a, b), axis=0)
 
-manifest = {
-    "purpose": "Isolated MAX true batch-2 prototype",
-    "status": "NOT IMPLEMENTED OR TESTED",
-    "sources": sorted(p.name for p in sources),
-    "working_native_release": "unchanged",
-    "original_ds_code": "unchanged",
+        if combined.shape[0] != 2:
+            raise AssertionError(f"{name}: invalid batch dimension")
+
+        packed.append(combined)
+
+    return list(labels_a), packed
+
+
+def split_two_max_outputs(output):
+    import numpy as np
+
+    result = np.asarray(output)
+
+    if result.shape != (2, 2048):
+        raise ValueError(
+            f"Expected batched MAX output (2,2048), got {result.shape}"
+        )
+
+    return result[0:1], result[1:2]
+'''
+
+ast.parse(code)
+compile(code, str(out), "exec")
+
+# Validate both helper contracts without importing MAX or NumPy.
+tree = ast.parse(code)
+names = {
+    node.name for node in tree.body
+    if isinstance(node, ast.FunctionDef)
+}
+assert names == {
+    "pack_two_real_inputs",
+    "split_two_max_outputs"
 }
 
-(dest / "batch2_manifest.json").write_text(
-    json.dumps(manifest, indent=2)
-)
+out.write_text(code)
+assert out.read_text() == code
 
-print("\nBATCH-2 DEVELOPMENT COPY: CREATED")
-print("DIRECTORY:", dest)
-print("SOURCE VALIDATION: PASS")
-print("WORKING RELEASE: UNCHANGED")
+print("BATCH-2 INPUT PACKER: CREATED")
+print("INPUT BATCH DIMENSION: 2")
+print("EXPECTED OUTPUT: (2, 2048)")
+print("INPUT ORDER AND DTYPES: GUARDED")
+print("PYTHON SYNTAX: PASS")
+print("RUNTIME BATCHING TEST: NOT YET PERFORMED")
+print("WORKING NATIVE RELEASE: UNCHANGED")
 print("ORIGINAL DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
+print("FILE:", out)
 PY

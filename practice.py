@@ -3,44 +3,32 @@ from pathlib import Path
 import ast
 
 base = Path("/application1")
-dev = base / "CTA_MAX_TRUE_BATCH2_DEV_20261029"
-backend = dev / "real_max_batch2_backend.py"
-contract = (
-    base / "cta_max_true_batch_dev_20261028"
-    / "batch2_candidate/cta_max/run_batch2_contract.py"
-)
+candidate = base / "cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
+backend = base / "CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py"
 
-assert backend.is_file(), "STOP: Backend missing"
-assert contract.is_file(), "STOP: Contract missing"
+contract = candidate / "run_batch2_contract.py"
 
-for name, path in [
-    ("BACKEND", backend),
-    ("CONTRACT", contract),
-]:
-    source = path.read_text()
-    tree = ast.parse(source)
+assert contract.is_file(), "Contract missing"
+assert backend.is_file(), "Backend missing"
 
-    print(f"\n=== {name} ===")
-    print("SYNTAX: PASS")
+tree = ast.parse(backend.read_text())
+imports = [
+    node for node in ast.walk(tree)
+    if isinstance(node, ast.ImportFrom)
+    and node.module == "cta_max.run_batch2_contract"
+]
 
-    for number, line in enumerate(source.splitlines(), 1):
-        if (
-            number <= 45
-            or "batch2_contract" in line
-            or "pack_two_requests" in line
-        ):
-            print(f"{number:4}: {line}")
+assert len(imports) == 1, "Unexpected backend import"
+assert any(
+    alias.name == "pack_two_requests"
+    for alias in imports[0].names
+), "Packer import missing"
 
-    if name == "CONTRACT":
-        print(
-            "PACKER DEFINED:",
-            any(
-                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name == "pack_two_requests"
-                for node in ast.walk(tree)
-            )
-        )
+ast.parse(contract.read_text())
 
-print("\nREAD-ONLY INSPECTION COMPLETE")
+print("CONTRACT FILE: PASS")
+print("BACKEND IMPORT: PASS")
+print("CONTRACT SYNTAX: PASS")
+print("NEXT: Container package-resolution test")
 print("NO FILES MODIFIED")
 PY

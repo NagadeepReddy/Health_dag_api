@@ -5,17 +5,23 @@ ROOT=/application1
 REPO=$ROOT/sajjna8/rt-pzaas-cta-offers-v1
 RELEASE=$ROOT/cta_max_native_release_candidate_20261028
 IMAGE=docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest
-LOG=$ROOT/cta_final_native_startup_20261028_v3.log
 NAME=cta-final-native-smoke
+LOG=$ROOT/cta_final_native_startup_20261028_v4.log
 
 PODMAN=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
 if "${PODMAN[@]}" container exists "$NAME"; then
-  echo "STOP: Existing test container found"
+  echo "STOP: Test container already exists"
   exit 1
 fi
 
-echo "STARTING NATIVE MAX — WRITABLE CONTAINER CACHE"
+if [ ! -f "$RELEASE/cta_native_launcher.py" ] ||
+   [ ! -d "$REPO/artifacts/v1.168-max/cta_native_model" ]; then
+  echo "STOP: Native launcher or model directory missing"
+  exit 1
+fi
+
+echo "NATIVE MAX STARTUP — PREVIOUSLY VERIFIED MOJO CACHE MOUNT"
 
 timeout --signal=TERM --kill-after=10s 240s \
 "${PODMAN[@]}" run --rm \
@@ -26,7 +32,9 @@ timeout --signal=TERM --kill-after=10s 240s \
   --memory-swap 12g \
   --cpus 2 \
   --pids-limit 128 \
+  --read-only \
   --tmpfs /tmp:rw,size=1g,mode=1777 \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=2g,mode=1777 \
   -e HOME=/tmp \
   -e XDG_CACHE_HOME=/tmp \
   -e TMPDIR=/tmp \
@@ -45,7 +53,7 @@ timeout --signal=TERM --kill-after=10s 240s \
 
 RC=$?
 echo "STARTUP EXIT CODE: $RC"
-echo "=== STARTUP LOG ==="
+echo "=== LAST STARTUP LOG ==="
 tail -35 "$LOG"
 echo "LOG: $LOG"
 echo "ORIGINAL DS CODE: UNCHANGED"

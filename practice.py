@@ -1,1 +1,1 @@
-python3 -B /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/run_real_sanity_input_adapter.py
+for p in /opt/venv/bin/python /application1/venv/bin/python /usr/local/bin/python3; do if [ -x "$p" ]; then "$p" -B -c 'import torch; print("TORCH AVAILABLE:", torch.__version__)' 2>&1; fi; done

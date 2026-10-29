@@ -1,86 +1,60 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && \
-python3 -S -B - <<'PY'
-from pathlib import Path
-import ast
+bash <<'SH'
+set -eu
 
-dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-src = Path("artifacts/v1.168-max/cta_max/main_context_max.py")
-graph = dev / "grecbase_fusion_full_head_72_max_batch2_bertcontextfix.py"
+REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
+DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
+NAME=context_head.deep_embedding_0.weight.npy
+MAIN=""
 
-dst = dev / "main_context_max_batch2_fix.py"
-newgraph = dev / "grecbase_fusion_full_head_72_max_batch2_mainfix.py"
+for DIR in \
+  "$REPO/artifacts/v1.168-max/cta_max/main_context_weights" \
+  /application1/cta_max_true_batch_dev_20261028/cta_max/main_context_weights
+do
+  if [ -f "$DIR/$NAME" ]; then
+    MAIN=$(readlink -f "$DIR")
+    break
+  fi
+done
 
-assert src.is_file() and graph.is_file(), "STOP: Required source missing"
+if [ -z "$MAIN" ]; then
+  echo "STOP: Exact trained main-context weight not found"
+  echo "=== AVAILABLE MAIN-CONTEXT EXPORTS ==="
+  for DIR in \
+    "$REPO/artifacts/v1.168-max/cta_max/main_context_weights" \
+    /application1/cta_max_true_batch_dev_20261028/cta_max/main_context_weights
+  do
+    if [ -d "$DIR" ]; then
+      echo "DIRECTORY: $DIR"
+      find "$DIR" -maxdepth 1 -type f -name '*.npy' | head -25
+    fi
+  done
+  echo "FILES MODIFIED: NONE"
+  exit 1
+fi
 
-tree = ast.parse(src.read_text())
-functions = [
-    n for n in tree.body
-    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    and n.name == "main_context_forward"
-]
-assert len(functions) == 1, "STOP: Main context function differs"
+echo "TRAINED MAIN WEIGHTS: FOUND"
+echo "SOURCE: $MAIN"
 
-matches = []
-for n in ast.walk(functions[0]):
-    if not isinstance(n, ast.Call) or len(n.args) < 2:
-        continue
-    if not isinstance(n.func, ast.Attribute) or n.func.attr != "reshape":
-        continue
-    try:
-        shape = ast.literal_eval(n.args[1])
-    except (ValueError, TypeError):
-        continue
-    if shape == [1, 128]:
-        matches.append(n.args[1])
+test -f "$DEV/grecbase_fusion_full_head_72_max_batch2_mainfix.py"
 
-assert len(matches) == 1, \
-    f"STOP: Expected one [1,128] reshape; found {len(matches)}"
+LINK="$DEV/main_context_weights"
 
-shape = matches[0]
-shape.elts[0] = ast.Constant(value=2)
+if [ -L "$LINK" ]; then
+  [ "$(readlink "$LINK")" = /weights_main ] || {
+    echo "STOP: Existing link differs"
+    exit 1
+  }
+elif [ -e "$LINK" ]; then
+  echo "STOP: Existing main-context directory; refusing overwrite"
+  exit 1
+else
+  ln -s /weights_main "$LINK"
+fi
 
-# Preserve imports of original MAX integration dependencies.
-for n in ast.walk(tree):
-    if isinstance(n, ast.ImportFrom) and n.level == 1:
-        assert n.module, "STOP: Unsupported relative import"
-        n.module = "cta_max." + n.module
-        n.level = 0
+echo "MAIN WEIGHT MOUNT: READY"
 
-ast.fix_missing_locations(tree)
-updated = ast.unparse(tree) + "\n"
-compile(updated, str(dst), "exec")
-
-gtree = ast.parse(graph.read_text())
-imports = [
-    n for n in ast.walk(gtree)
-    if isinstance(n, ast.ImportFrom)
-    and n.module == "cta_max.main_context_max"
-    and any(a.name == "main_context_forward" for a in n.names)
-]
-assert len(imports) == 1, \
-    f"STOP: Main context import count = {len(imports)}"
-
-imports[0].module = "main_context_max_batch2_fix"
-ast.fix_missing_locations(gtree)
-gcode = ast.unparse(gtree) + "\n"
-compile(gcode, str(newgraph), "exec")
-
-for p, content in ((dst, updated), (newgraph, gcode)):
-    if p.exists():
-        assert p.read_text() == content, \
-            f"STOP: Existing candidate differs: {p}"
-        print("VERIFIED:", p.name)
-    else:
-        p.write_text(content)
-        print("CREATED:", p.name)
-
-print("MAIN CONTEXT BATCH FIX: INSTALLED")
-print("SHAPE: [1,128] -> [2,128]")
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL DS AND MAX FILES: UNCHANGED")
-PY
-
-echo "=== TRUE BATCH-2 GRAPH REBUILD ==="
+echo "=== REAL BATCH-2 GRAPH CONSTRUCTION ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -90,14 +64,15 @@ timeout 120s podman --root /application1/podman/storage \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e XDG_CACHE_HOME=/tmp \
   -e PYTHONPATH=/batch2:/workspace/artifacts/v1.168-max \
-  -v "$PWD:/workspace:ro" \
-  -v /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029:/batch2:ro \
+  -v "$REPO:/workspace:ro" \
+  -v "$DEV:/batch2:ro" \
+  -v "$MAIN:/weights_main:ro" \
   -v /application1/cta_max_true_batch_dev_20261028/cta_max/sibling_context_weights:/weights_sibling:ro \
   -w /workspace \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -B - <<'PY'
-import traceback
 import sys
+import traceback
 
 try:
     from max.driver import CPU
@@ -106,13 +81,15 @@ try:
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
-    print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
+    print("BATCH-2 GRAPH BUILD: START", flush=True)
+
     graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
         DeviceRef.from_device(CPU())
     )
 
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
     print("INPUT COUNT:", len(graph.inputs))
+
     for i, item in enumerate(graph.inputs):
         print("INPUT", i, "SHAPE:", item.type.shape)
 
@@ -122,6 +99,7 @@ except Exception:
     sys.exit(1)
 
 print("REAL BATCH-2 INFERENCE: NOT YET PERFORMED")
-print("WORKING NATIVE RELEASE: UNCHANGED")
 print("ORIGINAL DS CODE: UNCHANGED")
+print("WORKING NATIVE RELEASE: UNCHANGED")
 PY
+SH

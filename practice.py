@@ -1,44 +1,15 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-from pathlib import Path
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-candidate = Path("/application1/cta_max_native_release_candidate_20261028")
-base = Path("/application1/cta_max_true_batch_dev_20261028")
+C=/application1/cta_max_native_release_candidate_20261028
 
-files = [
-    candidate / "cta_router.py",
-    candidate / "cta_native_scheduler.py",
-    candidate / "cta_queue_scheduler.py",
-    candidate / "cta_http_pipeline.py",
-    base / "native_concurrent2_static.py",
-    base / "cta_native_benchmark_helper.py",
-]
+echo "=== RESPONSE WORKER AND PENDING REGISTRY ==="
+sed -n '1,115p' "$C/cta_http_pipeline.py"
 
-terms = (
-    "response_queue", "receiver_queue", "response worker",
-    "request_id", "requestid", "pending", "cancelled",
-    "timeout", "wait_for", "504", "benchmark_post",
-    "threadpoolexecutor", "schedulerresult"
-)
+echo "=== HTTP RESPONSE MATCHING ==="
+sed -n '35,110p' "$C/cta_router.py"
 
-for path in files:
-    if not path.is_file():
-        continue
-    lines = path.read_text().splitlines()
-    matched = [
-        i for i, line in enumerate(lines)
-        if any(term in line.lower() for term in terms)
-    ]
-    if not matched:
-        continue
+echo "=== BENCHMARK CLIENT ==="
+sed -n '1,35p' \
+  /application1/cta_max_true_batch_dev_20261028/cta_native_benchmark_helper.py
 
-    print(f"\n=== {path.name} ===")
-    selected = set()
-    for i in matched:
-        selected.update(range(max(0, i-2), min(len(lines), i+4)))
-
-    for i in sorted(selected):
-        print(f"{i+1}: {lines[i][:180]}")
-
-print("\nSOURCE REVIEW COMPLETE — NO CHANGES")
-print("MAX NOT STARTED")
-PY
+echo "READ-ONLY CHECK COMPLETE"

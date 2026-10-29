@@ -1,51 +1,62 @@
-python3 - <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 - <<'PY'
 from pathlib import Path
 import ast
+import json
 
 root = Path("/application1")
-repo = root / "sajjna8/rt-pzaas-cta-offers-v1"
-pipeline = repo / "artifacts/v1.167/core-artifact/pipeline.py"
-adapter = root / "CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2/cta_worker_adapter.py"
+repo = Path.cwd()
 
-assert pipeline.is_file(), "STOP: Original pipeline missing"
-assert adapter.is_file(), "STOP: Development adapter missing"
+adapter = root / (
+    "CTA_MAX_TRUE_BATCH2_DEV_20261029/"
+    "native_batch2/cta_worker_adapter.py"
+)
 
-tree = ast.parse(pipeline.read_text())
-methods = {
-    n.name: n
-    for n in ast.walk(tree)
-    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-}
+sample = repo / (
+    "artifacts/v1.168-max/"
+    "cta_native_adjusted_sanity_input.json"
+)
 
-assert "inference" in methods
-assert "predict_raw" in methods
+assert adapter.is_file(), "STOP: Adapter missing"
+assert sample.is_file(), "STOP: CTA JSON missing"
 
-inf = methods["inference"]
-src = pipeline.read_text().splitlines()
+source = adapter.read_text()
+tree = ast.parse(source)
 
-print("=== ORIGINAL INFERENCE BRANCHES ===")
-for n in range(inf.lineno, inf.end_lineno + 1):
-    line = src[n - 1]
-    if any(s in line for s in (
-        "request_context_fmt.endswith",
-        "model_atc(",
-        "model_base(",
-        "faiss.knn(",
-        "self.inference(",
+methods = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "predict_batch"
+]
+
+assert len(methods) == 1, "STOP: Batch method mismatch"
+
+node = methods[0]
+lines = source.splitlines()
+
+print("=== REAL CTA REQUEST ===")
+body = json.loads(sample.read_text())
+
+print("ROOT TYPE:", type(body).__name__)
+print("ROOT KEYS:", sorted(body) if isinstance(body, dict) else "N/A")
+
+print("\n=== BATCH ADAPTER ROUTING ===")
+
+for number in range(node.lineno, node.end_lineno + 1):
+    line = lines[number - 1]
+
+    if any(x in line for x in (
+        "model_base =",
+        "model_atc =",
+        "predict_raw(",
+        "infer_max_batch(",
+        "cached_preprocess",
+        "original_preprocess",
+        "request_context",
+        "model.calls",
     )):
-        print(f"{n}: {line.strip()}")
+        print(f"{number}: {line.strip()}")
 
-print("\n=== DEVELOPMENT ADAPTER ===")
-a = adapter.read_text()
-for item in (
-    "pipeline.model_base = model",
-    "pipeline.model_atc = model",
-    "pipeline.predict_raw(body)",
-    "cached_preprocess",
-    "model.calls != 1",
-):
-    print(f"{item}: {'PRESENT' if item in a else 'MISSING'}")
-
-print("\nORIGINAL DS: UNCHANGED")
+print("\nREAD-ONLY CHECK COMPLETE")
+print("ORIGINAL DS: UNCHANGED")
 print("NO FILES MODIFIED")
 PY

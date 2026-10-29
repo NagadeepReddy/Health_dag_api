@@ -1,44 +1,77 @@
-
 python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
 import shutil
 import json
 
-root = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
+repo = Path.cwd()
+assert repo.name == "rt-pzaas-cta-offers-v1", (
+    f"STOP: Unexpected working directory: {repo}"
+)
+
+root = repo / "artifacts/v1.168-max/cta_max"
 dest = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
 
-files = [
-    "grecbase_fusion_order_correct_max.py",
-    "real_sanity_input_adapter.py",
-    "run_live_max_inference.py",
-    "live_cta_pipeline_bridge.py",
-]
+runner = root / "run_live_max_inference.py"
+bridge = root / "live_cta_pipeline_bridge.py"
 
-assert root.is_dir(), "STOP: Source directory missing"
-assert not dest.exists(), "STOP: Development copy already exists"
+assert runner.is_file(), f"STOP: Missing {runner}"
+assert bridge.is_file(), f"STOP: Missing {bridge}"
+assert not dest.exists(), "STOP: Development directory already exists"
 
-for name in files:
-    p = root / name
-    assert p.is_file(), f"STOP: Missing {p}"
-    ast.parse(p.read_text())
+tree = ast.parse(runner.read_text())
+
+required = (
+    "build_grecbase_fusion_graph_order_correct",
+    "build_real_inputs",
+)
+
+sources = {runner, bridge}
+
+for function in required:
+    modules = [
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and any(alias.name == function for alias in node.names)
+    ]
+
+    assert len(modules) == 1 and modules[0], (
+        f"STOP: Cannot uniquely resolve import for {function}: {modules}"
+    )
+
+    filename = modules[0].split(".")[-1] + ".py"
+    source = root / filename
+
+    assert source.is_file(), f"STOP: Imported source missing: {source}"
+
+    source_tree = ast.parse(source.read_text())
+    assert any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == function
+        for node in source_tree.body
+    ), f"STOP: Function not defined in {source}"
+
+    sources.add(source)
+    print("RESOLVED:", function, "->", source.name)
+
+for source in sources:
+    ast.parse(source.read_text())
 
 dest.mkdir()
 
-for name in files:
-    src = root / name
-    dst = dest / name
-    shutil.copy2(src, dst)
-    assert src.read_bytes() == dst.read_bytes()
-    print("STAGED:", name)
+for source in sorted(sources):
+    target = dest / source.name
+    shutil.copy2(source, target)
+    assert target.read_bytes() == source.read_bytes()
+    print("STAGED:", source.name)
 
 manifest = {
     "purpose": "Isolated MAX true batch-2 prototype",
-    "status": "NOT YET IMPLEMENTED",
-    "source_files": files,
+    "status": "NOT IMPLEMENTED OR TESTED",
+    "sources": sorted(p.name for p in sources),
+    "working_native_release": "unchanged",
     "original_ds_code": "unchanged",
-    "working_release": "unchanged",
-    "next": "Implement batch-2 graph and input/output handling; validate parity before integration"
 }
 
 (dest / "batch2_manifest.json").write_text(
@@ -47,8 +80,8 @@ manifest = {
 
 print("\nBATCH-2 DEVELOPMENT COPY: CREATED")
 print("DIRECTORY:", dest)
-print("SOURCE SYNTAX: PASS")
+print("SOURCE VALIDATION: PASS")
 print("WORKING RELEASE: UNCHANGED")
-print("DS CODE: UNCHANGED")
+print("ORIGINAL DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
 PY

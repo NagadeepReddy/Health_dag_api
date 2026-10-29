@@ -2,67 +2,42 @@ cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
 
-base = Path("artifacts/v1.168-max/cta_max")
-bridge = base / "live_cta_pipeline_bridge.py"
-pipeline = Path("artifacts/v1.168/core-artifact/pipeline.py")
+base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+adapter = base / "native_batch2/cta_worker_adapter.py"
+scheduler = base / "native_batch2/cta_native_scheduler.py"
+backend = base / "real_max_batch2_backend.py"
+log = base / "real_max_batch2_after_cache_fix.log"
 
-for p in (bridge, pipeline):
-    assert p.is_file(), f"STOP: Missing {p}"
+print("=== EXISTING WORK STATUS ===")
 
-for p in (bridge, pipeline):
-    source = p.read_text()
-    lines = source.splitlines()
-    tree = ast.parse(source)
+for name, path in [
+    ("NATIVE ADAPTER", adapter),
+    ("NATIVE SCHEDULER", scheduler),
+    ("REAL MAX BACKEND", backend),
+]:
+    print(name, ":", "EXISTS" if path.is_file() else "MISSING")
+    if path.is_file():
+        ast.parse(path.read_text())
 
-    print("\n=== FILE:", p, "===")
+if adapter.is_file():
+    tree = ast.parse(adapter.read_text())
+    methods = [
+        n.name for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+    ]
+    print("ADAPTER predict_batch:", "PRESENT" if "predict_batch" in methods else "MISSING")
 
-    for fn in ast.walk(tree):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+if scheduler.is_file():
+    s = scheduler.read_text()
+    print("SCHEDULER BATCH DISPATCH:",
+          "PRESENT" if "CTA_NATIVE_BATCH_DISPATCH_V1" in s else "MISSING")
 
-        if p == bridge:
-            if fn.name != "attach_max":
-                continue
-        else:
-            if fn.name != "inference":
-                continue
+if log.is_file():
+    evidence = log.read_text()
+    print("REAL MAX CPU BATCH-2:",
+          "PASS" if "REAL MAX BATCH-2: PASS" in evidence else "UNVERIFIED")
 
-        print(f"\nFUNCTION: {fn.name}")
-        print("LINES:", fn.lineno, "-", fn.end_lineno)
-
-        selected = set(range(
-            fn.lineno, min(fn.lineno + 12, fn.end_lineno + 1)
-        ))
-
-        keywords = (
-            "infer_max", "max_infer", "setattr",
-            "model_in", "output", "return ",
-            "self.", "postprocess", "max_model"
-        )
-
-        for i in range(fn.lineno, fn.end_lineno + 1):
-            line = lines[i - 1]
-            if p == bridge or (
-                any(k in line for k in keywords)
-                and ("self." in line or "return " in line)
-            ):
-                if p == bridge:
-                    selected.add(i)
-                elif (
-                    "infer_max" in line or "max_infer" in line
-                    or "return " in line or "self.model" in line
-                ):
-                    selected.update(range(
-                        max(fn.lineno, i - 2),
-                        min(fn.end_lineno, i + 2) + 1
-                    ))
-
-        for i in sorted(selected):
-            print(f"{i}: {lines[i-1][:200]}")
-
-print("\nCPU MAX BATCH-2: PASS - ALREADY VERIFIED")
-print("NATIVE SCHEDULER MOCK: PASS - ALREADY VERIFIED")
-print("ORIGINAL DS CODE: UNCHANGED")
 print("FILES MODIFIED: NONE")
 print("MAX STARTUP: NOT PERFORMED")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY

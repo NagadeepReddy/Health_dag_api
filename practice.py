@@ -5,64 +5,72 @@ REPO="$PWD"
 DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
 GRAPH=grecbase_fusion_full_head_72_max_batch2_auxfix
 
-test -f "$DEV/$GRAPH.py"
-
-WEIGHT=$(find \
-  "$REPO/artifacts/v1.168-max" \
-  /application1/cta_max_true_batch_dev_20261028 \
-  "$DEV" \
-  -type f -name 'task_embedding.0.weight.npy' \
-  -print -quit 2>/dev/null || true)
-
-if [ -z "$WEIGHT" ]; then
-  echo "STOP: Exact auxiliary trained weight not located"
-  echo "=== AVAILABLE AUXILIARY WEIGHT FILES ==="
-  find "$REPO/artifacts/v1.168-max" \
-    /application1/cta_max_true_batch_dev_20261028 \
-    -type f \( -iname '*task*embedding*.npy' -o -iname '*aux*weight*.npy' \) \
-    -print 2>/dev/null | head -30
-  echo "GRAPH BUILD: NOT RETRIED"
-  exit 1
-fi
-
-SOURCE=$(dirname "$WEIGHT")
-echo "AUXILIARY TRAINED WEIGHTS: FOUND"
-echo "SOURCE: $SOURCE"
-
-python3 -S -B - "$SOURCE" "$DEV" <<'PY'
+python3 -S -B - <<'PY'
 from pathlib import Path
-import sys
+import ast
 
-source = Path(sys.argv[1])
-dev = Path(sys.argv[2])
-dest = dev / "grecbase_aux_weights"
+dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+p = dev / "grecbase_aux_branches_max_batch2_fix.py"
+graph = dev / "grecbase_fusion_full_head_72_max_batch2_auxfix.py"
 
-assert source.is_dir()
-assert (source / "task_embedding.0.weight.npy").is_file()
+assert p.is_file() and graph.is_file(), "STOP: Required files missing"
 
-if dest.is_symlink():
-    assert dest.readlink() == Path("/weights_aux"), \
-        "STOP: Existing auxiliary link differs"
-elif dest.exists():
-    assert dest.is_dir(), "STOP: Unexpected auxiliary destination"
-    for original in source.glob("*.npy"):
-        link = dest / original.name
-        expected = Path("/weights_aux") / original.name
-        if link.is_symlink():
-            assert link.readlink() == expected, \
-                f"STOP: Conflicting link {link}"
-        elif link.exists():
-            raise SystemExit(f"STOP: Existing file needs review: {link}")
-        else:
-            link.symlink_to(expected)
-else:
-    dest.symlink_to("/weights_aux")
+source = p.read_text()
+tree = ast.parse(source)
 
-print("AUXILIARY WEIGHT MAPPING: READY")
-print("ORIGINAL TRAINED WEIGHTS: UNCHANGED")
+matches = []
+for node in ast.walk(tree):
+    if not isinstance(node, ast.Return):
+        continue
+    call = node.value
+    if not isinstance(call, ast.Call) or len(call.args) != 2:
+        continue
+    if not isinstance(call.func, ast.Attribute):
+        continue
+    if call.func.attr != "reshape":
+        continue
+    if not isinstance(call.func.value, ast.Name) or call.func.value.id != "ops":
+        continue
+    inner = call.args[0]
+    if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Attribute):
+        continue
+    if inner.func.attr != "concat":
+        continue
+    if ast.unparse(call.args[1]) == "[1, 2 * dim]":
+        matches.append(call.args[1])
+
+assert len(matches) == 1, f"STOP: Expected one pooling reshape, found {len(matches)}"
+
+shape = matches[0]
+lines = source.splitlines(keepends=True)
+start = sum(map(len, lines[:shape.lineno - 1])) + shape.col_offset
+end = sum(map(len, lines[:shape.end_lineno - 1])) + shape.end_col_offset
+
+updated = source[:start] + "[2, 2 * dim]" + source[end:]
+ast.parse(updated)
+
+backup = p.with_name(p.name + ".before_poolfix.bak")
+assert not backup.exists(), "STOP: Backup already exists"
+backup.write_bytes(p.read_bytes())
+p.write_text(updated)
+
+print("AUXILIARY POOLING FIX: INSTALLED")
+print("RESHAPE: [1,256] -> [2,256]")
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("WORKING RELEASE: UNCHANGED")
 PY
 
-echo "=== TRUE BATCH-2 GRAPH REBUILD ==="
+AUX=$(find \
+  "$REPO/artifacts/v1.168-max" \
+  /application1/cta_max_true_batch_dev_20261028 \
+  -type f -name 'task_embedding.0.weight.npy' \
+  -print -quit 2>/dev/null)
+
+test -n "$AUX" || { echo "STOP: Auxiliary weights missing"; exit 1; }
+AUX_DIR=$(dirname "$AUX")
+
+echo "=== REAL BATCH-2 GRAPH REBUILD ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -74,7 +82,7 @@ timeout 120s podman --root /application1/podman/storage \
   -e PYTHONPATH=/batch2:/workspace/artifacts/v1.168-max \
   -v "$REPO:/workspace:ro" \
   -v "$DEV:/batch2:ro" \
-  -v "$SOURCE:/weights_aux:ro" \
+  -v "$AUX_DIR:/weights_aux:ro" \
   -v "$REPO/artifacts/v1.168-max/cta_max/main_context_weights:/weights_main:ro" \
   -v /application1/cta_max_true_batch_dev_20261028/cta_max/sibling_context_weights:/weights_sibling:ro \
   -w /workspace \
@@ -91,16 +99,14 @@ try:
     )
 
     print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
-
     graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
         DeviceRef.from_device(CPU())
     )
 
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
     print("INPUT COUNT:", len(graph.inputs))
-
-    for i, value in enumerate(graph.inputs):
-        print("INPUT", i, "SHAPE:", value.type.shape)
+    for i, item in enumerate(graph.inputs):
+        print("INPUT", i, "SHAPE:", item.type.shape)
 
 except Exception:
     print("BATCH-2 GRAPH CONSTRUCTION: FAIL")

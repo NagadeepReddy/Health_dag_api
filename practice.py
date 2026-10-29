@@ -1,51 +1,54 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-from pathlib import Path
-import ast
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-p = Path("/application1/cta_max_true_batch_dev_20261028/cta_native_benchmark_helper.py")
-backup = p.with_name("cta_native_benchmark_helper.py.before_shared_portal.bak")
+BASE=/application1/cta_max_true_batch_dev_20261028
+CANDIDATE=/application1/cta_max_native_release_candidate_20261028
+LOG="$BASE/native_concurrent2_shared_portal_final.log"
 
-assert p.is_file(), "STOP: Benchmark helper missing"
-assert not backup.exists(), "STOP: Backup already exists"
+if [ -e "$LOG" ]; then
+  echo "STOP: This test was already attempted"
+elif ! grep -Fq 'start_blocking_portal' "$BASE/cta_native_benchmark_helper.py"; then
+  echo "STOP: Shared portal fix missing"
+elif ! grep -Fq 'asyncio.timeout(300)' "$CANDIDATE/cta_router.py"; then
+  echo "STOP: Expected router configuration missing"
+elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ]; then
+  echo "STOP: Available RAM below 20 GiB"
+else
+  timeout --signal=TERM --kill-after=10s 540s \
+    podman --root /application1/podman/storage \
+    --runroot /run/containers/storage \
+    run --rm -i --pull=never \
+    --network=none --read-only --log-driver=none \
+    --memory=12g --memory-swap=12g \
+    --cpus=2 --pids-limit=256 \
+    --tmpfs /tmp:rw,size=1g,mode=1777 \
+    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=512m,mode=1777 \
+    -v "$PWD:/workspace:ro" \
+    -v "$BASE:/batchdev:ro" \
+    -v "$CANDIDATE:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
+    -w /workspace \
+    -e HOME=/tmp \
+    -e TMPDIR=/tmp \
+    -e XDG_CACHE_HOME=/tmp/cache \
+    -e MODULAR_CACHE_DIR=/tmp/modular \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    -e PYTHONUNBUFFERED=1 \
+    -e OMP_NUM_THREADS=1 \
+    -e MKL_NUM_THREADS=1 \
+    -e OPENBLAS_NUM_THREADS=1 \
+    -e modelId=rt-pzaas-cta-offers-v1 \
+    -e expThrottleLabel=T \
+    -e PYTHONPATH=/batchdev:/workspace:/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168-max/utils/dependency-utils:/workspace/artifacts/v1.168-max/maxserve_cta_extension \
+    --entrypoint /opt/venv/bin/python3 \
+    localhost/cta-max-faiss:local \
+    -B /batchdev/native_concurrent2_static.py \
+    > "$LOG" 2>&1
 
-source = p.read_text()
+  RC=$?
+  echo "BENCHMARK EXIT CODE: $RC"
+  echo "=== FINAL RESULTS ==="
+  grep -E 'REQUEST [12]:|HTTP STATUSES|WALL SECONDS|THROUGHPUT RPS|MEAN LATENCY|NATIVE CONCURRENT-2|Traceback|Error|Killed' "$LOG" | tail -25 || true
+  echo "=== LAST LOG ==="
+  tail -12 "$LOG"
 
-old = (
-    "    with ThreadPoolExecutor(max_workers=2) as executor:\n"
-    "        futures = [executor.submit(send, n) for n in (1, 2)]\n"
-    "        results = [f.result() for f in futures]"
-)
-
-assert source.count(old) == 1, "STOP: Benchmark code differs"
-
-new = (
-    "    from anyio.from_thread import start_blocking_portal\n"
-    "    from contextlib import nullcontext\n"
-    "    assert hasattr(client, 'portal') and hasattr(client, 'async_backend'), 'STOP: Unsupported TestClient'\n"
-    "    existing = client.portal\n"
-    "    context = nullcontext(existing) if existing is not None else start_blocking_portal(**client.async_backend)\n"
-    "    with context as portal:\n"
-    "        if existing is None:\n"
-    "            client.portal = portal\n"
-    "        try:\n"
-    "            with ThreadPoolExecutor(max_workers=2) as executor:\n"
-    "                futures = [executor.submit(send, n) for n in (1, 2)]\n"
-    "                results = [f.result() for f in futures]\n"
-    "        finally:\n"
-    "            if existing is None:\n"
-    "                client.portal = None"
-)
-
-updated = source.replace(old, new)
-ast.parse(updated)
-
-backup.write_bytes(p.read_bytes())
-p.write_text(updated)
-
-print("SHARED TESTCLIENT PORTAL: INSTALLED")
-print("PYTHON SYNTAX: PASS")
-print("BACKUP: CREATED")
-print("NATIVE SERVING CODE: UNCHANGED")
-print("DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
-PY
+  [ "$RC" -eq 0 ] || echo "STOP: Do not retry automatically"
+fi

@@ -5,100 +5,58 @@ DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
 
 python3 -S -B - <<'PY'
 from pathlib import Path
-import ast
+import os
 import hashlib
 
 repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
 dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+name = "sibling_context_head_deep_embedding_0.weight.npy"
+destination = dev / "sibling_context_weights"
 
-src = repo / "artifacts/v1.168-max/cta_max/sibling_context_max.py"
-graph_src = dev / "grecbase_fusion_full_head_72_max_batch2_blockfix.py"
+assert repo.is_dir() and dev.is_dir(), "STOP: Project or development directory missing"
 
-fixed = dev / "sibling_context_max_batch2_fix.py"
-graph_dst = dev / "grecbase_fusion_full_head_72_max_batch2_siblingfix.py"
-
-for p in (src, graph_src):
-    assert p.is_file(), f"STOP: Missing source {p}"
-
-original_hash = hashlib.sha256(src.read_bytes()).hexdigest()
-tree = ast.parse(src.read_text())
-changes = []
-
-class FixSiblingBatch(ast.NodeTransformer):
-    def visit_Call(self, node):
-        self.generic_visit(node)
-
-        if not (
-            isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "ops"
-            and node.func.attr == "reshape"
-            and len(node.args) >= 2
-        ):
-            return node
-
-        try:
-            shape = ast.literal_eval(node.args[1])
-        except (ValueError, TypeError):
-            return node
-
-        if tuple(shape) == (1, 128):
-            changes.append(node.lineno)
-            node.args[1] = ast.List(
-                elts=[ast.Constant(2), ast.Constant(128)],
-                ctx=ast.Load()
-            )
-
-        return node
-
-FixSiblingBatch().visit(tree)
-
-assert len(changes) == 1, (
-    f"STOP: Expected one sibling reshape, found {changes}"
+matches = sorted(
+    p for base in (repo / "artifacts", dev)
+    for p in base.rglob(name)
+    if p.is_file()
 )
 
-ast.fix_missing_locations(tree)
-fixed_code = ast.unparse(tree) + "\n"
+print("SIBLING WEIGHT CANDIDATES:", len(matches))
+for p in matches:
+    print("FOUND:", p)
 
-graph_tree = ast.parse(graph_src.read_text())
-imports = [
-    n for n in ast.walk(graph_tree)
-    if isinstance(n, ast.ImportFrom)
-    and n.module == "cta_max.sibling_context_max"
-    and any(a.name == "sibling_context_forward" for a in n.names)
-]
+assert matches, "STOP: Existing trained sibling weight not found"
 
-assert len(imports) == 1, (
-    "STOP: Expected sibling-context import not uniquely found"
-)
+digests = {hashlib.sha256(p.read_bytes()).hexdigest() for p in matches}
+assert len(digests) == 1, "STOP: Conflicting sibling weight files found"
 
-imports[0].module = "sibling_context_max_batch2_fix"
+source = matches[0].parent.resolve()
 
-ast.fix_missing_locations(graph_tree)
-graph_code = ast.unparse(graph_tree) + "\n"
+if source.is_relative_to(repo):
+    target = "/workspace/" + str(source.relative_to(repo))
+elif source.is_relative_to(dev):
+    target = "/batch2/" + str(source.relative_to(dev))
+else:
+    raise SystemExit("STOP: Weight source outside mounted directories")
 
-for path, code in ((fixed, fixed_code), (graph_dst, graph_code)):
-    compile(code, str(path), "exec")
+assert source != destination.resolve(), "STOP: Unexpected self-reference"
 
-    if path.exists():
-        assert path.read_text() == code, (
-            f"STOP: Existing candidate differs: {path}"
-        )
-        print("ALREADY VERIFIED:", path.name)
-    else:
-        path.write_text(code)
-        print("CREATED:", path.name)
+if destination.is_symlink():
+    assert os.readlink(destination) == target, "STOP: Existing link differs"
+    print("SIBLING WEIGHT LINK: ALREADY CORRECT")
+elif destination.exists():
+    raise SystemExit("STOP: Existing sibling weight directory; refusing overwrite")
+else:
+    destination.symlink_to(target, target_is_directory=True)
+    print("SIBLING WEIGHT LINK: CREATED")
 
-assert hashlib.sha256(src.read_bytes()).hexdigest() == original_hash
-
-print("SIBLING BATCH-2 RESHAPE: [1,128] -> [2,128]")
-print("FIXED ORIGINAL LINE:", changes[0])
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL SIBLING CODE: UNCHANGED")
-print("WORKING RELEASE: UNCHANGED")
+print("WEIGHT SOURCE:", source)
+print("WEIGHT TARGET IN CONTAINER:", target)
+print("ORIGINAL WEIGHTS: UNCHANGED")
+print("DS CODE: UNCHANGED")
 PY
 
-echo "=== REAL BATCH-2 GRAPH CONSTRUCTION ==="
+echo "=== RETEST BATCH-2 GRAPH ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -128,8 +86,7 @@ try:
     )
 
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
-    print("GRAPH INPUT COUNT:", len(graph.inputs))
-
+    print("INPUT COUNT:", len(graph.inputs))
     for i, item in enumerate(graph.inputs):
         print("INPUT", i, "SHAPE:", item.type.shape)
 
@@ -138,7 +95,6 @@ except Exception:
     traceback.print_exc()
     sys.exit(1)
 
-print("REAL BATCH-2 INFERENCE: NOT YET PERFORMED")
-print("WORKING NATIVE RELEASE: UNCHANGED")
-print("ORIGINAL DS CODE: UNCHANGED")
+print("REAL BATCH-2 EXECUTION: NOT YET PERFORMED")
+print("WORKING RELEASE: UNCHANGED")
 PY

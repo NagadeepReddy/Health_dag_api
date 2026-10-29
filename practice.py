@@ -1,54 +1,76 @@
-set -eu
-
-REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
-DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
-
-WEIGHTS=""
-
-for CANDIDATE in \
-  "$REPO/artifacts/v1.168-max/cta_max/sibling_context_weights" \
-  /application1/cta_max_true_batch_dev_20261028/cta_max/sibling_context_weights
-do
-  if [ -d "$CANDIDATE" ] && \
-     find -L "$CANDIDATE" -maxdepth 1 -type f -name '*.npy' | grep -q .; then
-    WEIGHTS=$(readlink -f "$CANDIDATE")
-    break
-  fi
-done
-
-if [ -z "$WEIGHTS" ]; then
-  echo "STOP: Previously exported sibling weights not accessible"
-  exit 1
-fi
-
-test -f "$DEV/grecbase_fusion_full_head_72_max_batch2_siblingfix.py"
-
-python3 -S -B - "$WEIGHTS" <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
-import sys
+import ast
 
 dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-weights = Path(sys.argv[1])
-files = sorted(weights.glob("*.npy"))
-assert len(files) >= 10, f"STOP: Only {len(files)} weight files"
+src = Path("artifacts/v1.168-max/cta_max/nlp_bert_in_graph.py")
+graph = dev / "grecbase_fusion_full_head_72_max_batch2_siblingfix.py"
 
-link = dev / "sibling_context_weights"
-target = Path("/weights_sibling")
+fixed = dev / "nlp_bert_in_graph_batch2_fix.py"
+newgraph = dev / "grecbase_fusion_full_head_72_max_batch2_bertfix.py"
 
-if link.is_symlink():
-    assert link.readlink() == target, "STOP: Existing link differs"
-elif link.exists():
-    raise SystemExit("STOP: Destination exists; refusing overwrite")
-else:
-    link.symlink_to(target, target_is_directory=True)
+assert src.is_file() and graph.is_file(), "STOP: Source missing"
 
-print("EXISTING SIBLING WEIGHTS:", len(files))
-print("SOURCE:", weights)
-print("WEIGHT LINK: PASS")
-print("ORIGINAL WEIGHTS: UNCHANGED")
+code = src.read_text()
+tree = ast.parse(code)
+matches = []
+
+for n in ast.walk(tree):
+    if not isinstance(n, ast.Call) or len(n.args) < 2:
+        continue
+    if not isinstance(n.func, ast.Attribute) or n.func.attr != "reshape":
+        continue
+
+    if "attention_mask" not in ast.unparse(n.args[0]):
+        continue
+
+    if ast.unparse(n.args[1]) == "[1, 1, 1, seq_len]":
+        matches.append(n.args[1])
+
+assert len(matches) == 1, \
+    f"STOP: Expected one attention-mask reshape; found {len(matches)}"
+
+node = matches[0]
+lines = code.splitlines(keepends=True)
+start = sum(map(len, lines[:node.lineno - 1])) + node.col_offset
+end = sum(map(len, lines[:node.end_lineno - 1])) + node.end_col_offset
+
+fixed_code = code[:start] + "[2, 1, 1, seq_len]" + code[end:]
+ast.parse(fixed_code)
+
+graph_tree = ast.parse(graph.read_text())
+imports = [
+    n for n in ast.walk(graph_tree)
+    if isinstance(n, ast.ImportFrom)
+    and n.module == "cta_max.nlp_bert_in_graph"
+]
+assert len(imports) == 1, \
+    f"STOP: Expected one BERT import, found {len(imports)}"
+
+imports[0].module = "nlp_bert_in_graph_batch2_fix"
+ast.fix_missing_locations(graph_tree)
+graph_code = ast.unparse(graph_tree) + "\n"
+ast.parse(graph_code)
+
+for path, content in (
+    (fixed, fixed_code),
+    (newgraph, graph_code)
+):
+    if path.exists():
+        assert path.read_text() == content, \
+            f"STOP: Existing file differs: {path}"
+        print("VERIFIED:", path.name)
+    else:
+        path.write_text(content)
+        print("CREATED:", path.name)
+
+print("BATCH-2 ATTENTION MASK FIX: INSTALLED")
+print("SHAPE: [1,1,1,seq_len] -> [2,1,1,seq_len]")
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL DS AND MAX FILES: UNCHANGED")
 PY
 
-echo "=== REAL BATCH-2 GRAPH CONSTRUCTION ==="
+echo "=== RETRY REAL BATCH-2 GRAPH BUILD ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -58,9 +80,9 @@ timeout 120s podman --root /application1/podman/storage \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e XDG_CACHE_HOME=/tmp \
   -e PYTHONPATH=/batch2:/workspace/artifacts/v1.168-max \
-  -v "$REPO:/workspace:ro" \
-  -v "$DEV:/batch2:ro" \
-  -v "$WEIGHTS:/weights_sibling:ro" \
+  -v "$PWD:/workspace:ro" \
+  -v /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029:/batch2:ro \
+  -v /application1/cta_max_true_batch_dev_20261028/cta_max/sibling_context_weights:/weights_sibling:ro \
   -w /workspace \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -B - <<'PY'
@@ -70,7 +92,7 @@ import sys
 try:
     from max.driver import CPU
     from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max_batch2_siblingfix import (
+    from grecbase_fusion_full_head_72_max_batch2_bertfix import (
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
@@ -90,6 +112,6 @@ except Exception:
     sys.exit(1)
 
 print("REAL BATCH-2 EXECUTION: NOT YET PERFORMED")
-print("ORIGINAL DS CODE: UNCHANGED")
 print("WORKING NATIVE RELEASE: UNCHANGED")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY

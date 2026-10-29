@@ -1,31 +1,29 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
 from pathlib import Path
+import ast
 
-base = Path("/application1/cta_max_true_batch_dev_20261028")
-candidate = Path("/application1/cta_max_native_release_candidate_20261028")
+p = Path("artifacts/v1.168-max/maxserve_cta_extension/cta_router.py")
+candidate = Path("/application1/cta_max_native_release_candidate_20261028/cta_router.py")
+backup = p.with_name("cta_router.py.before_300s_sync.bak")
 
-files = [
-    candidate / "cta_router.py",
-    Path("artifacts/v1.168-max/maxserve_cta_extension/cta_router.py"),
-    candidate / "cta_native_e2e_test.py",
-    candidate / "cta_spawn_worker.py",
-    base / "native_concurrent2_static.py",
-]
+assert p.is_file() and candidate.is_file(), "STOP: Router missing"
 
-terms = (
-    "timeout", "wait_for", "120", "300",
-    "cta_router", "sys.path", "importlib"
-)
+old = p.read_text()
+assert old.count("asyncio.timeout(120)") == 1, "STOP: Original timeout differs"
+assert "asyncio.timeout(300)" in candidate.read_text(), "STOP: Candidate not updated"
+assert not backup.exists(), "STOP: Backup already exists"
 
-for p in files:
-    print("\nFILE:", p)
-    if not p.is_file():
-        print("MISSING")
-        continue
-    for n, line in enumerate(p.read_text().splitlines(), 1):
-        if any(term in line for term in terms):
-            print(f"{n}: {line[:200]}")
+new = old.replace("asyncio.timeout(120)", "asyncio.timeout(300)")
+ast.parse(new)
 
-print("\nCHECK COMPLETE — NO FILES MODIFIED")
-print("MAX NOT STARTED")
+backup.write_bytes(p.read_bytes())
+p.write_text(new)
+
+assert "asyncio.timeout(300)" in p.read_text()
+print("ORIGINAL MAX ROUTER: 300 SECONDS")
+print("RELEASE CANDIDATE ROUTER: 300 SECONDS")
+print("TIMEOUT SYNCHRONIZATION: PASS")
+print("BACKUP: CREATED")
+print("DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
 PY

@@ -2,59 +2,49 @@ python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
 
-root = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max")
-assert root.is_dir(), "STOP: MAX artifacts missing"
-
-found = []
-
-for p in root.rglob("*.py"):
-    if "backup" in str(p).lower():
-        continue
-
-    try:
-        source = p.read_text()
-        tree = ast.parse(source)
-    except (SyntaxError, UnicodeError):
-        continue
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "MaxCTAInference":
-            found.append((p, node, source.splitlines()))
-
-assert found, "STOP: MaxCTAInference class not found"
-
-keywords = (
-    "execute(", "run(", "compile(", "load_model(",
-    "batch", "shape", "reshape", "stack(",
-    "concatenate(", "session", "forward(",
-    "predict(", "infer(", "tensor",
+p = Path(
+    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
+    "artifacts/v1.168-max/cta_max/live_cta_pipeline_bridge.py"
 )
 
-for p, cls, lines in found:
-    print("\n=== REAL MAX INFERENCE CLASS ===")
-    print("FILE:", p)
-    print("CLASS:", cls.name)
+assert p.is_file(), f"STOP: Missing {p}"
 
-    print("\n=== METHODS ===")
-    for n in cls.body:
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            print(f"{n.lineno}: {n.name}()")
+source = p.read_text()
+tree = ast.parse(source)
+lines = source.splitlines()
 
-    print("\n=== INFERENCE / BATCH / SHAPE OPERATIONS ===")
-    count = 0
+classes = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.ClassDef)
+    and n.name == "MaxCTAInference"
+]
 
-    for i in range(cls.lineno - 1, cls.end_lineno):
-        line = lines[i]
-        if any(k in line.lower() for k in keywords):
-            print(f"{i+1}: {line.strip()[:200]}")
-            count += 1
+assert len(classes) == 1, "STOP: Unexpected inference class"
 
-        if count >= 100:
-            print("OUTPUT LIMITED TO 100 MATCHES")
-            break
+cls = classes[0]
 
-print("\nCLASS REVIEW: COMPLETE")
+print("=== ACTUAL MAX INFERENCE IMPLEMENTATION ===")
+print("FILE:", p)
+
+for i in range(cls.lineno, cls.end_lineno + 1):
+    print(f"{i}: {lines[i-1]}")
+
+print("\n=== MAX BRIDGE IMPORTS ===")
+for node in tree.body:
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        print(ast.get_source_segment(source, node))
+
+print("\n=== BATCHING FEASIBILITY CHECK ===")
+print("SINGLE OUTPUT ASSERTION:",
+      "(1, 2048)" in source)
+print("EXPLICIT BATCH API:",
+      any(
+          isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+          and "batch" in n.name.lower()
+          for n in ast.walk(tree)
+      ))
+
 print("FILES MODIFIED: NONE")
 print("MAX STARTUP: NOT PERFORMED")
-print("ORIGINAL DS CODE: UNCHANGED")
+print("DS CODE: UNCHANGED")
 PY

@@ -5,37 +5,48 @@ timeout 120s podman --root /application1/podman/storage \
   --tmpfs /tmp:rw,size=256m \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e XDG_CACHE_HOME=/tmp \
+  -v "$PWD:/workspace:ro" \
   -v /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029:/batch2:ro \
-  -w /batch2 \
+  -w /workspace \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -B - <<'PY'
 import sys
 import traceback
 
-print("BATCH-2 REAL GRAPH BUILD: START", flush=True)
+sys.path.insert(0, "/batch2")
+
+print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
 
 try:
-    from max.driver import CPU, DeviceRef
+    from max.driver import CPU
+    from max.graph import DeviceRef
     from grecbase_fusion_full_head_72_max_batch2_shapes import (
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
-    device = DeviceRef.from_device(CPU())
-    graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(device)
+    device_ref = DeviceRef.from_device(CPU())
+    print("DEVICE REF: PASS", flush=True)
 
-    print("BATCH-2 GRAPH BUILD: PASS")
+    graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
+        device_ref
+    )
+
+    print("BATCH-2 GRAPH CONSTRUCTION: PASS")
     print("GRAPH INPUT COUNT:", len(graph.inputs))
 
     for i, inp in enumerate(graph.inputs):
-        print(f"INPUT {i}: {inp.type.shape}")
+        print("INPUT", i, "SHAPE:", inp.type.shape)
+
+    print("GRAPH OUTPUT COUNT:", len(graph.output_types))
+    for i, output in enumerate(graph.output_types):
+        print("OUTPUT", i, "SHAPE:", output.shape)
 
 except Exception:
-    print("BATCH-2 GRAPH BUILD: FAIL")
+    print("BATCH-2 GRAPH CONSTRUCTION: FAIL")
     traceback.print_exc()
     sys.exit(1)
 
-print("BATCH-2 INFERENCE: NOT YET PERFORMED")
-print("FILES MODIFIED: NONE")
+print("REAL BATCH-2 EXECUTION: NOT YET PERFORMED")
 print("ORIGINAL DS CODE: UNCHANGED")
 print("WORKING RELEASE: UNCHANGED")
 PY

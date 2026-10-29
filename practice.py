@@ -2,58 +2,66 @@ python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
 
-p = Path(
-    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
-    "artifacts/v1.168-max/cta_max/run_live_max_inference.py"
-)
+root = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
 
-assert p.is_file(), f"STOP: File missing: {p}"
+targets = {
+    "build_grecbase_fusion_graph_order_correct",
+    "build_real_inputs",
+}
 
-source = p.read_text()
-tree = ast.parse(source)
-lines = source.splitlines()
+found = {}
 
-print("=== REAL MAX EXECUTION ===")
-print("FILE:", p)
+for p in sorted(root.rglob("*.py")):
+    if any(x in p.name.lower() for x in (".bak", "backup")):
+        continue
 
-functions = [
-    n for n in ast.walk(tree)
-    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-]
+    try:
+        source = p.read_text()
+        tree = ast.parse(source)
+    except (SyntaxError, UnicodeError):
+        continue
 
-for n in functions:
-    print(f"FUNCTION: {n.name} | {n.lineno}-{n.end_lineno}")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in targets:
+                found.setdefault(node.name, []).append((p, node, source.splitlines()))
 
-targets = [
-    n for n in functions
-    if n.name == "infer_max_live"
-]
+print("=== TRUE MAX BATCHING FEASIBILITY ===")
 
-assert len(targets) == 1, "STOP: infer_max_live not uniquely found"
-
-n = targets[0]
-
-print("\n=== infer_max_live IMPLEMENTATION ===")
-for i in range(n.lineno, min(n.end_lineno, n.lineno + 179) + 1):
-    print(f"{i}: {lines[i-1]}")
-
-print("\n=== SHAPE / GRAPH / SESSION REFERENCES ===")
 terms = (
-    "batch", "shape", "compile", "session",
-    "execute", "infer", "tensor", "reshape",
-    "stack", "concatenate", "model_in"
+    "shape", "batch", "tensor", "input",
+    "dimension", "dim=", "symbolic",
+    "static", "reshape", "stack", "concat",
+    "graph", "model_in", "vl_in",
 )
 
-shown = 0
-for i, line in enumerate(lines, 1):
-    if any(t in line.lower() for t in terms):
-        print(f"{i}: {line[:180]}")
-        shown += 1
-        if shown >= 60:
-            print("OUTPUT LIMITED TO 60 MATCHES")
-            break
+for name in sorted(targets):
+    print("\nFUNCTION:", name)
+    matches = found.get(name, [])
+
+    if not matches:
+        print("NOT FOUND")
+        continue
+
+    for p, node, lines in matches:
+        print("SOURCE:", p)
+        print("LINES:", node.lineno, "-", node.end_lineno)
+
+        shown = set()
+        for i in range(node.lineno-1, node.end_lineno):
+            if any(t in lines[i].lower() for t in terms):
+                for j in range(max(node.lineno-1, i-1),
+                               min(node.end_lineno, i+2)):
+                    if j not in shown:
+                        print(f"{j+1}: {lines[j][:180]}")
+                        shown.add(j)
+                    if len(shown) >= 100:
+                        break
+            if len(shown) >= 100:
+                print("OUTPUT LIMITED TO 100 LINES")
+                break
 
 print("\nFILES MODIFIED: NONE")
 print("MAX STARTUP: NOT PERFORMED")
-print("DS CODE: UNCHANGED")
+print("ORIGINAL DS CODE: UNCHANGED")
 PY

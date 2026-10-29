@@ -3,114 +3,68 @@ from pathlib import Path
 import ast
 
 dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+graph = dev / "grecbase_fusion_full_head_72_max_batch2_shapes.py"
+runner = dev / "run_live_max_inference_batch2_shapes.py"
 
-graph_src = dev / "grecbase_fusion_full_head_72_max_batch2_candidate.py"
-runner_src = dev / "run_live_max_inference_batch2.py"
-
-graph_dst = dev / "grecbase_fusion_full_head_72_max_batch2_shapes.py"
-runner_dst = dev / "run_live_max_inference_batch2_shapes.py"
-
-for p in (graph_src, runner_src):
+for p in (graph, runner):
     assert p.is_file(), f"STOP: Missing {p}"
 
-for p in (graph_dst, runner_dst):
-    assert not p.exists(), f"STOP: Already exists: {p}"
+source = graph.read_text()
+tree = ast.parse(source)
+runner_source = runner.read_text()
+runner_tree = ast.parse(runner_source)
 
-tree = ast.parse(graph_src.read_text())
-
-old_fn = "build_grecbase_fusion_graph_order_correct_batch2"
-new_fn = old_fn + "_shapes"
-
+fn_name = "build_grecbase_fusion_graph_order_correct_batch2_shapes"
 matches = [
     n for n in tree.body
-    if isinstance(n, ast.FunctionDef) and n.name == old_fn
+    if isinstance(n, ast.FunctionDef) and n.name == fn_name
 ]
-assert len(matches) == 1, "STOP: Batch-2 graph function ambiguous"
+assert len(matches) == 1, "STOP: Batch-2 graph function missing"
 
 fn = matches[0]
+issues = []
 
-class BatchTwoReshapes(ast.NodeTransformer):
-    def __init__(self):
-        self.changes = []
+for node in ast.walk(fn):
+    if isinstance(node, ast.Call):
+        name = ast.unparse(node.func)
+        if any(x in name for x in (
+            "reshape", "broadcast_to", "TensorType",
+            "repeat", "tile"
+        )):
+            args = [ast.unparse(a) for a in node.args]
+            for arg in args:
+                if arg.startswith(("[1,", "(1,", "[1]", "(1,)")):
+                    issues.append((node.lineno, name, arg[:120]))
 
-    def visit_Call(self, node):
-        self.generic_visit(node)
+    elif isinstance(node, ast.Assert):
+        expression = ast.unparse(node.test)
+        if "shape" in expression or "batch" in expression:
+            issues.append((node.lineno, "ASSERT", expression[:120]))
 
-        if not (
-            isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "ops"
-            and node.func.attr == "reshape"
-            and len(node.args) >= 2
-        ):
-            return node
+runner_functions = {
+    n.name for n in ast.walk(runner_tree)
+    if isinstance(n, ast.FunctionDef)
+}
+assert "infer_max_live_batch2" in runner_functions, \
+    "STOP: Batch-2 runner entry missing"
 
-        shape = node.args[1]
+print("=== BATCH-2 GRAPH SAFETY CHECK ===")
+print("GRAPH FUNCTION:", fn_name)
+print("BATCH RUNNER: FOUND")
+print("REMAINING SHAPE ASSUMPTIONS:", len(issues))
 
-        if not isinstance(shape, (ast.List, ast.Tuple)):
-            return node
+for line, kind, detail in sorted(issues):
+    print(f"LINE {line} | {kind} | {detail}")
 
-        if not shape.elts:
-            return node
+print("\n=== DECISION ===")
+if issues:
+    print("REVIEW REQUIRED: Remaining fixed-shape assumptions")
+else:
+    print("STATIC SHAPE CHECK: PASS")
+    print("RUNTIME GRAPH COMPILATION: STILL REQUIRED")
 
-        first = shape.elts[0]
-
-        if isinstance(first, ast.Constant) and first.value == 1:
-            self.changes.append(
-                (node.lineno, ast.unparse(shape))
-            )
-            shape.elts[0] = ast.Constant(value=2)
-
-        return node
-
-transform = BatchTwoReshapes()
-transform.visit(fn)
-
-assert transform.changes, (
-    "STOP: No literal batch-leading ops.reshape calls found; "
-    "manual graph adaptation required"
-)
-
-fn.name = new_fn
-
-ast.fix_missing_locations(tree)
-graph_code = ast.unparse(tree) + "\n"
-compile(graph_code, str(graph_dst), "exec")
-
-runner = runner_src.read_text()
-
-old_module = graph_src.stem
-new_module = graph_dst.stem
-
-assert runner.count(old_module) == 1, (
-    "STOP: Runner graph module reference differs"
-)
-assert runner.count(old_fn) == 2, (
-    "STOP: Runner graph function references differ"
-)
-
-runner = runner.replace(old_module, new_module, 1)
-runner = runner.replace(old_fn, new_fn)
-
-ast.parse(runner)
-compile(runner, str(runner_dst), "exec")
-
-graph_dst.write_text(graph_code)
-runner_dst.write_text(runner)
-
-print("BATCH-2 INTERNAL SHAPE CANDIDATE: CREATED")
-print("RESHAPE OPERATIONS UPDATED:", len(transform.changes))
-
-for line, shape in transform.changes:
-    print(f"LINE {line}: {shape} -> leading dimension 2")
-
-print("BATCH-2 RUNNER: CONNECTED")
-print("PYTHON SYNTAX: PASS")
-print("OTHER INTERNAL GRAPH OPERATIONS: NOT YET VALIDATED")
-print("REAL MAX BATCH EXECUTION: NOT YET PERFORMED")
-print("WORKING RELEASE: UNCHANGED")
+print("FILES MODIFIED: NONE")
+print("WORKING NATIVE RELEASE: UNCHANGED")
 print("ORIGINAL DS CODE: UNCHANGED")
 print("MAX STARTUP: NOT PERFORMED")
-print("GRAPH:", graph_dst)
-print("RUNNER:", runner_dst)
 PY

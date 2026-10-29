@@ -1,181 +1,98 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && bash <<'SH'
+set -eu
+
+DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
+CAND=/application1/cta_max_true_batch_dev_20261028/batch2_candidate
+INPUT=artifacts/v1.168-max/cta_native_adjusted_sanity_input.json
+LOG="$DEV/real_cta_json_batch2_adapter_e2e.log"
+
+test -s "$DEV/native_batch2/cta_worker_adapter.py"
+test -s "$DEV/real_max_batch2_backend.py"
+test -s "$INPUT"
+test -d "$CAND"
+test ! -e "$LOG" || { echo "STOP: Preserve existing log"; exit 1; }
+
+AVAILABLE_KB=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+if [ "$AVAILABLE_KB" -lt 14680064 ]; then
+  echo "STOP: Less than 14 GiB available RAM. Do not start MAX."
+  exit 1
+fi
+
+echo "=== REAL CTA JSON BATCH-2 ADAPTER EXECUTION ==="
+
+set +e
+timeout -k 15s 420s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --network none \
+  --memory 12g --cpus 4 --pids-limit 256 \
+  --tmpfs /tmp:rw,size=512m \
+  -e HOME=/tmp \
+  -e XDG_CACHE_HOME=/tmp \
+  -e PYTHONUNBUFFERED=1 \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONPATH="/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max:/batch2:$CAND" \
+  -e modelId=rt-pzaas-cta-offers-v1 \
+  -e expThrottleLabel=T \
+  -v "$PWD:/workspace:ro" \
+  -v "$DEV:/batch2:ro" \
+  -v "$CAND:$CAND:ro" \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u -B - > "$LOG" 2>&1 <<'PY'
+import importlib.util
+import json
+import numpy as np
 from pathlib import Path
-from textwrap import dedent, indent
-import ast
+from pipeline import pipeline as CTA
+from cta_max.live_cta_pipeline_bridge import attach_max
 
-base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-p = base / "native_batch2/cta_worker_adapter.py"
-backend = base / "real_max_batch2_backend.py"
+p = Path("/batch2/native_batch2/cta_worker_adapter.py")
+spec = importlib.util.spec_from_file_location("cta_batch_adapter_dev", p)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 
-assert p.is_file(), f"STOP: Missing adapter: {p}"
-assert backend.is_file(), f"STOP: Missing backend: {backend}"
-
-src = p.read_text()
-tree = ast.parse(src)
-
-cls = next(
-    (n for n in tree.body
-     if isinstance(n, ast.ClassDef)
-     and n.name == "CTAWorkerAdapter"),
-    None
-)
-assert cls is not None, "STOP: Adapter class missing"
-
-methods = {
-    n.name for n in cls.body
-    if isinstance(n, ast.FunctionDef)
-}
-assert "predict" in methods
-assert "initialize" in methods
-assert "predict_batch" not in methods, "STOP: Already implemented"
-
-method = indent(dedent('''
-def predict_batch(self, bodies):
-    """Development-only genuine MAX batch-2 inference."""
-    if not isinstance(bodies, (list, tuple)) or len(bodies) != 2:
-        raise ValueError("Exactly two CTA JSON requests required")
-    if not all(isinstance(x, dict) for x in bodies):
-        raise TypeError("CTA requests must be JSON objects")
-
-    import importlib.util
-    import numpy as np
-    import torch
-    from pathlib import Path
-
-    pipeline = self.initialize()
-
-    # Preserve original data science implementation.
-    original_preprocess = pipeline.preprocess
-    original_base = pipeline.model_base
-    original_atc = pipeline.model_atc
-
-    # Obtain genuine model inputs using original CTA preprocessing.
-    prepared = [original_preprocess(body) for body in bodies]
-
-    if any(not isinstance(x, (tuple, list)) or len(x) != 7
-           for x in prepared):
-        raise RuntimeError("Unexpected CTA preprocessing contract")
-
-    model_inputs = [x[0] for x in prepared]
-    if any(not isinstance(x, dict) for x in model_inputs):
-        raise TypeError("CTA model inputs must be dictionaries")
-
-    locations = [
-        Path("/batch2/real_max_batch2_backend.py"),
-        Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
-             "real_max_batch2_backend.py"),
-    ]
-    backend_file = next((x for x in locations if x.is_file()), None)
-    if backend_file is None:
-        raise RuntimeError("Real MAX batch backend not mounted")
-
-    fn = getattr(self, "_real_max_batch_fn", None)
-    if fn is None:
-        spec = importlib.util.spec_from_file_location(
-            "cta_real_max_batch2_dev", backend_file
-        )
-        if spec is None or spec.loader is None:
-            raise RuntimeError("Cannot load MAX batch backend")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        fn = module.infer_max_batch
-        self._real_max_batch_fn = fn
-
-    # ONE actual MAX execution for BOTH requests.
-    output = np.asarray(
-        fn(model_inputs[0], model_inputs[1]),
-        dtype=np.float32
-    )
-
-    if output.shape != (2, 2048):
-        raise RuntimeError(f"Invalid batch output: {output.shape}")
-    if not np.isfinite(output).all():
-        raise RuntimeError("Non-finite MAX batch output")
-
-    responses = []
-
-    class PrecomputedMAX:
-        def __init__(self, values):
-            self.tensor = torch.from_numpy(
-                np.ascontiguousarray(values)
-            )
-            self.calls = 0
-
-        def eval(self):
-            return self
-
-        def __call__(self, **kwargs):
-            self.calls += 1
-            if self.calls > 1:
-                raise RuntimeError(
-                    "Multiple CTA inference calls need explicit batching"
-                )
-            return self.tensor
-
-    try:
-        for i, body in enumerate(bodies):
-            model = PrecomputedMAX(output[i:i+1])
-            pipeline.model_base = model
-            pipeline.model_atc = model
-
-            response = pipeline.predict_raw(body)
-
-            if model.calls != 1:
-                raise RuntimeError(
-                    "CTA request did not execute exactly one model inference"
-                )
-            if not isinstance(response, dict):
-                raise TypeError("Original CTA response is not a dictionary")
-
-            responses.append(response)
-
-    finally:
-        pipeline.model_base = original_base
-        pipeline.model_atc = original_atc
-        pipeline.preprocess = original_preprocess
-
-    assert len(responses) == 2
-    print(
-        "CTA TRUE MAX BATCH-2: TWO JSON RESPONSES PRODUCED",
-        flush=True
-    )
-    return responses
-''').strip("\n"), "    ") + "\n"
-
-lines = src.splitlines(keepends=True)
-updated = (
-    "".join(lines[:cls.end_lineno])
-    + "\n"
-    + method
-    + "".join(lines[cls.end_lineno:])
+source = Path(
+    "/workspace/artifacts/v1.168-max/"
+    "cta_native_adjusted_sanity_input.json"
 )
 
-tree2 = ast.parse(updated)
-cls2 = next(
-    n for n in tree2.body
-    if isinstance(n, ast.ClassDef)
-    and n.name == "CTAWorkerAdapter"
-)
-assert sum(
-    isinstance(n, ast.FunctionDef) and n.name == "predict_batch"
-    for n in cls2.body
-) == 1
+body = json.loads(source.read_text())
+assert isinstance(body, dict)
 
-backup = p.with_suffix(".py.before_batch2_backend.bak")
-assert not backup.exists(), f"STOP: Backup exists: {backup}"
+adapter = module.CTAWorkerAdapter(CTA, attach_max)
 
-backup.write_bytes(p.read_bytes())
-p.write_text(updated)
+print("REAL CTA JSON BATCH ADAPTER: START", flush=True)
+responses = adapter.predict_batch([body, json.loads(source.read_text())])
 
-print("DEV predict_batch: INSTALLED")
-print("TWO REAL CTA REQUESTS: CONFIGURED")
-print("ONE REAL MAX BATCH BACKEND CALL: WIRED")
-print("ORIGINAL PREDICT_RAW: PRESERVED")
-print("TWO RESPONSE CONTRACTS: CONFIGURED")
-print("PYTHON SYNTAX: PASS")
-print("REAL NATIVE BATCH E2E: NOT YET VALIDATED")
-print("WORKING RELEASE: UNCHANGED")
-print("ORIGINAL DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
-print("FILE:", p)
+assert isinstance(responses, list) and len(responses) == 2
+assert all(isinstance(x, dict) for x in responses)
+
+print("TWO CTA JSON RESPONSES: PASS", flush=True)
+print("CTA RESPONSE ROOT KEYS:", [sorted(x.keys()) for x in responses])
+print("DUPLICATE REQUEST RESPONSE PARITY:",
+      "PASS" if responses[0] == responses[1] else "DIFFERENT")
+assert responses[0] == responses[1]
+print("REAL CTA JSON BATCH ADAPTER E2E: PASS", flush=True)
 PY
+
+RC=$?
+set -e
+
+echo "=== RESULTS ==="
+echo "EXIT CODE: $RC"
+echo "LOG: $LOG"
+tail -55 "$LOG"
+
+if [ "$RC" -eq 0 ] &&
+   grep -q 'REAL CTA JSON BATCH ADAPTER E2E: PASS' "$LOG"; then
+  echo "DEVELOPMENT JSON BATCH ADAPTER: PASS"
+else
+  echo "DEVELOPMENT JSON BATCH ADAPTER: NOT VALIDATED"
+fi
+
+echo "ORIGINAL DS CODE: UNCHANGED"
+echo "WORKING NATIVE RELEASE: UNCHANGED"
+exit "$RC"
+SH

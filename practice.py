@@ -1,1 +1,1 @@
-sed -n '1,220p' /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/run_distinct_batch2_live_max_inference.py
+grep -nE 'def |infer_max_batch|predict_batch|request_id|responses|__main__' /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2/cta_worker_adapter.py

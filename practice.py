@@ -1,49 +1,31 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && bash <<'SH'
-set -eu
-
-CAND=/application1/cta_max_true_batch_dev_20261028/batch2_candidate
-
-test -s "$CAND/cta_max/run_batch2_contract.py"
-
-timeout 60s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --network none \
-  --memory 1g --cpus 1 --pids-limit 64 \
-  --read-only \
-  --tmpfs /tmp:rw,size=64m \
-  -e HOME=/tmp \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -e PYTHONPATH="/workspace/artifacts/v1.168-max:$CAND" \
-  -v "$PWD:/workspace:ro" \
-  -v "$CAND:$CAND:ro" \
-  -w /workspace \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -B - <<'PY'
-import cta_max
+python3 - <<'PY'
 from pathlib import Path
+import ast
 
-print("CTA PACKAGE:", list(cta_max.__path__))
-
-candidate = (
-    "/application1/cta_max_true_batch_dev_20261028/"
-    "batch2_candidate/cta_max"
+p = Path(
+    "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
+    "native_batch2/cta_worker_adapter.py"
 )
 
-if candidate not in cta_max.__path__:
-    cta_max.__path__.append(candidate)
+assert p.is_file(), "STOP: Adapter missing"
+source = p.read_text()
+tree = ast.parse(source)
 
-from cta_max.run_batch2_contract import pack_two_requests
+print("=== DEVELOPMENT BATCH ADAPTER ===")
 
-assert callable(pack_two_requests)
-print("CONTAINER CONTRACT IMPORT: PASS")
-print("CONTRACT LOCATION:", Path(
-    __import__(
-        "cta_max.run_batch2_contract",
-        fromlist=[""]
-    ).__file__
-))
-print("NO FILES MODIFIED")
+for node in ast.walk(tree):
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if node.name == "predict_batch":
+            print(f"METHOD: {node.name}")
+            print(f"LINES: {node.lineno}-{node.end_lineno}")
+
+            lines = source.splitlines()
+            for n in range(node.lineno, node.end_lineno + 1):
+                print(f"{n:4}: {lines[n-1]}")
+
+            print("ADAPTER SYNTAX: PASS")
+            print("NO FILES MODIFIED")
+            break
+else:
+    raise RuntimeError("predict_batch method missing")
 PY
-SH

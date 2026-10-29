@@ -1,42 +1,24 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-python3 -S -B - <<'PY'
-from pathlib import Path
+SOURCE="$PWD/artifacts/v1.168-max/cta_max/grecbase_integration_weights"
+BASE=/application1/cta_max_true_batch_dev_20261028
+TARGET="$BASE/cta_max/grecbase_integration_weights"
 
-repo = Path.cwd()
-base = Path("/application1/cta_max_true_batch_dev_20261028")
+CONTAINER_SOURCE=/workspace/artifacts/v1.168-max/cta_max/grecbase_integration_weights
 
-roots = [
-    repo / "artifacts/v1.168-max/cta_max",
-    base / "cta_max",
-    base / "batch2_candidate/cta_max",
-]
+if [ ! -f "$SOURCE/att_pooling.rotary_emb.inv_freq.npy" ]; then
+  echo "STOP: Original rotary weight missing"
+elif [ ! -d "$BASE/cta_max" ]; then
+  echo "STOP: Batch MAX directory missing"
+elif [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+  echo "STOP: Target already exists; preserve it"
+else
+  ln -s "$CONTAINER_SOURCE" "$TARGET" || exit 1
 
-print("=== ROTARY WEIGHT FILES ===")
-for root in roots:
-    weight_dir = root / "grecbase_integration_weights"
-    print("DIRECTORY:", weight_dir)
-    print("EXISTS:", weight_dir.is_dir())
-    if weight_dir.is_dir():
-        for p in sorted(weight_dir.glob("*rotary*")):
-            print("WEIGHT:", p.name, "BYTES:", p.stat().st_size)
-
-print("\n=== ERROR SOURCE AND WEIGHT LOOKUP ===")
-for root in roots:
-    if not root.is_dir():
-        continue
-    for p in sorted(root.glob("*.py")):
-        lines = p.read_text(errors="replace").splitlines()
-        matches = [
-            i for i, line in enumerate(lines)
-            if "No exported 256-d rotary" in line
-            or "rotary_emb.inv_freq" in line
-        ]
-        for i in matches:
-            print("\nFILE:", p)
-            for j in range(max(0, i-5), min(len(lines), i+5)):
-                print(f"{j+1}: {lines[j]}")
-
-print("\nCHECK COMPLETE — NO FILES MODIFIED")
-print("MAX NOT STARTED")
-PY
+  echo "ROTARY WEIGHT LINK: CREATED"
+  echo "SOURCE WEIGHT: PRESERVED"
+  echo "TARGET: $TARGET"
+  echo "CONTAINER SOURCE: $CONTAINER_SOURCE"
+  echo "DS CODE: UNCHANGED"
+  echo "MAX STARTUP: NOT PERFORMED"
+fi

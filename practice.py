@@ -3,39 +3,81 @@ python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
 
-p = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/nlp_bert_in_graph_batch2_fix.py")
-assert p.is_file(), f"STOP: Missing {p}"
+dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+src = dev / "nlp_bert_in_graph_batch2_fix.py"
+graph = dev / "grecbase_fusion_full_head_72_max_batch2_bertfix.py"
+dst = dev / "nlp_bert_in_graph_batch2_qkvfix.py"
+newgraph = dev / "grecbase_fusion_full_head_72_max_batch2_bertqkvfix.py"
 
-old = "from .nlp_bert_max import WEIGHTS"
-new = "from cta_max.nlp_bert_max import WEIGHTS"
-code = p.read_text()
+assert src.is_file() and graph.is_file(), "STOP: Known source missing"
 
-if code.count(old) == 1:
-    updated = code.replace(old, new, 1)
-    tree = ast.parse(updated)
-    remaining = [
-        n.lineno for n in ast.walk(tree)
-        if isinstance(n, ast.ImportFrom) and n.level > 0
-    ]
-    assert not remaining, f"STOP: Other relative imports at {remaining}"
+code = src.read_text()
+tree = ast.parse(code)
+lines = code.splitlines(keepends=True)
+edits = []
+fixed = []
 
-    backup = p.with_suffix(".py.before_importfix.bak")
-    assert not backup.exists(), "STOP: Backup already exists"
-    backup.write_bytes(p.read_bytes())
-    p.write_text(updated)
-    print("BERT ABSOLUTE IMPORT FIX: INSTALLED")
-elif code.count(new) == 1:
-    print("BERT ABSOLUTE IMPORT FIX: ALREADY PRESENT")
-else:
-    raise SystemExit("STOP: Import differs from expected source")
+for n in ast.walk(tree):
+    if not isinstance(n, ast.Call) or len(n.args) < 2:
+        continue
+    if not isinstance(n.func, ast.Attribute):
+        continue
+    if not (isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "ops"
+            and n.func.attr == "reshape"):
+        continue
 
+    value, shape = n.args[:2]
+    if not isinstance(value, ast.Name) or value.id not in ("q", "k", "v"):
+        continue
+    if not isinstance(shape, ast.List) or len(shape.elts) != 4:
+        continue
+
+    parts = shape.elts
+    if not (
+        isinstance(parts[0], ast.Constant) and parts[0].value == 1
+        and isinstance(parts[1], ast.Name) and parts[1].id == "seq_len"
+        and isinstance(parts[2], ast.Constant) and parts[2].value == 12
+        and isinstance(parts[3], ast.Constant) and parts[3].value == 32
+    ):
+        continue
+
+    start = sum(map(len, lines[:shape.lineno-1])) + shape.col_offset
+    end = sum(map(len, lines[:shape.end_lineno-1])) + shape.end_col_offset
+    edits.append((start, end, "[2, seq_len, 12, 32]"))
+    fixed.append((value.id, n.lineno))
+
+assert sum(name == "q" for name, _ in fixed) == 1, \
+    f"STOP: Expected exactly one Q reshape: {fixed}"
+
+updated = code
+for start, end, replacement in sorted(edits, reverse=True):
+    updated = updated[:start] + replacement + updated[end:]
+
+ast.parse(updated)
+
+graph_code = graph.read_text()
+old = "from nlp_bert_in_graph_batch2_fix import "
+new = "from nlp_bert_in_graph_batch2_qkvfix import "
+assert graph_code.count(old) == 1, "STOP: BERT graph import differs"
+graph_code = graph_code.replace(old, new, 1)
+ast.parse(graph_code)
+
+for path, content in ((dst, updated), (newgraph, graph_code)):
+    if path.exists():
+        assert path.read_text() == content, f"STOP: Existing candidate differs: {path}"
+        print("VERIFIED:", path.name)
+    else:
+        path.write_text(content)
+        print("CREATED:", path.name)
+
+print("BERT ATTENTION FIXES:", fixed)
 print("PYTHON SYNTAX: PASS")
-print("ORIGINAL CTA PACKAGE: UNCHANGED")
+print("ORIGINAL DS AND WORKING RELEASE: UNCHANGED")
 PY
 
-echo "=== BATCH-2 GRAPH REBUILD ==="
+echo "=== REBUILD REAL BATCH-2 GRAPH ==="
 
-test -d /application1/cta_max_true_batch_dev_20261028/cta_max/sibling_context_weights && \
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --network none \
@@ -56,18 +98,19 @@ import sys
 try:
     from max.driver import CPU
     from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max_batch2_bertfix import (
+    from grecbase_fusion_full_head_72_max_batch2_bertqkvfix import (
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
-    print("BATCH-2 GRAPH BUILD: START", flush=True)
+    print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
 
     graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
         DeviceRef.from_device(CPU())
     )
 
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
-    print("GRAPH INPUT COUNT:", len(graph.inputs))
+    print("INPUT COUNT:", len(graph.inputs))
+
     for i, item in enumerate(graph.inputs):
         print("INPUT", i, "SHAPE:", item.type.shape)
 
@@ -76,7 +119,7 @@ except Exception:
     traceback.print_exc()
     sys.exit(1)
 
-print("REAL BATCH-2 INFERENCE: NOT YET PERFORMED")
+print("REAL BATCH-2 EXECUTION: NOT YET PERFORMED")
 print("ORIGINAL DS CODE: UNCHANGED")
 print("WORKING NATIVE RELEASE: UNCHANGED")
 PY

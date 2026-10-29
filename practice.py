@@ -3,60 +3,52 @@ set -eu
 REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
 DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
 
-python3 -S -B - <<'PY'
+WEIGHTS=""
+
+for CANDIDATE in \
+  "$REPO/artifacts/v1.168-max/cta_max/sibling_context_weights" \
+  /application1/cta_max_true_batch_dev_20261028/cta_max/sibling_context_weights
+do
+  if [ -d "$CANDIDATE" ] && \
+     find -L "$CANDIDATE" -maxdepth 1 -type f -name '*.npy' | grep -q .; then
+    WEIGHTS=$(readlink -f "$CANDIDATE")
+    break
+  fi
+done
+
+if [ -z "$WEIGHTS" ]; then
+  echo "STOP: Previously exported sibling weights not accessible"
+  exit 1
+fi
+
+test -f "$DEV/grecbase_fusion_full_head_72_max_batch2_siblingfix.py"
+
+python3 -S -B - "$WEIGHTS" <<'PY'
 from pathlib import Path
-import os
-import hashlib
+import sys
 
-repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
 dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-name = "sibling_context_head_deep_embedding_0.weight.npy"
-destination = dev / "sibling_context_weights"
+weights = Path(sys.argv[1])
+files = sorted(weights.glob("*.npy"))
+assert len(files) >= 10, f"STOP: Only {len(files)} weight files"
 
-assert repo.is_dir() and dev.is_dir(), "STOP: Project or development directory missing"
+link = dev / "sibling_context_weights"
+target = Path("/weights_sibling")
 
-matches = sorted(
-    p for base in (repo / "artifacts", dev)
-    for p in base.rglob(name)
-    if p.is_file()
-)
-
-print("SIBLING WEIGHT CANDIDATES:", len(matches))
-for p in matches:
-    print("FOUND:", p)
-
-assert matches, "STOP: Existing trained sibling weight not found"
-
-digests = {hashlib.sha256(p.read_bytes()).hexdigest() for p in matches}
-assert len(digests) == 1, "STOP: Conflicting sibling weight files found"
-
-source = matches[0].parent.resolve()
-
-if source.is_relative_to(repo):
-    target = "/workspace/" + str(source.relative_to(repo))
-elif source.is_relative_to(dev):
-    target = "/batch2/" + str(source.relative_to(dev))
+if link.is_symlink():
+    assert link.readlink() == target, "STOP: Existing link differs"
+elif link.exists():
+    raise SystemExit("STOP: Destination exists; refusing overwrite")
 else:
-    raise SystemExit("STOP: Weight source outside mounted directories")
+    link.symlink_to(target, target_is_directory=True)
 
-assert source != destination.resolve(), "STOP: Unexpected self-reference"
-
-if destination.is_symlink():
-    assert os.readlink(destination) == target, "STOP: Existing link differs"
-    print("SIBLING WEIGHT LINK: ALREADY CORRECT")
-elif destination.exists():
-    raise SystemExit("STOP: Existing sibling weight directory; refusing overwrite")
-else:
-    destination.symlink_to(target, target_is_directory=True)
-    print("SIBLING WEIGHT LINK: CREATED")
-
-print("WEIGHT SOURCE:", source)
-print("WEIGHT TARGET IN CONTAINER:", target)
+print("EXISTING SIBLING WEIGHTS:", len(files))
+print("SOURCE:", weights)
+print("WEIGHT LINK: PASS")
 print("ORIGINAL WEIGHTS: UNCHANGED")
-print("DS CODE: UNCHANGED")
 PY
 
-echo "=== RETEST BATCH-2 GRAPH ==="
+echo "=== REAL BATCH-2 GRAPH CONSTRUCTION ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -68,6 +60,7 @@ timeout 120s podman --root /application1/podman/storage \
   -e PYTHONPATH=/batch2:/workspace/artifacts/v1.168-max \
   -v "$REPO:/workspace:ro" \
   -v "$DEV:/batch2:ro" \
+  -v "$WEIGHTS:/weights_sibling:ro" \
   -w /workspace \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -B - <<'PY'
@@ -86,7 +79,8 @@ try:
     )
 
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
-    print("INPUT COUNT:", len(graph.inputs))
+    print("GRAPH INPUT COUNT:", len(graph.inputs))
+
     for i, item in enumerate(graph.inputs):
         print("INPUT", i, "SHAPE:", item.type.shape)
 
@@ -96,5 +90,6 @@ except Exception:
     sys.exit(1)
 
 print("REAL BATCH-2 EXECUTION: NOT YET PERFORMED")
-print("WORKING RELEASE: UNCHANGED")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("WORKING NATIVE RELEASE: UNCHANGED")
 PY

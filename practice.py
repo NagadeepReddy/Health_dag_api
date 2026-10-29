@@ -1,1 +1,1 @@
-grep -RInE 'CTA_NATIVE_BATCH_DISPATCH_V1|CTA TRUE MAX BATCH-2|predict_batch\(|SchedulerResult|CTANativeScheduler' /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029 --include='*.py' --exclude='cta_worker_adapter.py' --exclude='cta_native_scheduler.py'
+sed -n '1,140p' /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2/cta_scheduler_factory.py

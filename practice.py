@@ -1,30 +1,30 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 - <<'PY'
+python3 - <<'PY'
 from pathlib import Path
 import ast
 
-root = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
+p = Path(
+    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
+    "artifacts/v1.167/core-artifact/pipeline.py"
+)
 
-for p in root.rglob("pipeline.py"):
-    if any(x in p.parts for x in (".git", "__pycache__", ".venv")):
-        continue
+assert p.is_file(), "STOP: Original pipeline missing"
 
-    try:
-        tree = ast.parse(p.read_text())
-    except (SyntaxError, UnicodeError, OSError):
-        continue
+source = p.read_text()
+tree = ast.parse(source)
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name == "predict_raw":
-                print("FILE:", p)
-                print("LINES:", node.lineno, "-", node.end_lineno)
-                lines = p.read_text().splitlines()
-                for n in range(node.lineno, node.end_lineno + 1):
-                    print(f"{n:4}: {lines[n-1]}")
-                print("ORIGINAL DS: UNCHANGED")
-                print("NO FILES MODIFIED")
-                raise SystemExit(0)
+matches = [
+    n for n in ast.walk(tree)
+    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    and n.name == "inference"
+]
 
-print("NOT FOUND: predict_raw in repository pipeline.py files")
+print("=== ORIGINAL CTA INFERENCE ===")
+
+for node in matches:
+    print(f"LINES: {node.lineno}-{node.end_lineno}")
+    for number in range(node.lineno, node.end_lineno + 1):
+        print(f"{number}: {source.splitlines()[number-1]}")
+
+print("ORIGINAL DS: UNCHANGED")
 print("NO FILES MODIFIED")
 PY

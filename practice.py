@@ -1,1 +1,1 @@
-find /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029 -maxdepth 3 -type f \( -name '*test*.py' -o -name '*run*.py' \) -print
+python3 -B /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/run_real_sanity_input_adapter.py

@@ -7,7 +7,6 @@ p = Path(
     "native_batch2/cta_worker_adapter.py"
 )
 
-assert p.is_file(), "STOP: Adapter missing"
 source = p.read_text()
 tree = ast.parse(source)
 
@@ -17,24 +16,21 @@ method = next(
     and n.name == "predict_batch"
 )
 
-print("=== CURRENT ADAPTER IMPLEMENTATION ===")
+checks = {
+    "BATCH METHOD": True,
+    "PREPROCESS CACHE": "cached_preprocess" in source,
+    "ORIGINAL PREPROCESS RESTORE":
+        "pipeline.preprocess = original_preprocess" in source,
+    "MODEL RESTORE":
+        "pipeline.model_base = original_base" in source
+        and "pipeline.model_atc = original_atc" in source,
+    "MULTI-INFERENCE RESTRICTION":
+        "model.calls != 1" in source,
+}
 
-for number, line in enumerate(source.splitlines(), 1):
-    if method.lineno <= number <= method.end_lineno:
-        if any(x in line for x in (
-            "preprocess",
-            "predict_raw",
-            "model.calls",
-            "model_base",
-            "model_atc",
-            "finally:",
-            "cached_result",
-            "infer_max_batch",
-        )):
-            print(f"{number}: {line.strip()}")
+for name, result in checks.items():
+    print(f"{name}: {'PRESENT' if result else 'MISSING'}")
 
-print("CACHE FIX:", "PRESENT" if "cached_preprocess" in source else "MISSING")
-print("BATCH METHOD: PRESENT")
 print("SYNTAX: PASS")
 print("NO FILES MODIFIED")
 PY

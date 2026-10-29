@@ -1,92 +1,103 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
-from pathlib import Path
-import ast
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && bash <<'SH'
+set -eu
 
-root = Path.cwd()
-paths = [
-    root / "artifacts/v1.168/core-artifact/pipeline.py",
-    root / "artifacts/v1.168-max/maxserve_cta_extension/cta_worker_adapter.py",
-    root / "artifacts/v1.168-max/cta_max/run_real_sanity_input_adapter.py",
+REPO="$PWD"
+DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
+mkdir -p "$DEV"
+
+test -f artifacts/v1.168-max/test-results/cta_max_tiles_smoketest_input.json
+test -f artifacts/v1.168-max/cta_max/real_sanity_model_in.pt
+
+timeout 240s podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --network none \
+  --memory 2g --cpus 2 --pids-limit 64 \
+  --tmpfs /tmp:rw,size=256m \
+  -e HOME=/tmp \
+  -e XDG_CACHE_HOME=/tmp \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -v "$REPO:/workspace:ro" \
+  -v "$DEV:/output:rw" \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -B - <<'PY'
+import sys
+import os
+import json
+import traceback
+from pathlib import Path
+
+import torch
+
+base = Path("/workspace")
+original = base / "artifacts/v1.168-max/cta_max/real_sanity_model_in.pt"
+request = base / "artifacts/v1.168-max/test-results/cta_max_tiles_smoketest_input.json"
+output = Path("/output/second_real_cta_model_in.pt")
+
+assert not output.exists(), "STOP: Captured input already exists"
+
+sys.path[:0] = [
+    str(base / "artifacts/v1.168/core-artifact"),
+    str(base / "artifacts/v1.168-max/utils/dependency-utils"),
+    str(base / "artifacts/v1.168-max"),
 ]
 
-print("=== ORIGINAL PREPROCESSING AND MODEL INPUT PATH ===")
+class Captured(Exception):
+    pass
 
-for p in paths:
-    print("\nFILE:", p)
-    if not p.is_file():
-        print("MISSING")
-        continue
+reference = torch.load(original, map_location="cpu", weights_only=True)
+assert isinstance(reference, dict), "STOP: Saved input format differs"
 
-    lines = p.read_text().splitlines()
-    tree = ast.parse("\n".join(lines), filename=str(p))
+def trace_call(frame, event, arg):
+    if event != "call" or frame.f_code.co_name != "predict_raw":
+        return None
+    if not frame.f_code.co_filename.endswith("/core-artifact/pipeline.py"):
+        return None
 
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if node.name not in (
-            "predict_raw", "predict", "build_real_inputs",
-            "initialize", "attach_max"
-        ):
-            continue
+    def trace_line(frame, event, arg):
+        if event == "line" and "model_in" in frame.f_locals:
+            value = frame.f_locals["model_in"]
+            assert isinstance(value, dict), "STOP: model_in must be a dictionary"
+            assert set(value) == set(reference), "STOP: Model input keys differ"
+            torch.save(value, output)
+            print("SECOND REAL MODEL INPUT: CAPTURED", flush=True)
+            print("KEYS:", len(value), flush=True)
+            print("FILE:", output, flush=True)
+            raise Captured()
+        return trace_line
 
-        print(f"FUNCTION: {node.name} | lines {node.lineno}-{node.end_lineno}")
+    return trace_line
 
-        selected = set(range(
-            node.lineno,
-            min(node.lineno + 8, node.end_lineno + 1)
-        ))
+try:
+    from pipeline import pipeline as CTA
 
-        for i in range(node.lineno, node.end_lineno + 1):
-            s = lines[i - 1]
-            if any(k in s for k in (
-                "model_in", "model(", ".forward(",
-                "predict(", "torch.save", "self.model",
-                "attach_max", "preprocess"
-            )):
-                selected.update(range(
-                    max(node.lineno, i - 2),
-                    min(node.end_lineno, i + 2) + 1
-                ))
+    body = json.loads(request.read_text())
+    assert isinstance(body, dict)
 
-        for i in sorted(selected)[:65]:
-            print(f"{i}: {lines[i-1][:180]}")
+    pipeline = CTA()
+    print("LOADING ORIGINAL DS PIPELINE", flush=True)
+    pipeline.load()
 
-print("\n=== EXISTING MODEL INPUT SAVE/CAPTURE CALLS ===")
+    print("CAPTURING SECOND REAL REQUEST", flush=True)
+    sys.settrace(trace_call)
 
-found = 0
-for base in (
-    root / "artifacts/v1.168-max/cta_max",
-    root / "artifacts/v1.168-max/maxserve_cta_extension",
-):
-    for p in base.rglob("*.py"):
-        try:
-            lines = p.read_text().splitlines()
-            tree = ast.parse("\n".join(lines))
-        except (OSError, SyntaxError, UnicodeError):
-            continue
+    try:
+        pipeline.predict_raw(body)
+    except Captured:
+        pass
+    finally:
+        sys.settrace(None)
 
-        for n in ast.walk(tree):
-            if not isinstance(n, ast.Call):
-                continue
+    assert output.is_file(), "STOP: Model input capture did not occur"
 
-            name = ast.unparse(n.func)
-            if name not in (
-                "torch.save", "register_forward_pre_hook",
-                "register_forward_hook"
-            ) and not name.endswith(".register_forward_pre_hook"):
-                continue
+    print("CAPTURE: PASS")
+    print("ORIGINAL DS CODE: UNCHANGED")
+    print("MAX GRAPH: UNCHANGED")
 
-            print(f"{p.relative_to(root)}:{n.lineno}: "
-                  f"{lines[n.lineno-1].strip()[:150]}")
-            found += 1
-            if found >= 20:
-                break
-
-        if found >= 20:
-            break
-
-print("CAPTURE CALLS FOUND:", found)
-print("FILES MODIFIED: NONE")
-print("MAX STARTUP: NOT PERFORMED")
-print("ORIGINAL DS CODE: UNCHANGED")
+except Exception:
+    sys.settrace(None)
+    print("CAPTURE: FAIL")
+    traceback.print_exc()
+    sys.exit(1)
 PY
+SH

@@ -1,41 +1,46 @@
-python3 -S -B - <<'PY'
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --network none --read-only \
+  --memory 512m --pids-limit 32 \
+  -v /application1/cta_max_native_release_candidate_20261028:/release:ro \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -S -B - <<'PY'
 from pathlib import Path
-import re
 
-p = Path("/application1/cta_kserve_final_test.log")
-if not p.is_file():
-    raise SystemExit("STOP: Live-test log missing")
+base = Path("/opt/venv/lib/python3.12/site-packages/max")
 
-lines = p.read_text(errors="replace").splitlines()
-
-patterns = re.compile(
-    r"CTA|factory|worker|scheduler|queue|"
-    r"predict_raw|inference|model loaded|"
-    r"request_id|response|timeout|"
-    r"Traceback|Error|Exception|Killed|OOM",
-    re.I
-)
-
-matches = [
-    (i, line)
-    for i, line in enumerate(lines, 1)
-    if patterns.search(line)
-    and "telemetry.modular.com" not in line
-    and "opentelemetry/" not in line
-    and "site-packages/requests/" not in line
+targets = [
+    (base / "serve/queue/zmq_queue.py",
+     ("get_nowait", "decode", "deserialize", "type")),
+    (base / "interfaces/queue.py",
+     ("BackgroundQueueDrainer", "get_nowait", "drain")),
+    (base / "serve/pipelines/model_worker.py",
+     ("run_iteration", "scheduler", "queue")),
+    (Path("/release/cta_native_scheduler.py"),
+     ("ZmqConfig", "run_iteration", "CTAContext", "request_id")),
+    (Path("/release/cta_context.py"),
+     ("class CTAContext", "type", "request_id")),
+    (Path("/release/cta_http_pipeline.py"),
+     ("ZmqConfig", "open_channel", "request_queue")),
 ]
 
-print("=== REAL NATIVE REQUEST LIFECYCLE ===")
-print("TOTAL MATCHES:", len(matches))
-
-selected = matches[:65] + matches[-65:]
-seen = set()
-
-for number, line in selected:
-    if number in seen:
+for path, terms in targets:
+    print("\n=== FILE:", path.name, "===")
+    if not path.is_file():
+        print("NOT PRESENT")
         continue
-    seen.add(number)
-    print(f"{number}: {line[:400]}")
 
-print("=== CHECK COMPLETE — NO FILES MODIFIED ===")
+    lines = path.read_text(errors="replace").splitlines()
+    selected = set()
+
+    for i, line in enumerate(lines):
+        if any(term in line for term in terms):
+            selected.update(range(max(0, i-2), min(len(lines), i+5)))
+
+    for i in sorted(selected)[:100]:
+        print(f"{i+1}: {lines[i]}")
+
+print("\nQUEUE CONTRACT CHECK COMPLETE")
+print("FILES MODIFIED: NONE")
+print("MAX NOT STARTED")
 PY

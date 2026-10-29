@@ -1,36 +1,28 @@
-python3 - <<'PY'
-from pathlib import Path
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 - <<'PY'
 import ast
+from pathlib import Path
 
-p = Path(
-    "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
-    "native_batch2/cta_worker_adapter.py"
-)
+matches = list(Path(".").rglob("pipeline.py"))
 
-source = p.read_text()
-tree = ast.parse(source)
+for p in matches:
+    if "artifacts" in p.parts:
+        continue
 
-method = next(
-    n for n in ast.walk(tree)
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "predict_batch"
-)
+    tree = ast.parse(p.read_text())
 
-checks = {
-    "BATCH METHOD": True,
-    "PREPROCESS CACHE": "cached_preprocess" in source,
-    "ORIGINAL PREPROCESS RESTORE":
-        "pipeline.preprocess = original_preprocess" in source,
-    "MODEL RESTORE":
-        "pipeline.model_base = original_base" in source
-        and "pipeline.model_atc = original_atc" in source,
-    "MULTI-INFERENCE RESTRICTION":
-        "model.calls != 1" in source,
-}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name == "predict_raw":
+                print("FILE:", p)
+                print("METHOD:", node.name)
+                print("LINES:", node.lineno, "-", node.end_lineno)
 
-for name, result in checks.items():
-    print(f"{name}: {'PRESENT' if result else 'MISSING'}")
+                lines = p.read_text().splitlines()
+                for n in range(node.lineno, node.end_lineno + 1):
+                    print(f"{n:4}: {lines[n-1]}")
 
-print("SYNTAX: PASS")
-print("NO FILES MODIFIED")
+                print("ORIGINAL DS: UNCHANGED")
+                raise SystemExit(0)
+
+print("STOP: Original predict_raw not located")
 PY

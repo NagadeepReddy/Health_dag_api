@@ -3,81 +3,63 @@ set -eu
 
 REPO="$PWD"
 DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
+GRAPH=grecbase_fusion_full_head_72_max_batch2_auxfix
 
-python3 -S -B - <<'PY'
+test -f "$DEV/$GRAPH.py"
+
+WEIGHT=$(find \
+  "$REPO/artifacts/v1.168-max" \
+  /application1/cta_max_true_batch_dev_20261028 \
+  "$DEV" \
+  -type f -name 'task_embedding.0.weight.npy' \
+  -print -quit 2>/dev/null || true)
+
+if [ -z "$WEIGHT" ]; then
+  echo "STOP: Exact auxiliary trained weight not located"
+  echo "=== AVAILABLE AUXILIARY WEIGHT FILES ==="
+  find "$REPO/artifacts/v1.168-max" \
+    /application1/cta_max_true_batch_dev_20261028 \
+    -type f \( -iname '*task*embedding*.npy' -o -iname '*aux*weight*.npy' \) \
+    -print 2>/dev/null | head -30
+  echo "GRAPH BUILD: NOT RETRIED"
+  exit 1
+fi
+
+SOURCE=$(dirname "$WEIGHT")
+echo "AUXILIARY TRAINED WEIGHTS: FOUND"
+echo "SOURCE: $SOURCE"
+
+python3 -S -B - "$SOURCE" "$DEV" <<'PY'
 from pathlib import Path
-import ast
+import sys
 
-root = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
-dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+source = Path(sys.argv[1])
+dev = Path(sys.argv[2])
+dest = dev / "grecbase_aux_weights"
 
-src = root / "artifacts/v1.168-max/cta_max/grecbase_aux_branches_max.py"
-graph = dev / "grecbase_fusion_full_head_72_max_batch2_mainfix.py"
+assert source.is_dir()
+assert (source / "task_embedding.0.weight.npy").is_file()
 
-dst = dev / "grecbase_aux_branches_max_batch2_fix.py"
-newgraph = dev / "grecbase_fusion_full_head_72_max_batch2_auxfix.py"
+if dest.is_symlink():
+    assert dest.readlink() == Path("/weights_aux"), \
+        "STOP: Existing auxiliary link differs"
+elif dest.exists():
+    assert dest.is_dir(), "STOP: Unexpected auxiliary destination"
+    for original in source.glob("*.npy"):
+        link = dest / original.name
+        expected = Path("/weights_aux") / original.name
+        if link.is_symlink():
+            assert link.readlink() == expected, \
+                f"STOP: Conflicting link {link}"
+        elif link.exists():
+            raise SystemExit(f"STOP: Existing file needs review: {link}")
+        else:
+            link.symlink_to(expected)
+else:
+    dest.symlink_to("/weights_aux")
 
-assert src.is_file() and graph.is_file(), "STOP: Verified source missing"
-
-code = src.read_text()
-tree = ast.parse(code)
-fixes = []
-
-for n in ast.walk(tree):
-    if not isinstance(n, ast.Assign):
-        continue
-    if not any(isinstance(t, ast.Name) and t.id == "task" for t in n.targets):
-        continue
-
-    call = n.value
-    if not isinstance(call, ast.Call) or len(call.args) < 2:
-        continue
-    if not isinstance(call.func, ast.Attribute) or call.func.attr != "reshape":
-        continue
-    if ast.unparse(call.args[1]) == "[1, 256]":
-        fixes.append(call.args[1])
-
-assert len(fixes) == 1, f"STOP: Task reshape matches: {len(fixes)}"
-fixes[0].elts[0] = ast.Constant(value=2)
-
-for n in ast.walk(tree):
-    if isinstance(n, ast.ImportFrom) and n.level:
-        assert n.level == 1 and n.module
-        n.module = "cta_max." + n.module
-        n.level = 0
-
-ast.fix_missing_locations(tree)
-updated = ast.unparse(tree) + "\n"
-compile(updated, str(dst), "exec")
-
-gtree = ast.parse(graph.read_text())
-imports = [
-    n for n in ast.walk(gtree)
-    if isinstance(n, ast.ImportFrom)
-    and n.module == "cta_max.grecbase_aux_branches_max"
-]
-
-assert len(imports) == 1, \
-    f"STOP: Auxiliary import count: {len(imports)}"
-
-imports[0].module = "grecbase_aux_branches_max_batch2_fix"
-ast.fix_missing_locations(gtree)
-
-gcode = ast.unparse(gtree) + "\n"
-compile(gcode, str(newgraph), "exec")
-
-for path, content in ((dst, updated), (newgraph, gcode)):
-    if path.exists():
-        assert path.read_text() == content, \
-            f"STOP: Existing file differs: {path}"
-        print("VERIFIED:", path.name)
-    else:
-        path.write_text(content)
-        print("CREATED:", path.name)
-
-print("TASK BATCH SHAPE FIX: [1,256] -> [2,256]")
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL DS AND WORKING RELEASE: UNCHANGED")
+print("AUXILIARY WEIGHT MAPPING: READY")
+print("ORIGINAL TRAINED WEIGHTS: UNCHANGED")
 PY
 
 echo "=== TRUE BATCH-2 GRAPH REBUILD ==="
@@ -92,13 +74,14 @@ timeout 120s podman --root /application1/podman/storage \
   -e PYTHONPATH=/batch2:/workspace/artifacts/v1.168-max \
   -v "$REPO:/workspace:ro" \
   -v "$DEV:/batch2:ro" \
+  -v "$SOURCE:/weights_aux:ro" \
   -v "$REPO/artifacts/v1.168-max/cta_max/main_context_weights:/weights_main:ro" \
   -v /application1/cta_max_true_batch_dev_20261028/cta_max/sibling_context_weights:/weights_sibling:ro \
   -w /workspace \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -B - <<'PY'
-import sys
 import traceback
+import sys
 
 try:
     from max.driver import CPU
@@ -107,7 +90,7 @@ try:
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
-    print("TRUE BATCH-2 GRAPH BUILD: START", flush=True)
+    print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
 
     graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
         DeviceRef.from_device(CPU())
@@ -116,15 +99,16 @@ try:
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
     print("INPUT COUNT:", len(graph.inputs))
 
-    for i, item in enumerate(graph.inputs):
-        print("INPUT", i, "SHAPE:", item.type.shape)
+    for i, value in enumerate(graph.inputs):
+        print("INPUT", i, "SHAPE:", value.type.shape)
 
 except Exception:
     print("BATCH-2 GRAPH CONSTRUCTION: FAIL")
     traceback.print_exc()
     sys.exit(1)
 
-print("TRUE BATCH-2 INFERENCE: NOT YET PERFORMED")
+print("REAL BATCH-2 INFERENCE: NOT YET PERFORMED")
+print("ORIGINAL DS CODE: UNCHANGED")
 print("WORKING NATIVE RELEASE: UNCHANGED")
 PY
 SH

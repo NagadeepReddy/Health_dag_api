@@ -1,59 +1,32 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-BASE=/application1/cta_max_true_batch_dev_20261028
-CANDIDATE=/application1/cta_max_native_release_candidate_20261028
-LOG="$BASE/native_concurrent2_synced300.log"
+python3 -S -B - <<'PY'
+from pathlib import Path
 
-if [ -e "$LOG" ]; then
-  echo "STOP: Test already attempted"
-elif ! grep -Fq 'asyncio.timeout(300)' "$CANDIDATE/cta_router.py" || \
-     ! grep -Fq 'asyncio.timeout(300)' artifacts/v1.168-max/maxserve_cta_extension/cta_router.py; then
-  echo "STOP: Router timeout not synchronized"
-elif [ ! -f "$BASE/native_concurrent2_static.py" ] || \
-     [ ! -f "$BASE/cta_native_benchmark_helper.py" ]; then
-  echo "STOP: Benchmark files missing"
-elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ]; then
-  echo "STOP: Available RAM below 20 GiB"
-else
-  timeout --signal=TERM --kill-after=10s 540s \
-  podman \
-    --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    run --rm -i --pull=never \
-    --network=none --read-only --log-driver=none \
-    --memory=12g --memory-swap=12g \
-    --cpus=2 --pids-limit=256 \
-    --tmpfs /tmp:rw,size=1g,mode=1777 \
-    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=512m,mode=1777 \
-    -v "$PWD:/workspace:ro" \
-    -v "$BASE:/batchdev:ro" \
-    -v "$CANDIDATE:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
-    -w /workspace \
-    -e HOME=/tmp \
-    -e TMPDIR=/tmp \
-    -e XDG_CACHE_HOME=/tmp/cache \
-    -e MODULAR_CACHE_DIR=/tmp/modular \
-    -e PYTHONDONTWRITEBYTECODE=1 \
-    -e PYTHONUNBUFFERED=1 \
-    -e OMP_NUM_THREADS=1 \
-    -e MKL_NUM_THREADS=1 \
-    -e OPENBLAS_NUM_THREADS=1 \
-    -e modelId=rt-pzaas-cta-offers-v1 \
-    -e expThrottleLabel=T \
-    -e PYTHONPATH=/batchdev:/workspace:/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168-max/utils/dependency-utils:/workspace/artifacts/v1.168-max/maxserve_cta_extension \
-    --entrypoint /opt/venv/bin/python3 \
-    localhost/cta-max-faiss:local \
-    -B /batchdev/native_concurrent2_static.py \
-    > "$LOG" 2>&1
+base = Path("/application1/cta_max_true_batch_dev_20261028")
+candidate = Path("/application1/cta_max_native_release_candidate_20261028")
 
-  RC=$?
-  echo "BENCHMARK EXIT CODE: $RC"
-  echo "=== RESULTS ==="
-  grep -E 'REQUEST [12]:|HTTP STATUSES|WALL SECONDS|THROUGHPUT RPS|MEAN LATENCY|NATIVE CONCURRENT-2|Error|Traceback|Killed' "$LOG" | tail -25 || true
-  echo "=== LAST LOG ==="
-  tail -12 "$LOG"
+files = {
+    "BENCHMARK": base / "native_concurrent2_static.py",
+    "HELPER": base / "cta_native_benchmark_helper.py",
+    "ROUTER": candidate / "cta_router.py",
+    "E2E TEST": candidate / "cta_native_e2e_test.py",
+}
 
-  if [ "$RC" -ne 0 ]; then
-    echo "STOP: Do not retry automatically"
-  fi
-fi
+for label, path in files.items():
+    print(f"\n=== {label} ===")
+    if not path.is_file():
+        print("MISSING:", path)
+        continue
+    lines = path.read_text().splitlines()
+    for i, line in enumerate(lines, 1):
+        if any(x in line for x in (
+            "import ", "timeout(", "timeout=",
+            "wait_for(", "504", "120", "300",
+            "register_cta_routes", "create_app"
+        )):
+            print(f"{i}: {line.strip()[:180]}")
+
+print("\nCHECK COMPLETE — NO FILES MODIFIED")
+print("MAX NOT STARTED")
+PY

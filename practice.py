@@ -1,1 +1,1 @@
-sed -n '65,125p' /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2/cta_native_scheduler.py
+find /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029 -maxdepth 3 -type f \( -name '*test*.py' -o -name '*smoke*.py' -o -name '*integration*.py' -o -name 'run_*.py' \) -print

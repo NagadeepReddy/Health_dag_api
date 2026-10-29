@@ -1,58 +1,51 @@
 cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
 
-BASE=/application1/cta_max_true_batch_dev_20261028
-CANDIDATE=/application1/cta_max_native_release_candidate_20261028
-LOG="$BASE/native_concurrent2_weights_fixed.log"
+python3 -S -B - <<'PY'
+from pathlib import Path
+import shutil
+import filecmp
 
-if [ ! -f "$BASE/cta_max/grecbase_integration_weights/att_pooling.rotary_emb.inv_freq.npy" ] || \
-   [ ! -f "$BASE/native_concurrent2_static.py" ] || \
-   [ ! -f "$BASE/cta_native_benchmark_helper.py" ] || \
-   [ ! -f "$CANDIDATE/cta_native_e2e_test.py" ]; then
-  echo "STOP: Required files missing"
-elif [ -e "$LOG" ]; then
-  echo "STOP: Benchmark already attempted"
-elif [ "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -lt 20971520 ]; then
-  echo "STOP: Insufficient available RAM"
-else
-  timeout --signal=TERM --kill-after=10s 420s \
-  podman \
-    --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    run --rm -i --pull=never \
-    --network=none --read-only --log-driver=none \
-    --memory=12g --memory-swap=12g \
-    --cpus=2 --pids-limit=256 \
-    --tmpfs /tmp:rw,size=1g,mode=1777 \
-    --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=512m,mode=1777 \
-    -v "$PWD:/workspace:ro" \
-    -v "$BASE:/batchdev:ro" \
-    -v "$CANDIDATE:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
-    -w /workspace \
-    -e HOME=/tmp \
-    -e TMPDIR=/tmp \
-    -e XDG_CACHE_HOME=/tmp/cache \
-    -e MODULAR_CACHE_DIR=/tmp/modular \
-    -e PYTHONDONTWRITEBYTECODE=1 \
-    -e PYTHONUNBUFFERED=1 \
-    -e OMP_NUM_THREADS=1 \
-    -e MKL_NUM_THREADS=1 \
-    -e OPENBLAS_NUM_THREADS=1 \
-    -e modelId=rt-pzaas-cta-offers-v1 \
-    -e expThrottleLabel=T \
-    -e PYTHONPATH=/batchdev:/workspace:/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max:/workspace/artifacts/v1.168-max/utils/dependency-utils:/workspace/artifacts/v1.168-max/maxserve_cta_extension \
-    --entrypoint /opt/venv/bin/python3 \
-    localhost/cta-max-faiss:local \
-    -B /batchdev/native_concurrent2_static.py \
-    > "$LOG" 2>&1
+src = Path("artifacts/v1.168-max/cta_max")
+dst = Path("/application1/cta_max_true_batch_dev_20261028/cta_max")
 
-  RC=$?
-  echo "BENCHMARK EXIT CODE: $RC"
-  echo "=== RESULTS ==="
-  grep -E 'REQUEST [12]:|HTTP STATUSES|WALL SECONDS|THROUGHPUT RPS|MEAN LATENCY|NATIVE CONCURRENT-2|Error|Traceback|Killed|No exported' "$LOG" | tail -25 || true
-  echo "=== FINAL LOG ==="
-  tail -12 "$LOG"
+required = "sibling_context_weights/sibling_context_head.deep_embedding.0.weight.npy"
 
-  if [ "$RC" -ne 0 ]; then
-    echo "STOP: Do not retry automatically"
-  fi
-fi
+assert (src / required).is_file(), "STOP: Original sibling weight missing"
+assert dst.is_dir(), "STOP: Batch workspace missing"
+
+folders = sorted(
+    p for p in src.iterdir()
+    if p.is_dir() and p.name.endswith("_weights")
+)
+
+assert folders, "STOP: No exported weight directories"
+
+pending = []
+for folder in folders:
+    for original in folder.rglob("*.npy"):
+        target = dst / original.relative_to(src)
+        if target.exists():
+            assert target.is_file() and filecmp.cmp(
+                original, target, shallow=False
+            ), f"STOP: Conflicting existing weight: {target}"
+        else:
+            pending.append((original, target))
+
+needed = sum(p.stat().st_size for p, _ in pending)
+assert shutil.disk_usage("/application1").free > needed + 1073741824, \
+    "STOP: Insufficient disk space"
+
+for original, target in pending:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(original, target)
+
+assert (dst / required).read_bytes() == (src / required).read_bytes()
+
+print("MAX EXPORTED WEIGHT SETUP: PASS")
+print("WEIGHT DIRECTORIES:", len(folders))
+print("MISSING WEIGHTS COPIED:", len(pending))
+print("SIBLING WEIGHTS: VERIFIED")
+print("EXISTING WEIGHTS: PRESERVED")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("MAX STARTUP: NOT PERFORMED")
+PY

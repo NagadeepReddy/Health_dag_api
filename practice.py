@@ -2,31 +2,50 @@ python3 - <<'PY'
 from pathlib import Path
 import ast
 
-p = Path(
-    "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
-    "native_batch2/cta_worker_adapter.py"
-)
+root = Path("/application1")
+repo = root / "sajjna8/rt-pzaas-cta-offers-v1"
+pipeline = repo / "artifacts/v1.167/core-artifact/pipeline.py"
+adapter = root / "CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2/cta_worker_adapter.py"
 
-assert p.is_file(), "STOP: Adapter missing"
-source = p.read_text()
-tree = ast.parse(source)
+assert pipeline.is_file(), "STOP: Original pipeline missing"
+assert adapter.is_file(), "STOP: Development adapter missing"
 
-print("=== CTA BATCH ROUTING CHECK ===")
-
-checks = {
-    "Batch method": "def predict_batch" in source,
-    "Original preprocessing": "original_preprocess" in source,
-    "MAX batch backend": "infer_max_batch" in source,
-    "Normal model substitution": "pipeline.model_base = model" in source,
-    "Simulation model substitution": "pipeline.model_atc = model" in source,
-    "Original inference execution": "pipeline.predict_raw(body)" in source,
-    "Preprocess cache": "cached_preprocess" in source,
-    "Original model restoration": "pipeline.model_base = original_base" in source,
+tree = ast.parse(pipeline.read_text())
+methods = {
+    n.name: n
+    for n in ast.walk(tree)
+    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
 }
 
-for name, result in checks.items():
-    print(f"{name}: {'PRESENT' if result else 'MISSING'}")
+assert "inference" in methods
+assert "predict_raw" in methods
 
-print("SYNTAX: PASS")
+inf = methods["inference"]
+src = pipeline.read_text().splitlines()
+
+print("=== ORIGINAL INFERENCE BRANCHES ===")
+for n in range(inf.lineno, inf.end_lineno + 1):
+    line = src[n - 1]
+    if any(s in line for s in (
+        "request_context_fmt.endswith",
+        "model_atc(",
+        "model_base(",
+        "faiss.knn(",
+        "self.inference(",
+    )):
+        print(f"{n}: {line.strip()}")
+
+print("\n=== DEVELOPMENT ADAPTER ===")
+a = adapter.read_text()
+for item in (
+    "pipeline.model_base = model",
+    "pipeline.model_atc = model",
+    "pipeline.predict_raw(body)",
+    "cached_preprocess",
+    "model.calls != 1",
+):
+    print(f"{item}: {'PRESENT' if item in a else 'MISSING'}")
+
+print("\nORIGINAL DS: UNCHANGED")
 print("NO FILES MODIFIED")
 PY

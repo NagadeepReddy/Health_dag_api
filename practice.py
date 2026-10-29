@@ -4,64 +4,56 @@ from pathlib import Path
 import ast
 
 dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-src = dev / "nlp_bert_in_graph_batch2_qkvfix.py"
-graph = dev / "grecbase_fusion_full_head_72_max_batch2_bertqkvfix.py"
+p = dev / "nlp_bert_in_graph_batch2_contextfix.py"
+graph = dev / "grecbase_fusion_full_head_72_max_batch2_bertcontextfix.py"
 
-dst = dev / "nlp_bert_in_graph_batch2_contextfix.py"
-newgraph = dev / "grecbase_fusion_full_head_72_max_batch2_bertcontextfix.py"
+assert p.is_file() and graph.is_file(), "STOP: Verified files missing"
 
-assert src.is_file() and graph.is_file(), "STOP: Previous verified files missing"
-
-code = src.read_text()
+code = p.read_text()
 tree = ast.parse(code)
 matches = []
 
-for n in ast.walk(tree):
-    if not isinstance(n, ast.Assign):
+for node in ast.walk(tree):
+    if not isinstance(node, ast.Assign):
         continue
-    if not any(isinstance(t, ast.Name) and t.id == "context" for t in n.targets):
+    if not any(isinstance(t, ast.Name) and t.id == "cls" for t in node.targets):
         continue
-    call = n.value
+    call = node.value
     if not isinstance(call, ast.Call) or len(call.args) < 2:
         continue
     if not isinstance(call.func, ast.Attribute) or call.func.attr != "reshape":
         continue
-    if ast.unparse(call.args[1]) == "[1, seq_len, 384]":
-        matches.append(call.args[1])
+    matches.append(call.args[1])
 
-assert len(matches) == 1, f"STOP: Expected one context reshape, found {len(matches)}"
-
+assert len(matches) == 1, f"STOP: CLS reshape count = {len(matches)}"
 shape = matches[0]
-lines = code.splitlines(keepends=True)
-start = sum(len(x) for x in lines[:shape.lineno-1]) + shape.col_offset
-end = sum(len(x) for x in lines[:shape.end_lineno-1]) + shape.end_col_offset
 
-updated = code[:start] + "[2, seq_len, 384]" + code[end:]
-ast.parse(updated)
+if ast.unparse(shape) == "[2, 384]":
+    print("CLS BATCH-2 FIX: ALREADY INSTALLED")
+else:
+    assert ast.unparse(shape) == "[1, 384]", \
+        f"STOP: Unexpected CLS shape: {ast.unparse(shape)}"
 
-graph_code = graph.read_text()
-old = "from nlp_bert_in_graph_batch2_qkvfix import"
-new = "from nlp_bert_in_graph_batch2_contextfix import"
+    lines = code.splitlines(keepends=True)
+    start = sum(map(len, lines[:shape.lineno - 1])) + shape.col_offset
+    end = sum(map(len, lines[:shape.end_lineno - 1])) + shape.end_col_offset
 
-assert graph_code.count(old) == 1, "STOP: Graph import differs"
-graph_code = graph_code.replace(old, new, 1)
-ast.parse(graph_code)
+    updated = code[:start] + "[2, 384]" + code[end:]
+    compile(updated, str(p), "exec")
 
-for p, content in ((dst, updated), (newgraph, graph_code)):
-    if p.exists():
-        assert p.read_text() == content, f"STOP: Existing file differs: {p}"
-        print("VERIFIED:", p.name)
-    else:
-        p.write_text(content)
-        print("CREATED:", p.name)
+    backup = p.with_name(p.name + ".before_clsfix.bak")
+    assert not backup.exists(), "STOP: Existing backup requires review"
+    backup.write_bytes(p.read_bytes())
+    p.write_text(updated)
+    print("CLS BATCH-2 FIX: INSTALLED")
 
-print("BERT CONTEXT RESHAPE: [1,seq_len,384] -> [2,seq_len,384]")
+print("CLS SHAPE: [1,384] -> [2,384]")
 print("PYTHON SYNTAX: PASS")
 print("ORIGINAL DS CODE: UNCHANGED")
 print("WORKING NATIVE RELEASE: UNCHANGED")
 PY
 
-echo "=== REAL BATCH-2 GRAPH REBUILD ==="
+echo "=== RETRY TRUE BATCH-2 GRAPH ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -77,8 +69,10 @@ timeout 120s podman --root /application1/podman/storage \
   -w /workspace \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -B - <<'PY'
-import sys
 import traceback
+import sys
+
+print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
 
 try:
     from max.driver import CPU
@@ -87,14 +81,12 @@ try:
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
-    print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
     graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
         DeviceRef.from_device(CPU())
     )
 
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
-    print("GRAPH INPUT COUNT:", len(graph.inputs))
-
+    print("INPUT COUNT:", len(graph.inputs))
     for i, item in enumerate(graph.inputs):
         print("INPUT", i, "SHAPE:", item.type.shape)
 

@@ -4,79 +4,64 @@ from pathlib import Path
 import ast
 
 dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-src = dev / "nlp_bert_in_graph_batch2_fix.py"
-graph = dev / "grecbase_fusion_full_head_72_max_batch2_bertfix.py"
-dst = dev / "nlp_bert_in_graph_batch2_qkvfix.py"
-newgraph = dev / "grecbase_fusion_full_head_72_max_batch2_bertqkvfix.py"
+src = dev / "nlp_bert_in_graph_batch2_qkvfix.py"
+graph = dev / "grecbase_fusion_full_head_72_max_batch2_bertqkvfix.py"
 
-assert src.is_file() and graph.is_file(), "STOP: Known source missing"
+dst = dev / "nlp_bert_in_graph_batch2_contextfix.py"
+newgraph = dev / "grecbase_fusion_full_head_72_max_batch2_bertcontextfix.py"
+
+assert src.is_file() and graph.is_file(), "STOP: Previous verified files missing"
 
 code = src.read_text()
 tree = ast.parse(code)
-lines = code.splitlines(keepends=True)
-edits = []
-fixed = []
+matches = []
 
 for n in ast.walk(tree):
-    if not isinstance(n, ast.Call) or len(n.args) < 2:
+    if not isinstance(n, ast.Assign):
         continue
-    if not isinstance(n.func, ast.Attribute):
+    if not any(isinstance(t, ast.Name) and t.id == "context" for t in n.targets):
         continue
-    if not (isinstance(n.func.value, ast.Name)
-            and n.func.value.id == "ops"
-            and n.func.attr == "reshape"):
+    call = n.value
+    if not isinstance(call, ast.Call) or len(call.args) < 2:
         continue
-
-    value, shape = n.args[:2]
-    if not isinstance(value, ast.Name) or value.id not in ("q", "k", "v"):
+    if not isinstance(call.func, ast.Attribute) or call.func.attr != "reshape":
         continue
-    if not isinstance(shape, ast.List) or len(shape.elts) != 4:
-        continue
+    if ast.unparse(call.args[1]) == "[1, seq_len, 384]":
+        matches.append(call.args[1])
 
-    parts = shape.elts
-    if not (
-        isinstance(parts[0], ast.Constant) and parts[0].value == 1
-        and isinstance(parts[1], ast.Name) and parts[1].id == "seq_len"
-        and isinstance(parts[2], ast.Constant) and parts[2].value == 12
-        and isinstance(parts[3], ast.Constant) and parts[3].value == 32
-    ):
-        continue
+assert len(matches) == 1, f"STOP: Expected one context reshape, found {len(matches)}"
 
-    start = sum(map(len, lines[:shape.lineno-1])) + shape.col_offset
-    end = sum(map(len, lines[:shape.end_lineno-1])) + shape.end_col_offset
-    edits.append((start, end, "[2, seq_len, 12, 32]"))
-    fixed.append((value.id, n.lineno))
+shape = matches[0]
+lines = code.splitlines(keepends=True)
+start = sum(len(x) for x in lines[:shape.lineno-1]) + shape.col_offset
+end = sum(len(x) for x in lines[:shape.end_lineno-1]) + shape.end_col_offset
 
-assert sum(name == "q" for name, _ in fixed) == 1, \
-    f"STOP: Expected exactly one Q reshape: {fixed}"
-
-updated = code
-for start, end, replacement in sorted(edits, reverse=True):
-    updated = updated[:start] + replacement + updated[end:]
-
+updated = code[:start] + "[2, seq_len, 384]" + code[end:]
 ast.parse(updated)
 
 graph_code = graph.read_text()
-old = "from nlp_bert_in_graph_batch2_fix import "
-new = "from nlp_bert_in_graph_batch2_qkvfix import "
-assert graph_code.count(old) == 1, "STOP: BERT graph import differs"
+old = "from nlp_bert_in_graph_batch2_qkvfix import"
+new = "from nlp_bert_in_graph_batch2_contextfix import"
+
+assert graph_code.count(old) == 1, "STOP: Graph import differs"
 graph_code = graph_code.replace(old, new, 1)
 ast.parse(graph_code)
 
-for path, content in ((dst, updated), (newgraph, graph_code)):
-    if path.exists():
-        assert path.read_text() == content, f"STOP: Existing candidate differs: {path}"
-        print("VERIFIED:", path.name)
+for p, content in ((dst, updated), (newgraph, graph_code)):
+    if p.exists():
+        assert p.read_text() == content, f"STOP: Existing file differs: {p}"
+        print("VERIFIED:", p.name)
     else:
-        path.write_text(content)
-        print("CREATED:", path.name)
+        p.write_text(content)
+        print("CREATED:", p.name)
 
-print("BERT ATTENTION FIXES:", fixed)
+print("BERT CONTEXT RESHAPE: [1,seq_len,384] -> [2,seq_len,384]")
 print("PYTHON SYNTAX: PASS")
-print("ORIGINAL DS AND WORKING RELEASE: UNCHANGED")
+print("ORIGINAL DS CODE: UNCHANGED")
+print("WORKING NATIVE RELEASE: UNCHANGED")
 PY
 
-echo "=== REBUILD REAL BATCH-2 GRAPH ==="
+echo "=== REAL BATCH-2 GRAPH REBUILD ==="
 
 timeout 120s podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -92,24 +77,23 @@ timeout 120s podman --root /application1/podman/storage \
   -w /workspace \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local -B - <<'PY'
-import traceback
 import sys
+import traceback
 
 try:
     from max.driver import CPU
     from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max_batch2_bertqkvfix import (
+    from grecbase_fusion_full_head_72_max_batch2_bertcontextfix import (
         build_grecbase_fusion_graph_order_correct_batch2_shapes
     )
 
     print("REAL BATCH-2 GRAPH BUILD: START", flush=True)
-
     graph = build_grecbase_fusion_graph_order_correct_batch2_shapes(
         DeviceRef.from_device(CPU())
     )
 
     print("BATCH-2 GRAPH CONSTRUCTION: PASS")
-    print("INPUT COUNT:", len(graph.inputs))
+    print("GRAPH INPUT COUNT:", len(graph.inputs))
 
     for i, item in enumerate(graph.inputs):
         print("INPUT", i, "SHAPE:", item.type.shape)
@@ -119,7 +103,7 @@ except Exception:
     traceback.print_exc()
     sys.exit(1)
 
-print("REAL BATCH-2 EXECUTION: NOT YET PERFORMED")
+print("REAL BATCH-2 INFERENCE: NOT YET PERFORMED")
 print("ORIGINAL DS CODE: UNCHANGED")
 print("WORKING NATIVE RELEASE: UNCHANGED")
 PY

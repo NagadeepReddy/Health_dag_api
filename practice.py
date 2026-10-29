@@ -1,98 +1,130 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && python3 -S -B - <<'PY'
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && bash <<'SH'
+set -u
+
+DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
+CAND=/application1/cta_max_true_batch_dev_20261028/batch2_candidate
+BACKEND="$DEV/real_max_batch2_backend.py"
+LOG="$DEV/real_max_batch2_validation.log"
+
+test -s "$BACKEND" || { echo "STOP: Backend missing"; exit 1; }
+test -d "$CAND" || { echo "STOP: Batch-2 candidate missing"; exit 1; }
+test -s artifacts/v1.168-max/cta_max/real_sanity_model_in.pt || {
+  echo "STOP: Real model input missing"; exit 1;
+}
+test ! -e "$LOG" || { echo "STOP: Preserve existing log"; exit 1; }
+
+# Correct an undefined device reference only if needed.
+python3 -S -B - <<'PY'
 from pathlib import Path
 import ast
 
-dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-src = dev / "run_distinct_batch2_live_max_inference.py"
-dst = dev / "real_max_batch2_backend.py"
+p = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py")
+s = p.read_text()
 
-assert src.is_file(), f"STOP: Missing {src}"
+if (
+    "build_grecbase_fusion_graph_order_correct(device_ref)" in s
+    and "device_ref = DeviceRef.from_device(device)" not in s
+):
+    anchor = "    device = CPU()\n"
+    assert s.count(anchor) == 1, "STOP: Device setup differs"
+    assert "from max.graph import DeviceRef" in s, "STOP: DeviceRef import missing"
 
-original = src.read_text()
-tree = ast.parse(original)
-fn = next(
-    n for n in tree.body
-    if isinstance(n, ast.FunctionDef) and n.name == "infer_max_live"
-)
-
-assert [a.arg for a in fn.args.args] == ["model_in"]
-assert not dst.exists(), f"STOP: Already exists: {dst}"
-
-second_path = next(
-    n for n in fn.body
-    if isinstance(n, ast.Assign)
-    and any(
-        isinstance(t, ast.Name) and t.id == "second_path"
-        for t in n.targets
+    updated = s.replace(
+        anchor,
+        anchor + "    device_ref = DeviceRef.from_device(device)\n"
     )
-)
+    ast.parse(updated)
 
-second_arrays = next(
-    n for n in fn.body
-    if isinstance(n, ast.Assign)
-    and any(
-        isinstance(t, ast.Tuple)
-        and [x.id for x in t.elts] == ["labels2", "arrays2"]
-        for t in n.targets
-        if isinstance(t, ast.Tuple)
-        and all(isinstance(x, ast.Name) for x in t.elts)
-    )
-)
+    backup = p.with_suffix(".py.before_device_fix.bak")
+    assert not backup.exists(), "STOP: Existing backup"
+    backup.write_bytes(p.read_bytes())
+    p.write_text(updated)
+    print("DEV DEVICE REFERENCE: CORRECTED")
+else:
+    print("DEV DEVICE REFERENCE: NO CHANGE")
 
-assert second_path.lineno < second_arrays.lineno
-assert "CTA_SECOND_MODEL_INPUT" in original
-assert "build_real_inputs(model_in=second_model_in)" in original
-
-lines = original.splitlines(keepends=True)
-
-remove = set(range(second_path.lineno, second_arrays.lineno))
-
-for n in ast.walk(fn):
-    if isinstance(n, ast.Assert):
-        segment = ast.get_source_segment(original, n) or ""
-        if "different" in segment and "Inputs are identical" in segment:
-            remove.update(range(n.lineno, n.end_lineno + 1))
-
-result = []
-for i, line in enumerate(lines, 1):
-    if i in remove:
-        continue
-
-    if i == fn.lineno:
-        assert line.strip() == "def infer_max_live(model_in):"
-        line = line.replace(
-            "def infer_max_live(model_in):",
-            "def infer_max_batch(model_in, second_model_in):"
-        )
-
-    result.append(line)
-
-updated = "".join(result)
-parsed = ast.parse(updated)
-
-new_fn = next(
-    n for n in parsed.body
-    if isinstance(n, ast.FunctionDef) and n.name == "infer_max_batch"
-)
-
-assert [a.arg for a in new_fn.args.args] == [
-    "model_in", "second_model_in"
-]
-assert "model.execute(*runtime_inputs)" in updated
-assert "pack_two_requests(arrays, arrays2)" in updated
-
-dst.write_text(updated)
-
-print("REAL MAX BATCH-2 BACKEND: CREATED")
-print("INTERFACE: infer_max_batch(model_in, second_model_in)")
-print("TWO IN-MEMORY INPUTS: SUPPORTED IN CODE")
-print("ONE MAX MODEL.EXECUTE: PRESERVED")
-print("DUPLICATE INPUTS: ALLOWED")
-print("PYTHON SYNTAX: PASS")
-print("FILE:", dst)
-print("REAL RUNTIME VALIDATION: PENDING")
-print("ORIGINAL RUNNER: UNCHANGED")
-print("WORKING NATIVE RELEASE: UNCHANGED")
-print("ORIGINAL DS CODE: UNCHANGED")
-print("MAX STARTUP: NOT PERFORMED")
+ast.parse(p.read_text())
+print("BACKEND PYTHON SYNTAX: PASS")
 PY
+
+RC=$?
+if [ "$RC" -ne 0 ]; then exit "$RC"; fi
+
+echo "=== EXECUTING TWO REAL CTA MODEL INPUTS THROUGH MAX ==="
+
+timeout -k 15s 420s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --network none \
+  --memory 12g --cpus 4 --pids-limit 256 \
+  --tmpfs /tmp:rw,size=512m \
+  -e HOME=/tmp \
+  -e XDG_CACHE_HOME=/tmp \
+  -e PYTHONUNBUFFERED=1 \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONPATH="/batch2:/workspace/artifacts/v1.168-max:$CAND" \
+  -v "$PWD:/workspace:ro" \
+  -v "$DEV:/batch2:ro" \
+  -v "$CAND:$CAND:ro" \
+  -w /workspace \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u -B - > "$LOG" 2>&1 <<'PY'
+import numpy as np
+import torch
+from real_max_batch2_backend import infer_max_batch
+
+source = "/workspace/artifacts/v1.168-max/cta_max/real_sanity_model_in.pt"
+
+print("REAL CTA BATCH-2: START", flush=True)
+
+first = torch.load(source, map_location="cpu", weights_only=True)
+second = torch.load(source, map_location="cpu", weights_only=True)
+
+assert isinstance(first, dict)
+assert isinstance(second, dict)
+
+result = np.asarray(
+    infer_max_batch(first, second),
+    dtype=np.float32
+)
+
+print("MAX OUTPUT SHAPE:", result.shape, flush=True)
+
+assert result.shape == (2, 2048), "Unexpected MAX batch output"
+assert np.isfinite(result).all(), "Non-finite MAX output"
+
+print("BATCH OUTPUT SHAPE: PASS", flush=True)
+print("BOTH OUTPUTS FINITE: PASS", flush=True)
+print(
+    "DUPLICATE INPUT OUTPUT PARITY:",
+    "PASS" if np.allclose(result[0], result[1], atol=1e-5) else "FAIL",
+    flush=True
+)
+
+assert np.allclose(result[0], result[1], atol=1e-5)
+
+print("REAL MAX BATCH-2 EXECUTION: PASS", flush=True)
+PY
+
+RC=$?
+
+echo "=== REAL MAX BATCH-2 RESULTS ==="
+echo "EXIT CODE: $RC"
+echo "LOG: $LOG"
+tail -70 "$LOG"
+
+if [ "$RC" -ne 0 ]; then
+  echo "REAL MAX BACKEND: NOT VALIDATED"
+  exit "$RC"
+fi
+
+grep -q 'REAL MAX BATCH-2 EXECUTION: PASS' "$LOG" || {
+  echo "STOP: Success marker missing"
+  exit 1
+}
+
+echo "REAL MAX BATCH-2: VALIDATED"
+echo "DS CODE: UNCHANGED"
+echo "WORKING NATIVE RELEASE: UNCHANGED"
+SH

@@ -1,7 +1,14 @@
-BASE=/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension
+PID=$(ss -H -ltnp '( sport = :8766 )' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 
-echo "=== HTTP RESPONSE QUEUE HANDLING ==="
-sed -n '1,165p' "$BASE/cta_http_pipeline.py"
+if [ -z "$PID" ]; then
+  echo "STOP: Optimized server not running"
+else
+  Q="/proc/$PID/root/opt/venv/lib/python3.12/site-packages/max/serve/scheduler/queues.py"
 
-echo "=== ROUTER TIMEOUT AND RESPONSE HANDLING ==="
-grep -nE -C 4 'timeout|wait_for|504|response_queue|request_id' "$BASE/cta_router.py"
+  if [ -f "$Q" ]; then
+    echo "=== MAX RESPONSE QUEUE IMPLEMENTATION ==="
+    sed -n '125,265p' "$Q"
+  else
+    echo "STOP: MAX queue source unavailable"
+  fi
+fi

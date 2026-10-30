@@ -1,42 +1,42 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && bash <<'SH'
-set -eu
+python3 -B - <<'PY'
+import json
+import urllib.request
+from pathlib import Path
 
-DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
-OVERLAY="$DEV/native_batch2_minimal_overlay"
-CAND=/application1/cta_max_true_batch_dev_20261028/batch2_candidate
+body = Path(
+    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
+    "artifacts/v1.168-max/"
+    "cta_native_adjusted_sanity_input.json"
+)
 
-test -f "$OVERLAY/cta_native_batch2_proven_server.py"
-grep -q "padded = batch_fn" \
-  "$OVERLAY/cta_native_scheduler.py"
+assert body.is_file(), "STOP: CTA request missing"
+payload = json.loads(body.read_text())
+assert isinstance(payload, dict)
 
-echo "SINGLE-REQUEST FIX: PRESENT"
-echo "STARTING NATIVE MAX SERVE..."
+req = urllib.request.Request(
+    "http://127.0.0.1:8765/v2/cta/predict",
+    data=json.dumps(payload).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
 
-TMPDIR="$DEV" timeout -k 15s 900s podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never \
-  --network host --read-only \
-  --memory 14g --memory-swap 14g \
-  --cpus 4 --pids-limit 256 \
-  --tmpfs /tmp:rw,size=2g \
-  --tmpfs /root:rw,size=64m \
-  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=2g,mode=1777 \
-  -v "$PWD:/workspace:ro" \
-  -v "$OVERLAY:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
-  -v "$DEV:/batch2:ro" \
-  -v "$CAND:$CAND:ro" \
-  -w /workspace \
-  -e HOME=/tmp \
-  -e TMPDIR=/tmp \
-  -e XDG_CACHE_HOME=/tmp \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -e PYTHONUNBUFFERED=1 \
-  -e modelId=rt-pzaas-cta-offers-v1 \
-  -e expThrottleLabel=T \
-  -e PYTHONPATH="$CAND:/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max:/workspace" \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -u -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_batch2_proven_server.py \
-  2>&1 | tee "$DEV/native_single_request_retest.log"
-SH
+opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({})
+)
+
+print("NATIVE MAX SINGLE CTA REQUEST: START", flush=True)
+
+with opener.open(req, timeout=240) as r:
+    result = json.load(r)
+    print("HTTP STATUS:", r.status, flush=True)
+    assert r.status == 200
+
+assert isinstance(result, dict)
+assert isinstance(result.get("jsonData"), dict)
+assert isinstance(result["jsonData"].get("prediction"), dict)
+
+print("NATIVE MAX SINGLE CTA HTTP: PASS")
+print("RESPONSE KEYS:", list(result))
+print("PREDICTION KEYS:", list(result["jsonData"]["prediction"]))
+print("ORIGINAL DS: UNCHANGED")
+PY

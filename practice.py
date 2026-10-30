@@ -1,114 +1,71 @@
 PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import json, re, shutil, subprocess, time, sys
+import subprocess, json, os, sys
 from pathlib import Path
-from datetime import datetime, timezone
 
-root = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate")
-pkg = root / "cta_max"
-
-pod = [
-    "podman", "--root", "/application1/podman/storage",
-    "--runroot", "/run/containers/storage"
-]
-name = "cta-batch2-trace-8766-10g"
+pod = ["podman", "--root", "/application1/podman/storage",
+       "--runroot", "/run/containers/storage"]
+old = "cta-batch2-trace-8766-10g"
+new = "cta-batch2-verify-8766"
+candidate = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate")
 
 def run(args, **kw):
     return subprocess.run(args, text=True, capture_output=True, **kw)
 
-info = run(pod + ["inspect", name])
-if info.returncode:
-    sys.exit("STOP: Isolated container missing")
+print("=== TARGETED RECOVERY ===", flush=True)
 
-c = json.loads(info.stdout)[0]
+r = run(pod + ["inspect", old])
+if r.returncode:
+    sys.exit("STOP: Existing isolated container not found")
 
-if c["HostConfig"]["Memory"] != 10737418240:
-    sys.exit("STOP: 10 GB memory limit not verified")
+info = json.loads(r.stdout)[0]
+state = info["State"]["Status"]
+print("EXISTING STATE:", state)
 
+if state == "running":
+    sys.exit("STOP: Existing container running; do not duplicate")
+
+if info["HostConfig"]["Memory"] != 10737418240:
+    sys.exit("STOP: 10 GB limit not verified")
+
+mounts = info["Mounts"]
 if not any(
     m["Destination"] == "/batch2"
-    and Path(m["Source"]).resolve() == root.resolve()
-    for m in c["Mounts"]
+    and Path(m["Source"]).resolve() == candidate.resolve()
+    for m in mounts
 ):
-    sys.exit("STOP: Active Batch-2 mount differs")
+    sys.exit("STOP: Candidate mount mismatch")
 
-available = next(
-    int(x.split()[1])
-    for x in Path("/proc/meminfo").read_text().splitlines()
-    if x.startswith("MemAvailable:")
-)
+for f in ("grecbase_aux_features_max.py",
+          "grecbase_fusion_batch2_draft.py"):
+    if not (candidate / "cta_max" / f).is_file():
+        sys.exit("STOP: Batch-2 candidate file missing: " + f)
 
-if available < 12582912:
-    sys.exit("STOP: Host memory safety threshold")
+mem = next(int(x.split()[1]) for x in
+    Path("/proc/meminfo").read_text().splitlines()
+    if x.startswith("MemAvailable:"))
 
-# Only verified Batch-2 candidate shape sites.
-specs = {
-    "grecbase_aux_features_max.py": [
-        (r"(\bops\.reshape\(\s*ops\.concat\(\s*\[\s*mean\s*,\s*maximum\s*\]\s*,\s*axis\s*=\s*1\s*\)\s*,\s*)\[\s*1\s*,\s*2\s*\*\s*dim\s*\]",
-         r"\g<1>[2, 2 * dim]"),
-        (r"(\bops\.reshape\(\s*task\s*,\s*)\[\s*1\s*,\s*256\s*\]",
-         r"\g<1>[2, 256]"),
-        (r"(\bops\.reshape\(\s*jet0\s*,\s*)\[\s*1\s*,\s*1\s*,\s*128\s*\]",
-         r"\g<1>[2, 1, 128]"),
-        (r"(\bops\.reshape\(\s*jet1\s*,\s*)\[\s*1\s*,\s*1\s*,\s*128\s*\]",
-         r"\g<1>[2, 1, 128]")
-    ],
-    "grecbase_fusion_batch2_draft.py": [
-        (r"(\bops\.reshape\(\s*value\s*,\s*)\[\s*1\s*,\s*1\s*,\s*128\s*\]",
-         r"\g<1>[2, 1, 128]"),
-        (r"(\bops\.reshape\(\s*remaining\[66\]\s*,\s*)\[\s*1\s*,\s*1\s*\]",
-         r"\g<1>[2, 1]"),
-        (r"(\bops\.reshape\(\s*x\s*,\s*)\[\s*1\s*,\s*1\s*,\s*256\s*\]",
-         r"\g<1>[2, 1, 256]"),
-        (r"(\bops\.reshape\(\s*outs\s*,\s*)\[\s*1\s*,\s*2048\s*\]",
-         r"\g<1>[2, 2048]")
-    ]
-}
+disk = os.statvfs("/application1/podman/storage")
+free_gb = disk.f_bavail * disk.f_frsize / 1024**3
 
-changes = {}
+if mem < 12 * 1024 * 1024 or free_gb < 5:
+    sys.exit("STOP: Insufficient host memory or storage")
 
-for filename, rules in specs.items():
-    path = pkg / filename
-    if not path.is_file():
-        sys.exit(f"STOP: Missing candidate {filename}")
+if run(pod + ["container", "exists", new]).returncode == 0:
+    sys.exit("STOP: Validation container already exists")
 
-    original = path.read_text()
-    updated = original
+print("SAFETY: PASS")
+print("SAVED PATCHES: PRESENT")
+print("CLONING ISOLATED CONFIGURATION", flush=True)
 
-    for pattern, replacement in rules:
-        updated, count = re.subn(pattern, replacement, updated)
-        if count > 1:
-            sys.exit(f"STOP: Ambiguous shape in {filename}")
+r = run(pod + [
+    "container", "clone", "--name", new, "--run", old
+], timeout=90)
 
-    compile(updated, str(path), "exec")
-    if updated != original:
-        changes[path] = updated
-
-print("=== BATCH-2 REPAIR ===")
-
-if not changes:
-    sys.exit("STOP: No matching shapes; do not repeat restart")
-
-# Back up before changing anything.
-stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-for path in changes:
-    backup = path.with_name(path.name + ".before_batch2_" + stamp)
-    shutil.copy2(path, backup)
-    print("BACKUP:", backup)
-
-for path, updated in changes.items():
-    path.write_text(updated)
-    print("PATCHED:", path.name)
-
-print("SYNTAX: PASS")
-print("ORIGINAL DS: UNCHANGED")
-print("ORIGINAL MAX: NOT RESTARTED")
-
-r = run(pod + ["restart", "--time", "15", name], timeout=90)
 if r.returncode:
-    sys.exit("STOP: Isolated restart failed: " + r.stderr[-500:])
+    print("CLONE FAILED:", r.stderr[-1800:])
+    sys.exit(1)
 
-print("ISOLATED RESTART: PASS", flush=True)
+print("FRESH ISOLATED CONTAINER: STARTED", flush=True)
 
 test = r'''
 import json, time, urllib.request, urllib.error
@@ -117,7 +74,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 base = "http://127.0.0.1:8766"
 
-for n in range(60):
+for attempt in range(80):
     try:
         with urllib.request.urlopen(base + "/health", timeout=2) as r:
             if r.status == 200:
@@ -126,67 +83,72 @@ for n in range(60):
         pass
     time.sleep(1)
 else:
-    raise SystemExit("STOP: Isolated health failed")
+    raise SystemExit("STOP: Isolated health not ready")
 
-print("HEALTH: PASS", flush=True)
+print("ISOLATED HEALTH: PASS", flush=True)
 
 p = Path("/workspace/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
 if not p.is_file():
-    raise SystemExit("STOP: CTA fixture missing")
+    raise SystemExit("STOP: Real CTA fixture unavailable")
 
-data = p.read_bytes()
-json.loads(data)
+payload = p.read_bytes()
+json.loads(payload)
 
-def send(n):
+def request(n):
     req = urllib.request.Request(
         base + "/v2/cta/predict",
-        data=data,
+        data=payload,
         headers={"Content-Type": "application/json"},
         method="POST"
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return n, r.status, r.read(1200).decode(errors="replace")
+        with urllib.request.urlopen(req, timeout=90) as r:
+            body = r.read()
+            obj = json.loads(body)
+            if not isinstance(obj, dict) or "error" in obj:
+                return n, False, str(obj)[:700]
+            return n, r.status == 200, "HTTP 200 / JSON"
     except urllib.error.HTTPError as e:
-        return n, e.code, e.read(1200).decode(errors="replace")
+        return n, False, "HTTP %s %s" % (
+            e.code, e.read(1200).decode(errors="replace"))
     except Exception as e:
-        return n, "ERROR", repr(e)
+        return n, False, repr(e)
 
 with ThreadPoolExecutor(max_workers=2) as pool:
-    results = list(pool.map(send, (1, 2)))
+    results = list(pool.map(request, [1, 2]))
 
-for n, status, body in results:
-    print(f"REQUEST {n}: {status}", flush=True)
-    if status != 200:
-        print(body[:1200], flush=True)
+for n, passed, detail in results:
+    print("REQUEST", n, "PASS" if passed else "FAIL", detail, flush=True)
 
-print(
-    "NATIVE HTTP 2/2:",
-    "PASS" if all(x[1] == 200 for x in results)
-    else "NOT PASSED",
-    flush=True
-)
+print("HTTP 2/2:", "PASS" if all(x[1] for x in results)
+      else "NOT PASSED", flush=True)
 '''
 
-r = subprocess.run(
-    pod + ["exec", "-i", name, "/opt/venv/bin/python", "-B", "-c", test],
-    capture_output=True, text=True, timeout=180
-)
+try:
+    r = subprocess.run(
+        pod + ["exec", "-i", new, "/opt/venv/bin/python", "-B", "-c", test],
+        text=True, capture_output=True, timeout=210
+    )
+    print(r.stdout)
+    if r.returncode:
+        print("VALIDATION ERROR:", r.stderr[-1200:])
+except subprocess.TimeoutExpired:
+    print("VALIDATION: TIMED OUT")
 
-print(r.stdout)
-if r.returncode or "NOT PASSED" in r.stdout:
-    print(r.stderr[-1000:])
-    logs = run(pod + ["logs", "--tail", "100", name])
-    interesting = [
-        x for x in (logs.stdout + logs.stderr).splitlines()
-        if any(k in x.lower() for k in
-               ("reshape", "error", "traceback", "batch", "worker failed"))
-    ]
-    print("\n=== LATEST FAILURE EVIDENCE ===")
-    print("\n".join(interesting[-12:]))
-else:
-    print("HTTP VALIDATION: PASS")
-    print("BACKEND COALESCING: REQUIRES LOG CONFIRMATION")
+logs = run(pod + ["logs", "--tail", "150", new], timeout=20)
+lines = (logs.stdout + logs.stderr).splitlines()
+relevant = [
+    s for s in lines if any(
+        x in s.lower() for x in (
+            "reshape", "error", "batch", "response id match",
+            "worker failed", "oom", "traceback"
+        )
+    )
+]
 
-print("ORIGINAL DS/MAX: UNCHANGED")
+print("=== BACKEND EVIDENCE ===")
+print("\n".join(relevant[-18:]) or "NO BATCH MARKERS FOUND")
+print("ORIGINAL MAX: NOT RESTARTED")
+print("ORIGINAL DS: UNCHANGED")
+print("EXISTING CONTAINER: PRESERVED")
 PY

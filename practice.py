@@ -1,192 +1,176 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import ast, json, os, shutil, subprocess
+import ast, json, os, shutil, subprocess, tempfile
 
 root = Path("/application1")
-repo = root / "sajjna8/rt-pzaas-cta-offers-v1"
 dev = root / "CTA_MAX_TRUE_BATCH2_DEV_20261029"
 cand = root / "cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
-
 graph = cand / "grecbase_fusion_full_head_72_max.py"
-backend = dev / "real_max_batch2_backend.py"
-original = repo / "artifacts/v1.168-max/cta_max/grecbase_aux_branches_max.py"
-existing = cand / "grecbase_aux_branches_max.py"
-target = cand / "grecbase_aux_branches_batch2_verified.py"
+alias = cand / "grecbase_aux_branches_batch2_verified.py"
 
-source = existing if existing.is_file() else original
+P = ["podman", "--root", "/application1/podman/storage",
+     "--runroot", "/run/containers/storage"]
 
-for p in (graph, backend, source):
-    if not p.is_file() or p.is_symlink():
-        raise SystemExit("STOP: Required source unavailable: " + str(p))
+if not graph.is_file() or graph.is_symlink():
+    raise SystemExit("STOP: Isolated graph unavailable")
 
-# Correct only batch-leading dimensions in the isolated auxiliary helper.
-tree = ast.parse(source.read_text())
-
-class BatchAuxFix(ast.NodeTransformer):
-    def __init__(self):
-        self.inside = False
-        self.fixed = 0
-        self.already = 0
-
-    def visit_FunctionDef(self, node):
-        previous = self.inside
-        if node.name == "grecbase_aux_features":
-            self.inside = True
-        self.generic_visit(node)
-        self.inside = previous
-        return node
-
-    def visit_Call(self, node):
-        self.generic_visit(node)
-        if not self.inside:
-            return node
-
+# Find the already-corrected auxiliary implementation.
+def shapes_and_function(path):
+    tree = ast.parse(path.read_text())
+    names = {
+        n.name for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    shapes = set()
+    for n in ast.walk(tree):
         if not (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr == "reshape"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "ops"
-            and len(node.args) >= 2
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "reshape"
+            and len(n.args) >= 2
+            and isinstance(n.args[1], (ast.List, ast.Tuple))
         ):
-            return node
-
-        shape = node.args[1]
-        if not isinstance(shape, (ast.List, ast.Tuple)):
-            return node
-
-        if len(shape.elts) != 2:
-            return node
-
+            continue
         try:
-            dims = [ast.literal_eval(x) for x in shape.elts]
+            dims = tuple(ast.literal_eval(x) for x in n.args[1].elts)
+            shapes.add(dims)
         except (ValueError, TypeError, SyntaxError):
-            return node
+            pass
+    return names, shapes
 
-        if dims == [1, 256]:
-            shape.elts[0] = ast.Constant(value=2)
-            self.fixed += 1
-        elif dims == [2, 256]:
-            self.already += 1
+locations = [
+    cand / "grecbase_aux_branches_max.py",
+    dev / "grecbase_aux_branches_max.py",
+    dev / "cta_max/grecbase_aux_branches_max.py",
+]
 
-        return node
+locations += sorted(cand.glob("*aux*batch*.py"))
+locations += sorted(dev.glob("*aux*batch*.py"))
 
-fix = BatchAuxFix()
-tree = fix.visit(tree)
-ast.fix_missing_locations(tree)
+selected = None
+for p in dict.fromkeys(locations):
+    if not p.is_file() or p.is_symlink() or p == alias:
+        continue
+    names, shapes = shapes_and_function(p)
+    if (
+        "grecbase_aux_features" in names
+        and (2, 256) in shapes
+        and (2, 1, 128) in shapes
+    ):
+        selected = p
+        break
 
-if fix.fixed + fix.already == 0:
-    raise SystemExit("STOP: Expected auxiliary reshape not identified")
+if selected is None:
+    raise SystemExit(
+        "STOP: Previously corrected auxiliary implementation "
+        "not located in known development paths. No files changed."
+    )
 
-helper_code = ast.unparse(tree) + "\n"
-ast.parse(helper_code)
+print("REUSING CORRECTED AUXILIARY:", selected, flush=True)
 
-print("AUXILIARY RESHAPES CORRECTED:", fix.fixed)
-print("ALREADY BATCH-COMPATIBLE:", fix.already)
-
-# Redirect only the isolated graph's auxiliary import.
-graph_source = graph.read_text()
-graph_tree = ast.parse(graph_source)
-
-matches = [
-    n for n in ast.walk(graph_tree)
+# Verify the existing graph import before editing.
+source = graph.read_text()
+tree = ast.parse(source)
+imports = [
+    n for n in ast.walk(tree)
     if isinstance(n, ast.ImportFrom)
     and any(a.name == "grecbase_aux_features" for a in n.names)
 ]
 
-if len(matches) != 1:
-    raise SystemExit("STOP: Unexpected auxiliary import count")
+if len(imports) != 1:
+    raise SystemExit("STOP: Auxiliary import is not unique")
 
-node = matches[0]
+node = imports[0]
 old_module = "cta_max.grecbase_aux_branches_max"
 new_module = "cta_max.grecbase_aux_branches_batch2_verified"
 
 if node.module not in (old_module, new_module):
-    raise SystemExit("STOP: Unexpected auxiliary module")
+    raise SystemExit("STOP: Unexpected auxiliary import")
 
 if node.end_lineno != node.lineno:
-    raise SystemExit("STOP: Multiline import requires manual review")
+    raise SystemExit("STOP: Unexpected multiline import")
 
-lines = graph_source.splitlines(keepends=True)
+lines = source.splitlines(keepends=True)
 
 if node.module == old_module:
-    line = lines[node.lineno - 1]
-    if line.count(old_module) != 1:
-        raise SystemExit("STOP: Unexpected import statement")
-    lines[node.lineno - 1] = line.replace(old_module, new_module, 1)
+    i = node.lineno - 1
+    if lines[i].count(old_module) != 1:
+        raise SystemExit("STOP: Import statement differs")
+    lines[i] = lines[i].replace(old_module, new_module, 1)
 
-updated_graph = "".join(lines)
-ast.parse(updated_graph)
+updated = "".join(lines)
+ast.parse(updated)
 
-# Confirm adequate disk space and existing container.
-if shutil.disk_usage(cand).free < 20 * 1024 * 1024:
-    raise SystemExit("STOP: Low disk space")
+if alias.exists():
+    if alias.is_symlink() or alias.read_bytes() != selected.read_bytes():
+        raise SystemExit("STOP: Existing alias differs")
 
-P = [
-    "podman",
-    "--root", "/application1/podman/storage",
-    "--runroot", "/run/containers/storage"
-]
-
-ids = []
-
+# Reuse the already-running Batch-2 container.
+matches = []
 for cid in subprocess.check_output(P + ["ps", "-q"], text=True).split():
-    info = json.loads(
-        subprocess.check_output(P + ["inspect", cid], text=True)
-    )[0]
-
+    info = json.loads(subprocess.check_output(
+        P + ["inspect", cid], text=True))[0]
     if any(
         m.get("Source") == str(dev)
         and m.get("Destination") == "/batch2"
         for m in info.get("Mounts", [])
     ):
-        ids.append(cid)
+        matches.append(cid)
 
-if len(ids) != 1:
-    raise SystemExit("STOP: Existing Batch-2 container unavailable")
+if len(matches) != 1:
+    raise SystemExit("STOP: Existing development container unavailable")
 
-# Stage new helper without overwriting previous corrections.
-if target.exists():
-    if target.is_symlink() or target.read_text() != helper_code:
-        raise SystemExit("STOP: Existing verified helper differs")
-else:
-    with target.open("x") as f:
-        f.write(helper_code)
-    print("ISOLATED AUXILIARY HELPER: INSTALLED")
+available = int(next(
+    line.split()[1]
+    for line in Path("/proc/meminfo").read_text().splitlines()
+    if line.startswith("MemAvailable:")
+)) // 1024
 
-if updated_graph != graph_source:
-    backup = graph.with_name(graph.name + ".before_aux_batch2_fix")
-    temp = graph.with_name(".aux_batch2_graph.tmp")
+print("AVAILABLE RAM MB:", available)
 
-    if backup.exists() or temp.exists():
-        raise SystemExit("STOP: Backup/temp conflict")
+if available < 10000 or shutil.disk_usage(cand).free < 20*1024*1024:
+    raise SystemExit("STOP: Resource safety gate failed")
 
+backup = graph.with_name(graph.name + ".before_verified_aux_reuse")
+changed = updated != source
+created_alias = False
+
+if changed and backup.exists():
+    raise SystemExit("STOP: Backup conflict")
+
+# Stage only isolated development changes.
+if not alias.exists():
+    shutil.copy2(selected, alias)
+    created_alias = True
+
+if changed:
     shutil.copy2(graph, backup)
-
+    fd, temp = tempfile.mkstemp(prefix=".aux_batch2_", dir=str(cand))
     try:
-        with temp.open("x") as f:
-            f.write(updated_graph)
+        with os.fdopen(fd, "w") as f:
+            f.write(updated)
         os.chmod(temp, graph.stat().st_mode)
         os.replace(temp, graph)
     finally:
-        if temp.exists():
-            temp.unlink()
+        if os.path.exists(temp):
+            os.unlink(temp)
 
-print("ISOLATED GRAPH IMPORT: CORRECTED")
-print("PYTHON SYNTAX: PASS")
+print("CORRECTED AUXILIARY IMPORT: STAGED", flush=True)
 
-# Build the COMPLETE graph without running trained inference.
-code = r'''
+# Validate actual imported helper and complete graph.
+code = '''
 import importlib.util, inspect
 from pathlib import Path
 from max.graph import DeviceRef
 
 p = Path("/batch2/real_max_batch2_backend.py")
-spec = importlib.util.spec_from_file_location("batch2_graph_check", p)
+spec = importlib.util.spec_from_file_location("cta_batch2_check", p)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-helper = mod._cta_module.grecbase_aux_features
-actual = Path(inspect.getsourcefile(helper)).resolve()
+actual = Path(
+    inspect.getsourcefile(mod._cta_module.grecbase_aux_features)
+).resolve()
 
 expected = Path(
     "/application1/cta_max_true_batch_dev_20261028/"
@@ -194,21 +178,18 @@ expected = Path(
     "grecbase_aux_branches_batch2_verified.py"
 ).resolve()
 
-assert actual == expected, (
-    "Wrong auxiliary source: " + str(actual)
-)
+print("ACTIVE AUXILIARY:", actual, flush=True)
+assert actual == expected
 
-print("CORRECTED AUXILIARY IMPORT: PASS", flush=True)
 print("BUILDING COMPLETE BATCH-2 GRAPH...", flush=True)
 
-graph = mod.build_grecbase_fusion_graph_order_correct(
+g = mod.build_grecbase_fusion_graph_order_correct(
     DeviceRef.CPU()
 )
 
-assert len(graph.inputs) == 72
-
-print("COMPLETE BATCH-2 GRAPH BUILD: PASS", flush=True)
-print("GRAPH INPUTS:", len(graph.inputs), flush=True)
+assert len(g.inputs) == 72
+print("COMPLETE BATCH-2 GRAPH: PASS", flush=True)
+print("GRAPH INPUTS: 72", flush=True)
 '''
 
 try:
@@ -218,20 +199,30 @@ try:
             "-e", "PYTHONDONTWRITEBYTECODE=1",
             "-e", "TMPDIR=/tmp",
             "-e", "PYTHONPATH=/batch2:/workspace/artifacts/v1.168-max",
-            ids[0], "/opt/venv/bin/python", "-B", "-"
+            matches[0], "/opt/venv/bin/python", "-B", "-"
         ],
-        input=code,
-        text=True,
+        input=code, text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=120
     )
+    print(r.stdout[-4500:])
+    passed = r.returncode == 0
+except subprocess.TimeoutExpired as e:
+    out = e.stdout or b""
+    if isinstance(out, bytes):
+        out = out.decode(errors="replace")
+    print(out[-2500:])
+    passed = False
 
-    print(r.stdout[-5000:])
-    print("GRAPH BUILD EXIT CODE:", r.returncode)
-
-except subprocess.TimeoutExpired:
-    print("STOP: Graph construction exceeded 120 seconds")
+if not passed:
+    if changed:
+        shutil.copy2(backup, graph)
+    if created_alias:
+        alias.unlink()
+    print("GRAPH CHECK FAILED — ISOLATED CHANGE ROLLED BACK")
+else:
+    print("CORRECTED AUXILIARY + COMPLETE GRAPH: PASS")
 
 print("ORIGINAL DS/MAX: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")

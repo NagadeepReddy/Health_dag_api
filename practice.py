@@ -1,13 +1,23 @@
-echo "=== HTTP HEALTH ==="
-curl --noproxy '*' -sS --max-time 5 \
-  -o /dev/null -w 'HTTP: %{http_code}\n' \
-  http://127.0.0.1:8765/health
+echo "=== ACTUAL LIVE MAX SERVER ==="
+ps -p 326785 -o pid,ppid,lstart,etime,cmd
 
-echo "=== PORT 8765 ==="
-ss -ltnp '( sport = :8765 )'
+echo "=== LIVE WORKERS ==="
+ps --ppid 326785 -o pid,ppid,stat,etime,cmd
 
-echo "=== NATIVE CONTAINER ==="
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  ps -a --filter name=cta-native-live \
-  --format 'table {{.Names}}\t{{.Status}}\t{{.ID}}'
+echo "=== LIVE CONTAINER IDENTITY ==="
+cat /proc/326785/cgroup
+
+echo "=== OPTIMIZED BACKEND MOUNT ==="
+LIVE=/proc/326785/root/batch2/real_max_batch2_backend.py
+DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py
+
+if [ -f "$LIVE" ]; then
+    sha256sum "$LIVE" "$DEV"
+    if cmp -s "$LIVE" "$DEV"; then
+        echo "OPTIMIZED BACKEND FILE: MOUNTED"
+    else
+        echo "LIVE BACKEND FILE: DIFFERENT"
+    fi
+else
+    echo "LIVE BACKEND MOUNT: NOT FOUND"
+fi

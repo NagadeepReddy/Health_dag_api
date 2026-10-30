@@ -1,96 +1,112 @@
 PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import ast
-import shutil
+import json, subprocess, urllib.request, time, concurrent.futures
 from pathlib import Path
 
-base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-target = base / "real_max_batch2_backend.py"
-candidate = Path(
-    "/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
+pod = ["podman", "--root", "/application1/podman/storage",
+       "--runroot", "/run/containers/storage"]
+name = "cta-batch2-trace-8766-10g"
+repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
+backend = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py")
+
+def run(args, timeout=45):
+    return subprocess.run(args, capture_output=True, text=True,
+                          timeout=timeout, check=True)
+
+def health(port):
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/health", timeout=5
+        ) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+print("=== SAFETY PRE-FLIGHT ===", flush=True)
+
+assert backend.is_file()
+assert "CTA_BATCH2_IMPORT_PRIORITY_FIX" in backend.read_text()
+assert health(8765), "STOP: Original MAX is not healthy"
+
+info = json.loads(run(pod + ["inspect", name]).stdout)[0]
+mounts = info["Mounts"]
+
+assert any(
+    Path(m["Source"]) == backend for m in mounts
+), "STOP: Fixed backend is not mounted in isolated container"
+
+limit = info["HostConfig"]["Memory"]
+assert 0 < limit <= 10 * 1024**3, "STOP: Unexpected memory limit"
+
+with open("/proc/meminfo") as f:
+    mem = next(
+        int(x.split()[1]) * 1024 for x in f
+        if x.startswith("MemAvailable:")
+    )
+
+assert mem >= 12 * 1024**3, "STOP: Insufficient available memory"
+
+fixtures = sorted(
+    p for p in (repo / "artifacts/v1.168-max").rglob("*.json")
+    if "sanity" in p.name.lower()
+    and "input" in p.name.lower()
+    and p.stat().st_size < 5 * 1024**2
 )
 
-contract = candidate / "run_batch2_contract.py"
-graph = candidate / "grecbase_fusion_full_head_72_max.py"
+assert fixtures, "STOP: Real sanity JSON fixture not found"
 
-for p in (target, contract, graph):
-    if not p.is_file():
-        raise SystemExit(f"STOP: Required file missing: {p}")
+payload = json.loads(fixtures[0].read_text())
+assert isinstance(payload, dict)
 
-source = target.read_text()
-marker = "# CTA_BATCH2_IMPORT_PRIORITY_FIX"
+print("ORIGINAL MAX: HEALTHY")
+print("FIXED BACKEND: MOUNTED")
+print("MEMORY: SAFE")
+print("REAL INPUT:", fixtures[0])
+print("ISOLATED RESTART: STARTING", flush=True)
 
-if marker in source:
-    print("IMPORT FIX: ALREADY PRESENT")
-else:
-    assert "run_batch2_contract" in source
-    assert "grecbase_fusion_full_head_72_max" in source
+run(pod + ["restart", "--time", "15", name], timeout=60)
 
-    bridge = '''
-# CTA_BATCH2_IMPORT_PRIORITY_FIX
-import sys as _cta_sys
-from pathlib import Path as _cta_Path
+ready = False
+for _ in range(60):
+    if health(8766):
+        ready = True
+        break
+    time.sleep(2)
 
-_cta_candidate = next((
-    p for p in (
-        _cta_Path("/batch2/cta_max"),
-        _cta_Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+assert ready, "STOP: Isolated MAX failed health check"
+
+print("ISOLATED HEALTH: PASS", flush=True)
+
+def predict(n):
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:8766/v2/cta/predict",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
     )
-    if (p / "run_batch2_contract.py").is_file()
-    and (p / "grecbase_fusion_full_head_72_max.py").is_file()
-), None)
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            obj = json.load(r)
+            prediction = obj.get("jsonData", {}).get("prediction", {})
+            valid = r.status == 200 and isinstance(
+                prediction.get("offerList"), list
+            )
+            return n, valid, r.status, len(prediction.get("offerList", []))
+    except Exception as e:
+        return n, False, type(e).__name__, str(e)[:160]
 
-if _cta_candidate is None:
-    raise ImportError("Corrected CTA batch-2 package unavailable")
+print("REAL NATIVE HTTP BATCH-2: START", flush=True)
 
-_cta_sys.path.insert(0, str(_cta_candidate.parent))
-import cta_max as _cta_pkg
+with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    results = list(pool.map(predict, [1, 2]))
 
-_cta_pkg.__path__ = [str(_cta_candidate)] + [
-    str(p) for p in _cta_pkg.__path__
-    if str(p) != str(_cta_candidate)
-]
-'''
+for n, passed, status, detail in results:
+    print(f"REQUEST {n}: {'PASS' if passed else 'FAIL'} | {status} | {detail}")
 
-    tree = ast.parse(source)
-    offset = 0
+print("HTTP RESULT:",
+      "PASS 2/2" if all(x[1] for x in results) else "NOT PASSED")
 
-    for node in tree.body:
-        if (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-            and offset == 0
-        ):
-            offset = node.end_lineno
-        elif (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "__future__"
-        ):
-            offset = node.end_lineno
-        else:
-            break
-
-    lines = source.splitlines(keepends=True)
-    updated = "".join(lines[:offset]) + bridge + "\n" + "".join(lines[offset:])
-
-    ast.parse(updated)
-
-    backup = target.with_suffix(".py.pre_import_fix.bak")
-    if backup.exists():
-        raise SystemExit("STOP: Backup already exists")
-
-    if shutil.disk_usage(target.parent).free < 10 * 1024 * 1024:
-        raise SystemExit("STOP: Insufficient disk space")
-
-    shutil.copy2(target, backup)
-    target.write_text(updated)
-
-    print("ISOLATED IMPORT FIX: INSTALLED")
-    print("BACKUP: PRESERVED")
-
-print("SYNTAX: PASS")
+print("ORIGINAL MAX:",
+      "UNCHANGED / HEALTHY" if health(8765) else "HEALTH CHECK FAILED")
 print("ORIGINAL DS: UNCHANGED")
-print("ORIGINAL MAX: UNCHANGED")
-print("CONTAINERS: NOT RESTARTED")
-print("NEXT: NATIVE BATCH-2 VALIDATION")
 PY

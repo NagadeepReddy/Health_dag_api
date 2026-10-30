@@ -1,73 +1,42 @@
-python3 -B - <<'PY'
-from pathlib import Path
-import ast
-import re
-import os
+cd /application1/sajjna8/rt-pzaas-cta-offers-v1 && bash <<'SH'
+set -eu
 
-base = Path(
-    "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
-    "native_batch2_minimal_overlay"
-)
-p = base / "cta_native_scheduler.py"
-adapter = base / "cta_worker_adapter.py"
+DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
+OVERLAY="$DEV/native_batch2_minimal_overlay"
+CAND=/application1/cta_max_true_batch_dev_20261028/batch2_candidate
 
-assert p.is_file() and not p.is_symlink(), \
-    "STOP: Development scheduler missing"
-assert adapter.is_file(), \
-    "STOP: Development batch adapter missing"
-assert "def predict_batch(" in adapter.read_text(), \
-    "STOP: Batch adapter method unavailable"
+test -f "$OVERLAY/cta_native_batch2_proven_server.py"
+grep -q "padded = batch_fn" \
+  "$OVERLAY/cta_native_scheduler.py"
 
-source = p.read_text()
+echo "SINGLE-REQUEST FIX: PRESENT"
+echo "STARTING NATIVE MAX SERVE..."
 
-pattern = (
-    r"(?m)^(?P<indent>[ \t]*)"
-    r"results = \[self\.adapter\.predict\(active\[0\]\.body\)\]"
-    r"[ \t]*$"
-)
-
-matches = list(re.finditer(pattern, source))
-assert len(matches) == 1, \
-    "STOP: Scheduler single-request branch differs"
-
-m = matches[0]
-indent = m.group("indent")
-
-lines = [
-    "batch_fn = getattr(self.adapter, 'predict_batch', None)",
-    "if not callable(batch_fn):",
-    "    raise RuntimeError('Real MAX batch backend unavailable')",
-    "padded = batch_fn([active[0].body, active[0].body])",
-    "if not isinstance(padded, (list, tuple)) or len(padded) != 2:",
-    "    raise RuntimeError('Invalid padded MAX batch response')",
-    "results = [padded[0]]",
-]
-
-replacement = "\n".join(indent + x for x in lines)
-updated = source[:m.start()] + replacement + source[m.end():]
-
-ast.parse(updated)
-
-backup = p.with_name(p.name + ".before_single_pad.bak")
-assert not backup.exists(), \
-    "STOP: Backup already exists"
-
-with backup.open("xb") as f:
-    f.write(source.encode())
-
-temp = p.with_name(p.name + ".single_pad.stage")
-with temp.open("x") as f:
-    f.write(updated)
-
-os.chmod(temp, p.stat().st_mode)
-os.replace(temp, p)
-
-assert p.read_text() == updated
-
-print("SINGLE-REQUEST BATCH-2 ADAPTER: STAGED")
-print("SYNTAX: PASS")
-print("BACKUP: CREATED")
-print("ORIGINAL DS: UNCHANGED")
-print("WORKING NATIVE RELEASE: UNCHANGED")
-print("LIVE HTTP RETEST: PENDING")
-PY
+TMPDIR="$DEV" timeout -k 15s 900s podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --network host --read-only \
+  --memory 14g --memory-swap 14g \
+  --cpus 4 --pids-limit 256 \
+  --tmpfs /tmp:rw,size=2g \
+  --tmpfs /root:rw,size=64m \
+  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=2g,mode=1777 \
+  -v "$PWD:/workspace:ro" \
+  -v "$OVERLAY:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
+  -v "$DEV:/batch2:ro" \
+  -v "$CAND:$CAND:ro" \
+  -w /workspace \
+  -e HOME=/tmp \
+  -e TMPDIR=/tmp \
+  -e XDG_CACHE_HOME=/tmp \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONUNBUFFERED=1 \
+  -e modelId=rt-pzaas-cta-offers-v1 \
+  -e expThrottleLabel=T \
+  -e PYTHONPATH="$CAND:/workspace/artifacts/v1.168/core-artifact:/workspace/artifacts/v1.168-max:/workspace" \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -u -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_batch2_proven_server.py \
+  2>&1 | tee "$DEV/native_single_request_retest.log"
+SH

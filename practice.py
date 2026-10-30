@@ -1,13 +1,42 @@
-POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+python3 - <<'PY'
+import ast
+from pathlib import Path
 
-PID=$(ss -H -ltnp '( sport = :8765 )' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
 
-[ -n "$PID" ] || { echo "STOP: Original server unavailable"; exit 1; }
+files = [
+    base / "native_batch2_cached_overlay/cta_worker_adapter.py",
+    base / "native_batch2_cached_overlay/cta_native_scheduler.py",
+    base / "real_max_batch2_backend.py",
+]
 
-CID=$(sed -nE 's/.*libpod-([0-9a-f]{64})\.scope.*/\1/p' "/proc/$PID/cgroup" | head -1)
+for path in files:
+    print(f"\n=== {path.name} ===", flush=True)
+    if not path.is_file():
+        print("FILE NOT FOUND")
+        continue
 
-[ -n "$CID" ] || { echo "STOP: Container ID unavailable"; exit 1; }
+    lines = path.read_text().splitlines()
+    tree = ast.parse("\n".join(lines))
+    selected = set()
 
-"${POD[@]}" logs --tail 800 "$CID" 2>&1 |
-grep -E 'CTA TRUE MAX BATCH-2|CTA WORKER RESPONSE IDS|CTA RESPONSE QUEUE SEND|CTA RESPONSE SOCKET RECEIVED|CTA RESPONSE ID MATCH|CTA HTTP QUEUE ITEM|CTA RESPONSE WORKER LOOP|CTA HTTP FANOUT|POST /v2/cta/predict|Traceback|ERROR' |
-tail -65
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in ("predict_batch", "infer_max_batch"):
+                start = max(node.lineno, node.end_lineno - 55)
+                selected.update(range(start, node.end_lineno + 1))
+
+    for i, line in enumerate(lines, 1):
+        if any(x in line for x in (
+            "TWO JSON RESPONSES PRODUCED",
+            "response_queue.put_nowait",
+            "CTA WORKER RESPONSE IDS",
+        )):
+            selected.update(range(max(1, i-5), min(len(lines), i+12)+1))
+
+    for i in sorted(selected):
+        print(f"{i}: {lines[i-1]}")
+
+print("\nTARGETED RETURN-PATH INSPECTION: COMPLETE")
+print("NO FILES MODIFIED")
+PY

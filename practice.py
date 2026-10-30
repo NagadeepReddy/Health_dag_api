@@ -1,12 +1,8 @@
-echo "=== NATIVE MAX HEALTH ==="
-curl --noproxy '*' -sS --max-time 5 \
-  -o /dev/null -w 'HTTP: %{http_code}\n' \
-  http://127.0.0.1:8765/health
+echo "=== NATIVE MAX SERVER ==="
+ps -p 326785 -o pid,ppid,etime,%cpu,%mem,rss,stat,wchan:25,cmd
 
-echo "=== CONTAINER STATUS ==="
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  ps -a --format 'table {{.ID}}\t{{.Status}}\t{{.Names}}'
+echo "=== WORKER PROCESSES ==="
+ps --ppid 326785 -o pid,ppid,etime,%cpu,%mem,rss,stat,wchan:25,cmd
 
-echo "=== PORT 8765 ==="
-ss -ltnp '( sport = :8765 )'
+echo "=== SERVER THREADS ==="
+ps -T -p 326785 -o pid,tid,%cpu,stat,wchan:25,comm | head -30

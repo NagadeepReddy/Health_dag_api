@@ -1,11 +1,14 @@
 
-for d in \
-  /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max \
-  /application1/cta_max_true_batch_dev_20261028/batch2_candidate \
-  /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
-do
-  if [ -d "$d" ]; then
-    find "$d" -type f -name 'fn_norm1_g.npy' -print 2>/dev/null
-  fi
-done
-echo "WEIGHT LOCATION CHECK COMPLETE"
+POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+CID=cta-batch2-trace-8766-10g
+
+"${POD[@]}" inspect --format 'STATE={{.State.Status}} WORKDIR={{.Config.WorkingDir}} MOUNTS={{range .Mounts}}{{.Destination}}={{.Source}} {{end}}' "$CID"
+
+"${POD[@]}" exec "$CID" /opt/venv/bin/python -B -c '
+import os
+p="artifacts/v1.168-max/cta_max/sequence_weights/fn_norm1_g.npy"
+print("CONTAINER CWD:", os.getcwd())
+print("SERVER CWD:", os.readlink("/proc/1/cwd"))
+print("RELATIVE WEIGHT:", os.path.isfile(p))
+print("WORKSPACE WEIGHT:", os.path.isfile("/workspace/"+p))
+'

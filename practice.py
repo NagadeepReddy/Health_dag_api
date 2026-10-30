@@ -1,18 +1,15 @@
-echo "=== ACTUAL LIVE CONTAINER ID ==="
+POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
 CID=$(sed -nE 's/.*libpod-([0-9a-f]{64})\.scope.*/\1/p' /proc/326785/cgroup | head -1)
 
-echo "CONTAINER ID: $CID"
-
 if [ -n "$CID" ]; then
-  podman --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    inspect --format \
-    'NAME={{.Name}}
-IMAGE={{.ImageName}}
+  "${POD[@]}" inspect --format \
+  'NAME={{.Name}}
 AUTO_REMOVE={{.HostConfig.AutoRemove}}
-MOUNTS={{json .Mounts}}' "$CID" \
-    || echo "CONTAINER USES A DIFFERENT PODMAN STORE"
+NETWORK={{.HostConfig.NetworkMode}}
+ENTRYPOINT={{json .Config.Entrypoint}}
+COMMAND={{json .Config.Cmd}}
+CREATE_COMMAND={{json .Config.CreateCommand}}' "$CID"
 else
-  echo "CONTAINER ID NOT FOUND IN CGROUP"
+  echo "STOP: Live container not found"
 fi

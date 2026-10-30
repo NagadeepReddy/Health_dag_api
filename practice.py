@@ -1,48 +1,52 @@
-python3 - <<'PY'
+python3 -B - <<'PY'
+import subprocess, json
+
+P = ["podman", "--root", "/application1/podman/storage",
+     "--runroot", "/run/containers/storage"]
+
+ids = subprocess.check_output(P + ["ps", "-q"], text=True).split()
+target = "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029"
+
+matches = []
+for cid in ids:
+    info = json.loads(subprocess.check_output(
+        P + ["inspect", cid], text=True))[0]
+    for m in info.get("Mounts", []):
+        if m.get("Source") == target and m.get("Destination") == "/batch2":
+            matches.append(cid)
+
+if len(matches) != 1:
+    raise SystemExit(
+        f"STOP: Expected one existing Batch-2 container; found {len(matches)}"
+    )
+
+code = '''
+import importlib.util
 from pathlib import Path
-import ast
-import shutil
 
-p = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py")
-helper = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max/run_batch2_contract.py")
+p = Path("/batch2/real_max_batch2_backend.py")
+spec = importlib.util.spec_from_file_location("cta_batch2_test", p)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 
-if not p.is_file() or not helper.is_file():
-    raise SystemExit("STOP: Backend or original batch helper not found")
+assert callable(module.infer_max_batch)
+print("BATCH-2 BACKEND IMPORT: PASS")
 
-src = p.read_text()
-old = "from cta_max.run_batch2_contract import pack_two_requests"
+candidate = Path(
+    "/application1/cta_max_true_batch_dev_20261028/"
+    "batch2_candidate/cta_max/run_batch2_contract.py"
+)
+print("BATCH HELPER VISIBLE:", candidate.is_file())
+'''
 
-if src.count(old) != 1:
-    raise SystemExit("STOP: Expected import not found exactly once")
+r = subprocess.run(
+    P + ["exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1",
+         matches[0], "/opt/venv/bin/python", "-B", "-"],
+    input=code, text=True, capture_output=True, timeout=30
+)
 
-lines = src.splitlines(keepends=True)
-index = next(i for i, line in enumerate(lines) if old in line)
-indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
-
-replacement = [
-    "import importlib.util as _batch_import_util",
-    "_batch_helper = _cta_candidate / 'run_batch2_contract.py'",
-    "_batch_spec = _batch_import_util.spec_from_file_location(",
-    "    'cta_max.run_batch2_contract', _batch_helper)",
-    "_batch_module = _batch_import_util.module_from_spec(_batch_spec)",
-    "_batch_spec.loader.exec_module(_batch_module)",
-    "pack_two_requests = _batch_module.pack_two_requests",
-]
-
-new_line = "".join(indent + line + "\n" for line in replacement)
-updated = "".join(lines[:index] + [new_line] + lines[index+1:])
-
-ast.parse(updated)
-
-backup = p.with_name(p.name + ".before_helper_import_fix")
-if backup.exists():
-    raise SystemExit("STOP: Backup already exists; no changes made")
-
-shutil.copy2(p, backup)
-p.write_text(updated)
-
-print("BATCH-2 HELPER IMPORT FIX: INSTALLED")
-print("SYNTAX: PASS")
-print("ORIGINAL DS/MAX: UNCHANGED")
+print(r.stdout)
+print(r.stderr[-2000:])
+print("EXIT CODE:", r.returncode)
 print("CONTAINERS RESTARTED: NONE")
 PY

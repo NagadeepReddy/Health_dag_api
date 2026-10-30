@@ -1,193 +1,212 @@
 python3 -B <<'PY'
-import json, subprocess, shutil, socket, time, re
+import subprocess, json, os, re, time, shutil, socket
 from pathlib import Path
+from datetime import datetime, timezone
 
 POD = ["podman", "--root", "/application1/podman/storage",
        "--runroot", "/run/containers/storage"]
-OLD = "cta-batch2-importfirst-8766-10g"
-NEW = "cta-batch2-contractfix-8766-10g"
-ROOT = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate")
-FIXTURE = "/workspace/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
+NAME = "cta-batch2-importfirst-8766-10g"
+BASE = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate")
+HELPER = BASE / "cta_max/grecbase_aux_features_max.py"
 
-def cmd(args, data=None, timeout=90):
+def run(args, data=None, timeout=90):
     return subprocess.run(args, input=data, text=True,
                           capture_output=True, timeout=timeout)
 
 def stop(msg):
-    raise SystemExit("STOP: " + msg)
+    raise SystemExit("STOP: " + str(msg))
 
-def inspect(name):
-    r = cmd(POD + ["inspect", name])
+def inspect():
+    r = run(POD + ["inspect", NAME])
     if r.returncode:
-        stop("Cannot inspect " + name + ": " + r.stderr[-600:])
+        stop(r.stderr[-1000:])
     return json.loads(r.stdout)[0]
 
-print("=== FINAL BATCH-2 CONTROLLED RECOVERY ===", flush=True)
+print("=== EXISTING ISOLATED CONTAINER RECOVERY ===", flush=True)
 
-old = inspect(OLD)
-mounts = [m for m in old["Mounts"] if m["Destination"] == "/batch2"]
+c = inspect()
+state = c["State"]["Status"]
 
-if len(mounts) != 1 or Path(mounts[0]["Source"]).resolve() != ROOT.resolve():
-    stop("Verified Batch-2 mount differs")
+print("CURRENT STATE:", state)
 
-if old["HostConfig"]["Memory"] != 10737418240:
-    stop("Expected 10 GiB memory limit missing")
+if state not in ("running", "exited", "created", "configured"):
+    stop("Unexpected container state")
 
-graph = ROOT / "cta_max/grecbase_fusion_batch2_draft.py"
-helper = ROOT / "cta_max/grecbase_aux_features_max.py"
+if int(c["HostConfig"]["Memory"]) != 10737418240:
+    stop("Expected 10 GiB memory configuration missing")
 
-if not graph.is_file() or not helper.is_file():
-    stop("Active Batch-2 files missing")
+mounts = [m for m in c["Mounts"] if m["Destination"] == "/batch2"]
+if len(mounts) != 1 or Path(mounts[0]["Source"]).resolve() != BASE.resolve():
+    stop("Active Batch-2 mount mismatch")
 
-if not re.search(r"return\s+task\s*,\s*ihq\s*,\s*jet\b", helper.read_text()):
-    stop("Previously patched helper contract not present")
+if not HELPER.is_file():
+    stop("Known isolated helper missing")
 
-if not re.search(r"task\s*,\s*ihq\s*,\s*jet\s*=\s*grecbase_aux_features\s*\(", graph.read_text()):
-    stop("Three-output caller not confirmed")
+if not re.search(r"return\s+task\s*,\s*ihq\s*,\s*jet\b",
+                 HELPER.read_text()):
+    stop("Previously patched helper contract missing")
 
 if shutil.disk_usage("/application1").free < 15 * 1024**3:
-    stop("Less than 15 GiB application storage free")
+    stop("Insufficient application1 disk capacity")
 
-mem = next(int(x.split()[1]) for x in
-           Path("/proc/meminfo").read_text().splitlines()
-           if x.startswith("MemAvailable:"))
+meminfo = Path("/proc/meminfo").read_text()
+available = int(re.search(r"MemAvailable:\s+(\d+)", meminfo).group(1)) * 1024
 
-if mem < 12 * 1024**2:
-    stop("Less than 12 GiB host available memory")
+if available < 12 * 1024**3:
+    stop("Insufficient available host memory")
 
-print("GRAPH + CONTRACT: PASS")
-print("DISK + MEMORY: PASS", flush=True)
+print("10 GiB LIMIT: VERIFIED")
+print("RETURN CONTRACT: VERIFIED")
+print("HOST SAFETY: PASS", flush=True)
 
-name = OLD
-state = old["State"]["Status"]
+since = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-if state == "running":
-    print("OLD CONTAINER RUNNING; REUSING IT")
-else:
+if state != "running":
     try:
-        with socket.create_connection(("127.0.0.1", 8766), 1):
-            stop("Port 8766 already occupied")
-    except (ConnectionRefusedError, TimeoutError, OSError):
+        with socket.create_connection(("127.0.0.1", 8766), timeout=2):
+            stop("Port 8766 occupied by another process")
+    except OSError:
         pass
 
-    r = cmd(POD + ["container", "exists", NEW])
-    if r.returncode == 0:
-        stop("Recovery clone already exists; no duplicate")
+    print("\n=== RESTORE PODMAN ROOTFS MOUNT ===", flush=True)
 
-    print("CREATING FRESH ISOLATED CLONE", flush=True)
-    r = cmd(POD + ["container", "clone", "--name=" + NEW, OLD], timeout=100)
+    r = run(POD + ["mount", NAME], timeout=60)
     if r.returncode:
-        stop("Clone failed: " + r.stderr[-1400:])
+        stop("Podman mount failed: " + r.stderr[-1800:])
 
-    new = inspect(NEW)
-    if new["HostConfig"]["Memory"] != 10737418240:
-        stop("Clone memory configuration differs")
+    rootfs = Path(r.stdout.strip().splitlines()[-1])
 
-    if not any(m["Destination"] == "/batch2"
-               and Path(m["Source"]).resolve() == ROOT.resolve()
-               for m in new["Mounts"]):
-        stop("Clone mount configuration differs")
+    if not str(rootfs).startswith("/application1/podman/storage/overlay/"):
+        stop("Unexpected rootfs path: " + str(rootfs))
 
-    r = cmd(POD + ["start", NEW], timeout=100)
+    if not rootfs.is_mount():
+        stop("Overlay mount not active: " + str(rootfs))
+
+    if not (rootfs / "etc/passwd").is_file():
+        stop("Mounted rootfs still missing etc/passwd")
+
+    print("OVERLAY ROOTFS: MOUNTED")
+    print("ETC/PASSWD: VERIFIED", flush=True)
+
+    r = run(POD + ["start", NAME], timeout=100)
     if r.returncode:
-        stop("Fresh container start failed: " + r.stderr[-1500:])
+        stop("Podman start failed: " + r.stderr[-2000:])
 
-    name = NEW
-    print("FRESH CONTAINER STARTED:", name, flush=True)
+    print("EXISTING CONTAINER: STARTED", flush=True)
+else:
+    print("EXISTING CONTAINER: ALREADY RUNNING")
 
 health = '''
 import urllib.request
 with urllib.request.urlopen(
- "http://127.0.0.1:8766/health", timeout=3
+    "http://127.0.0.1:8766/health", timeout=3
 ) as r:
- assert r.status == 200
+    assert r.status == 200
 '''
 
 healthy = False
-for i in range(50):
-    state = inspect(name)["State"]
-    if state["Status"] != "running" or state.get("OOMKilled"):
+for _ in range(40):
+    current = inspect()["State"]
+    if current["Status"] != "running" or current.get("OOMKilled"):
         break
-    r = cmd(POD + ["exec", name, "/opt/venv/bin/python",
-                   "-B", "-c", health], timeout=12)
+    r = run(POD + ["exec", NAME,
+                   "/opt/venv/bin/python", "-B", "-c", health],
+            timeout=12)
     if r.returncode == 0:
         healthy = True
         break
     time.sleep(3)
 
 if not healthy:
-    r = cmd(POD + ["logs", "--tail", "65", name])
-    print((r.stdout + r.stderr)[-4500:])
-    stop("Native server failed health check")
+    r = run(POD + ["logs", "--tail", "50", NAME])
+    print((r.stdout + r.stderr)[-3500:])
+    stop("Native health not ready")
 
-print("NATIVE HEALTH: PASS", flush=True)
+print("NATIVE MAX HEALTH: PASS", flush=True)
+
+print("\n=== TWO REAL NATIVE CTA REQUESTS ===", flush=True)
 
 test = r'''
 import json, urllib.request, urllib.error
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-fixture = Path("/workspace/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
-assert fixture.is_file(), "Verified real CTA fixture missing"
+fixture = Path(
+    "/workspace/artifacts/v1.168-max/"
+    "cta_native_adjusted_sanity_input.json"
+)
+assert fixture.is_file(), "Real CTA fixture missing"
 
 payload = json.loads(fixture.read_text())
-body = json.dumps(payload).encode()
-url = "http://127.0.0.1:8766/v2/cta/predict"
+data = json.dumps(payload).encode()
 
 def send(n):
-    request = urllib.request.Request(
-        url, data=body, method="POST",
-        headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        "http://127.0.0.1:8766/v2/cta/predict",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"}
+    )
     try:
-        with urllib.request.urlopen(request, timeout=110) as r:
+        with urllib.request.urlopen(req, timeout=90) as r:
             status = r.status
-            result = json.loads(r.read())
+            body = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        return n, e.code, False, e.read().decode(errors="replace")[:1000]
+        return n, e.code, False, e.read().decode(errors="replace")[:900]
     except Exception as e:
         return n, 0, False, str(e)
 
-    offers = result.get("jsonData", {}).get(
-        "prediction", {}).get("offerList")
-    return n, status, isinstance(offers, list), str(result)[:500]
+    obj = body.get("jsonData", {}) if isinstance(body, dict) else {}
+    prediction = obj.get("prediction", {}) if isinstance(obj, dict) else {}
+    offers = prediction.get("offerList") if isinstance(prediction, dict) else None
+
+    return n, status, isinstance(offers, list), str(body)[:500]
 
 with ThreadPoolExecutor(max_workers=2) as pool:
     results = list(pool.map(send, (1, 2)))
 
 for n, status, valid, detail in results:
-    print(f"REQUEST {n}: HTTP {status}, VALID_CTA={valid}")
+    print(f"REQUEST {n}: HTTP={status} VALID_CTA={valid}")
     if status != 200 or not valid:
         print("ERROR:", detail)
 
-print("REAL NATIVE HTTP 2/2:",
-      "PASS" if all(s == 200 and v for _, s, v, _ in results)
-      else "FAIL")
+passed = all(status == 200 and valid
+             for _, status, valid, _ in results)
+
+print("NATIVE HTTP 2/2:", "PASS" if passed else "FAIL")
 '''
 
-print("\n=== REAL NATIVE BATCH-2 REQUESTS ===", flush=True)
-r = cmd(POD + ["exec", "-i", name,
-               "/opt/venv/bin/python", "-B", "-"],
-        data=test, timeout=240)
+r = run(POD + ["exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1",
+               NAME, "/opt/venv/bin/python", "-B", "-"],
+        data=test, timeout=210)
 
 print(r.stdout)
 if r.returncode:
-    print(r.stderr[-1800:])
+    print(r.stderr[-1500:])
 
-print("\n=== EXECUTION EVIDENCE ===")
-r = cmd(POD + ["logs", "--tail", "350", name])
+http_pass = "NATIVE HTTP 2/2: PASS" in r.stdout
+
+print("\n=== NEW MAX EXECUTION LOGS ===")
+r = run(POD + ["logs", "--since", since, "--tail", "350", NAME])
 lines = (r.stdout + r.stderr).splitlines()
 
-for line in lines:
-    if re.search(
-        r"BATCH.?2|batch.size|ENGINE_ID|EXECUT|Worker failed|Traceback|OOM",
-        line, re.I
-    ):
-        print(line[:420])
+relevant = [
+    line for line in lines
+    if re.search(r"batch.?2|batch.size|ENGINE_ID|EXECUT|"
+                 r"Worker failed|TensorValue|Traceback|OOM", line, re.I)
+]
 
-print("\n=== FINAL ===")
-print("CONTAINER:", name)
-print("STATE:", inspect(name)["State"]["Status"])
+for line in relevant[-35:]:
+    print(line[:450])
+
+print("\n=== FINAL RESULT ===")
+c = inspect()
+print("CONTAINER:", NAME)
+print("STATE:", c["State"]["Status"])
+print("OOM:", c["State"].get("OOMKilled"))
+print("NATIVE HTTP:", "PASS" if http_pass else "FAIL")
+print("ACTUAL BATCH COALESCING: REQUIRES EXPLICIT EXECUTION PROOF")
 print("ORIGINAL DS/MAX: UNCHANGED")
-print("OLD CONTAINER: PRESERVED")
-print("COALESCING: NEEDS ONE-BATCH EXECUTION PROOF")
+print("NEW CLONES: NONE")
+print("SOURCE FILES MODIFIED: NONE")
 PY

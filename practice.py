@@ -1,53 +1,67 @@
-python3 - <<'PY'
-import subprocess, json, re
+PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import ast
+from pathlib import Path
 
-pod = [
-    "podman", "--root", "/application1/podman/storage",
-    "--runroot", "/run/containers/storage"
+base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+candidate = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+
+targets = [
+    base / "real_max_batch2_backend.py",
+    candidate / "run_batch2_contract.py",
+    candidate / "run/batch2_contract.py",
 ]
-name = "cta-batch2-trace-8766-v2"
 
-def run(args):
-    return subprocess.run(
-        args, capture_output=True, text=True, timeout=30
-    )
+if candidate.is_dir():
+    targets += list(candidate.rglob("*.py"))
 
-r = run(pod + ["inspect", name])
-assert r.returncode == 0, r.stderr
-info = json.loads(r.stdout)[0]
-s = info["State"]
+seen = set()
+names = {
+    "infer_max_batch",
+    "build_grecbase_fusion_graph_order_correct",
+    "pack_two_requests",
+}
 
-print("=== CURRENT WORKER STATE ===")
-for key in ("Status", "Pid", "ExitCode", "OOMKilled", "StartedAt"):
-    print(key, ":", s.get(key))
+print("=== TARGETED GRAPH CONTRACT CHECK ===")
 
-r = run(pod + [
-    "stats", "--no-stream", "--format",
-    "{{.CPUPerc}} CPU | {{.MemUsage}} MEMORY",
-    name
-])
-print("RESOURCE USAGE:", r.stdout.strip() or r.stderr.strip())
+for path in targets:
+    if path in seen or not path.is_file():
+        continue
+    seen.add(path)
 
-r = run(pod + [
-    "logs", "--timestamps", "--tail", "700", name
-])
+    if path.stat().st_size > 500000:
+        continue
 
-lines = (r.stdout + r.stderr).splitlines()
-pattern = re.compile(
-    r"CTA |BATCH|COMPIL|GRAPH|CHECKPOINT|EXECUTING|"
-    r"MODEL LOAD|worker process|ERROR|Traceback|"
-    r"ModuleNotFoundError|ImportError|OOM|Killed|"
-    r"predict HTTP|Exception|START|STOP",
-    re.I
-)
-matches = [x for x in lines if pattern.search(x)]
+    src = path.read_text(errors="replace")
+    lines = src.splitlines()
 
-print("\n=== WORKER EXECUTION STAGES ===")
-print("\n".join(matches[-65:]) or "NO STAGE LOGS")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        continue
 
-print("\n=== MOST RECENT RAW LOGS ===")
-print("\n".join(lines[-25:]) or "NO LOG OUTPUT")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in names:
+                print(f"\n=== {path} :: {node.name} ===")
+                start = node.lineno
+                end = min(node.end_lineno, start + 150)
+                for i in range(start, end + 1):
+                    print(f"{i}: {lines[i-1]}")
 
-print("\nNO FILES MODIFIED")
-print("ORIGINAL MAX: UNCHANGED")
+    if path.name == "real_max_batch2_backend.py":
+        print("\n=== GRAPH LOAD / CACHE REFERENCES ===")
+        for i, line in enumerate(lines):
+            if any(x in line for x in (
+                "session.load(",
+                "_max_model",
+                "graph.inputs",
+                "runtime_inputs",
+                "build_grecbase_fusion_graph_order_correct"
+            )):
+                print(f"{i+1}: {line}")
+
+print("\nGRAPH INSPECTION: COMPLETE")
+print("FILES MODIFIED: 0")
+print("CONTAINERS RESTARTED: 0")
+print("ORIGINAL DS: UNCHANGED")
 PY

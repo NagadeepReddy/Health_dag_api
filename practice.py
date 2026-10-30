@@ -1,29 +1,41 @@
 python3 - <<'PY'
 from pathlib import Path
-import subprocess
 
-root = Path("/application1")
-name = "fn_normal_8.npy"
+base = Path("/application1")
+files = [
+    base / "cta_max_true_batch_dev_20261028/batch2_candidate/cta_max/parallel_transformer_block_2layers.py",
+    base / "CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py",
+    base / "CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_after_cache_fix.log",
+]
 
-print("CHECKING REQUIRED MAX WEIGHT")
-found = []
+for p in files:
+    print(f"\n===== {p.name} =====")
+    if not p.is_file():
+        print("FILE NOT FOUND")
+        continue
 
-for base in [
-    root / "sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max",
-    root / "CTA_MAX_TRUE_BATCH2_DEV_20261029",
-    root / "cta_max_true_batch_dev_20261028",
-]:
-    if base.is_dir():
-        found.extend(base.rglob(name))
+    lines = p.read_text(errors="replace").splitlines()
 
-for p in found:
-    print("FOUND:", p)
+    if p.suffix == ".log":
+        selected = [
+            (i, line) for i, line in enumerate(lines, 1)
+            if any(k in line.lower() for k in
+                   ("pass", "weight", "batch", "error"))
+        ]
+        for i, line in selected[-25:]:
+            print(f"{i}: {line[:250]}")
+    else:
+        for i, line in enumerate(lines, 1):
+            if any(k in line.lower() for k in
+                   ("weight", "np.load", "sequence_weights",
+                    "model.execute", "sys.path", "chdir")):
+                start = max(0, i - 3)
+                end = min(len(lines), i + 3)
+                print(f"\nLINES {start+1}-{end}")
+                for j in range(start, end):
+                    print(f"{j+1}: {lines[j]}")
 
-if not found:
-    print("BLOCKED: Required weight not found in known workspaces")
-else:
-    print("WEIGHT FOUND: PASS")
-
+print("\nREAD-ONLY INSPECTION COMPLETE")
 print("ORIGINAL DS/MAX: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")
 PY

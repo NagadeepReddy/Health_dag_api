@@ -1,261 +1,267 @@
-python3 -B - <<'PY'
+podman --root /application1/podman/storage --runroot /run/containers/storage exec -i -w /workspace -e PYTHONDONTWRITEBYTECODE=1 a176e284b50a /opt/venv/bin/python -B - <<'PY'
+import os, sys, time, signal, socket, json, hashlib
+import subprocess, threading, collections
+import urllib.request, urllib.error
 from pathlib import Path
-import ast
-import os
-import subprocess
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor
 
-root = Path(
-    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
-    "artifacts/v1.168-max"
-)
-pkg = (
-    root / "cta_native_batch2_release_candidate/"
-    "maxserve_cta_extension"
-)
+mx = Path("/workspace/artifacts/v1.168-max")
+stage = mx / "cta_native_batch2_release_candidate"
+core = Path("/workspace/artifacts/v1.168/core-artifact")
+model = mx / "cta_native_model"
+port = 18767
 
-launcher = pkg / "cta_native_launcher.py"
-worker = pkg / "cta_spawn_worker.py"
-helper = pkg / "cta_queue_compat.py"
-
-for p in (launcher, worker):
-    if not p.is_file() or p.is_symlink():
-        raise SystemExit("STOP: Required isolated file unavailable")
-
-marker = "CTA_BATCH2_QUEUE_COMPAT_V1"
-
-helper_code = '''"""Isolated CTA native MAX queue compatibility."""
-from typing import Any
-
-def install():
-    from max.serve.scheduler.queues import SchedulerZmqConfigs
-    from max.serve.queue.zmq_queue import ZmqConfig
-    from max.serve.config import Settings, APIType
-
-    if not getattr(
-        SchedulerZmqConfigs,
-        "_cta_batch2_queue_compat",
-        False,
-    ):
-        original_queue_init = SchedulerZmqConfigs.__init__
-
-        def cta_queue_init(self, pipeline_task):
-            original_queue_init(self, pipeline_task)
-            self.request_queue_config = ZmqConfig[Any](Any)
-
-        SchedulerZmqConfigs.__init__ = cta_queue_init
-        SchedulerZmqConfigs._cta_batch2_queue_compat = True
-
-    if not getattr(Settings, "_cta_batch2_kserve", False):
-        original_settings_init = Settings.__init__
-
-        def cta_settings_init(self, *args, **kwargs):
-            original_settings_init(self, *args, **kwargs)
-            if APIType.KSERVE not in self.api_types:
-                self.api_types = list(self.api_types) + [
-                    APIType.KSERVE
-                ]
-
-        Settings.__init__ = cta_settings_init
-        Settings._cta_batch2_kserve = True
-
-    return True
-'''
-
-launcher_text = launcher.read_text()
-worker_text = worker.read_text()
-
-ast.parse(helper_code)
-launcher_tree = ast.parse(launcher_text)
-worker_tree = ast.parse(worker_text)
-
-main = [
-    n for n in launcher_tree.body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "main"
+fixtures = [
+    mx / "test-results/cta_max_tiles_smoketest_input.json",
+    mx / "cta_native_adjusted_sanity_input.json"
 ]
 
-if len(main) != 1 or not main[0].body:
-    raise SystemExit("STOP: Unexpected launcher structure")
-
-launcher_install = (
-    "    # CTA_BATCH2_QUEUE_COMPAT_V1\n"
-    "    from maxserve_cta_extension.cta_queue_compat "
-    "import install as _cta_queue_install\n"
-    "    _cta_queue_install()\n"
-)
-
-worker_install = (
-    "# CTA_BATCH2_QUEUE_COMPAT_V1\n"
-    "from maxserve_cta_extension.cta_queue_compat "
-    "import install as _cta_queue_install\n"
-    "_cta_queue_install()\n"
-)
-
-def stage_launcher(source):
-    if marker in source:
-        return source
-
-    lines = source.splitlines(keepends=True)
-    index = main[0].body[0].lineno - 1
-    lines.insert(index, launcher_install)
-    return "".join(lines)
-
-def stage_worker(source):
-    if marker in source:
-        return source
-
-    lines = source.splitlines(keepends=True)
-    index = 0
-
-    body = worker_tree.body
-
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        index = body[0].end_lineno
-
-    for node in body:
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.module == "__future__"
-        ):
-            index = max(index, node.end_lineno)
-
-    lines.insert(index, "\n" + worker_install + "\n")
-    return "".join(lines)
-
-new_launcher = stage_launcher(launcher_text)
-new_worker = stage_worker(worker_text)
-
-for p, text in (
-    (launcher, new_launcher),
-    (worker, new_worker),
-    (helper, helper_code),
-):
-    ast.parse(text)
-    compile(text, str(p), "exec")
-
-if helper.exists():
-    if helper.is_symlink() or helper.read_text() != helper_code:
-        raise SystemExit("STOP: Existing helper differs")
-
-for p, text, original in (
-    (launcher, new_launcher, launcher_text),
-    (worker, new_worker, worker_text),
-):
-    if text == original:
-        continue
-
-    backup = p.with_name(p.name + ".pre_queue_compat.bak")
-    if backup.exists():
-        raise SystemExit("STOP: Existing backup " + str(backup))
-
-# All syntax/structure checks passed before writing.
-if not helper.exists():
-    with helper.open("x") as f:
-        f.write(helper_code)
-
-for p, text, original in (
-    (launcher, new_launcher, launcher_text),
-    (worker, new_worker, worker_text),
-):
-    if text == original:
-        print(p.name, "ALREADY PATCHED")
-        continue
-
-    backup = p.with_name(p.name + ".pre_queue_compat.bak")
-    temp = p.with_name(p.name + ".queue_compat.tmp")
-
-    with backup.open("x") as f:
-        f.write(original)
-
-    if temp.exists():
-        raise SystemExit("STOP: Temporary file already exists")
-
-    try:
-        with temp.open("x") as f:
-            f.write(text)
-        os.replace(temp, p)
-    finally:
-        if temp.exists():
-            temp.unlink()
-
-    print(p.name, "QUEUE COMPATIBILITY INSTALLED")
-
-for p in (launcher, worker, helper):
-    ast.parse(p.read_text())
-
-print("ISOLATED SOURCE SYNTAX: PASS")
-
-P = [
-    "podman",
-    "--root", "/application1/podman/storage",
-    "--runroot", "/run/containers/storage",
+required = [
+    core / "pipeline.py",
+    stage / "maxserve_cta_extension/cta_native_launcher.py",
+    stage / "maxserve_cta_extension/cta_queue_compat.py",
+    stage / "maxserve_cta_extension/cta_spawn_worker.py",
+    stage / "maxserve_cta_extension/cta_native_scheduler.py",
+    model / "config.json",
+    Path("/batch2/real_max_batch2_backend.py"),
+    *fixtures
 ]
 
-ids = subprocess.check_output(
-    P + ["ps", "-q"], text=True
-).split()
+for p in required:
+    if not p.is_file():
+        raise SystemExit("STOP: Missing " + str(p))
 
-matches = [x for x in ids if x.startswith("a176e284b50a")]
+def available_mb():
+    return int(next(
+        line.split()[1]
+        for line in Path("/proc/meminfo").read_text().splitlines()
+        if line.startswith("MemAvailable:")
+    )) // 1024
 
-if len(matches) != 1:
-    raise SystemExit("STOP: Existing development container unavailable")
+if available_mb() < 12000:
+    raise SystemExit("STOP: Insufficient memory")
 
-preflight = r'''
-from typing import Any
-from max.serve.scheduler.queues import SchedulerZmqConfigs
-from max.serve.config import Settings, APIType
-from maxserve_cta_extension.cta_queue_compat import install
+disk = os.statvfs("/workspace")
+if disk.f_bavail * disk.f_frsize < 20 * 1024**3:
+    raise SystemExit("STOP: Insufficient workspace storage")
 
-assert install()
-assert SchedulerZmqConfigs._cta_batch2_queue_compat
-assert APIType.KSERVE in Settings().api_types
+with socket.socket() as s:
+    if s.connect_ex(("127.0.0.1", port)) == 0:
+        raise SystemExit("STOP: Test port already occupied")
 
-from maxserve_cta_extension import cta_spawn_worker
+env = os.environ.copy()
+env.update({
+    "PYTHONPATH": f"{stage}:{core}:/batch2:{mx}",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+    "HOME": "/tmp",
+    "TMPDIR": "/tmp",
+    "XDG_CACHE_HOME": "/tmp/cta_batch2_cache",
+    "HF_HOME": "/tmp/cta_batch2_cache",
+    "TORCH_HOME": "/tmp/cta_batch2_cache",
+    "CUDA_VISIBLE_DEVICES": ""
+})
 
-assert SchedulerZmqConfigs._cta_batch2_queue_compat
+command = [
+    sys.executable, "-B", "-u", "-m",
+    "maxserve_cta_extension.cta_native_launcher",
+    "--port", str(port),
+    "--model-path", str(model),
+    "--devices", "cpu",
+    "--max-batch-size", "2"
+]
 
-print("REQUEST QUEUE COMPATIBILITY: PASS")
-print("KSERVE CONFIGURATION: PASS")
-print("SPAWN WORKER IMPORT: PASS")
-print("RESPONSE/CANCEL QUEUE LOGIC: UNCHANGED")
-'''
+server = None
+stop = threading.Event()
+logs = collections.deque(maxlen=1200)
+success = False
 
-environment = (
-    "/workspace/artifacts/v1.168-max/"
-    "cta_native_batch2_release_candidate:"
-    "/workspace/artifacts/v1.168/core-artifact:"
-    "/batch2:"
-    "/workspace/artifacts/v1.168-max"
-)
+try:
+    print("NATIVE BATCH-2 FINAL HTTP TEST: START", flush=True)
 
-result = subprocess.run(
-    P + [
-        "exec", "-i", "-w", "/workspace",
-        "-e", "PYTHONDONTWRITEBYTECODE=1",
-        "-e", "PYTHONPATH=" + environment,
-        matches[0],
-        "/opt/venv/bin/python", "-B", "-",
-    ],
-    input=preflight,
-    text=True,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    timeout=45,
-)
+    server = subprocess.Popen(
+        command,
+        cwd="/workspace",
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True
+    )
 
-print(result.stdout[-3500:])
-print("PREFLIGHT EXIT CODE:", result.returncode)
-print("ORIGINAL DS/MAX: UNCHANGED")
-print("WORKING NATIVE RELEASE: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
-print("MODEL EXECUTIONS: ZERO")
+    def capture():
+        for line in server.stdout:
+            logs.append(line.rstrip())
 
-if result.returncode:
+    threading.Thread(target=capture, daemon=True).start()
+
+    def guard():
+        while not stop.wait(2):
+            if server.poll() is not None:
+                return
+            if available_mb() < 5500:
+                logs.append("STOP: Memory reserve too low")
+                try:
+                    os.killpg(server.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                return
+
+    threading.Thread(target=guard, daemon=True).start()
+
+    deadline = time.monotonic() + 180
+    ready = False
+
+    while time.monotonic() < deadline:
+        if server.poll() is not None:
+            raise RuntimeError("Native server exited during startup")
+
+        with socket.socket() as s:
+            s.settimeout(1)
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                ready = True
+                break
+
+        time.sleep(2)
+
+    if not ready:
+        raise RuntimeError("Native HTTP listener unavailable")
+
+    print("NATIVE HTTP LISTENER: PASS", flush=True)
+
+    probe = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v2/cta/probe",
+        data=b"",
+        method="POST"
+    )
+
+    with urllib.request.urlopen(probe, timeout=20) as r:
+        assert r.status == 200
+
+    print("NATIVE CTA HTTP ROUTE: PASS", flush=True)
+
+    bodies = [json.loads(p.read_text()) for p in fixtures]
+    print(
+        "DISTINCT JSON REQUESTS:",
+        bodies[0] != bodies[1],
+        flush=True
+    )
+
+    barrier = threading.Barrier(2)
+
+    def send(i):
+        barrier.wait(timeout=15)
+        started = time.monotonic()
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v2/cta/predict",
+            data=json.dumps(bodies[i]).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=360) as r:
+                status = r.status
+                result = json.loads(r.read(4 * 1024 * 1024))
+        except urllib.error.HTTPError as e:
+            detail = e.read(1200).decode(errors="replace")
+            raise RuntimeError(f"HTTP {e.code}: {detail}")
+
+        if status != 200:
+            raise RuntimeError(f"Request {i+1}: HTTP {status}")
+
+        if not isinstance(result, dict) or "error" in result:
+            raise RuntimeError(f"Request {i+1}: Invalid response")
+
+        data = result.get("jsonData")
+        if not isinstance(data, dict) or "prediction" not in data:
+            raise RuntimeError(f"Request {i+1}: Missing CTA prediction")
+
+        elapsed = round(time.monotonic() - started, 2)
+
+        print(
+            f"CTA HTTP RESPONSE {i+1}: PASS "
+            f"({elapsed}s)",
+            flush=True
+        )
+
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(send, i) for i in range(2)]
+        responses = [f.result(timeout=380) for f in futures]
+
+    assert len(responses) == 2
+
+    print("TWO NATIVE CTA HTTP RESPONSES: PASS", flush=True)
+
+    evidence = [
+        line for line in logs
+        if any(term in line.upper() for term in (
+            "PREDICT_BATCH",
+            "BATCH DISPATCH",
+            "REAL MAX BATCH",
+            "MODEL.EXECUTE",
+            "RESPONSE IDS",
+            "RESPONSE QUEUE SEND"
+        ))
+    ]
+
+    print("NATIVE BATCH EXECUTION EVIDENCE:")
+    print("\n".join(evidence[-25:])[-4000:] or "NOT LOGGED")
+
+    success = True
+
+except Exception as e:
+    print(
+        "NATIVE BATCH-2 ACCEPTANCE: NOT PASSED",
+        type(e).__name__,
+        str(e),
+        flush=True
+    )
+
+    relevant = [
+        line for line in logs
+        if any(word in line.lower() for word in (
+            "cta", "batch", "worker", "queue",
+            "traceback", "exception", "error",
+            "validation", "msgspec"
+        ))
+        and "telemetry.modular.com" not in line.lower()
+    ]
+
+    print("RELEVANT SERVER LOGS:")
+    print("\n".join(relevant[-65:])[-9000:], flush=True)
+
+finally:
+    stop.set()
+
+    if server is not None:
+        if server.poll() is None:
+            try:
+                os.killpg(server.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+        try:
+            server.wait(timeout=12)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(server.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            server.wait(timeout=5)
+
+    print(
+        "ISOLATED TEST PROCESS STOPPED:",
+        server is None or server.poll() is not None
+    )
+    print("ORIGINAL DS/MAX: UNCHANGED")
+    print("WORKING NATIVE RELEASE: UNCHANGED")
+    print("CONTAINERS RESTARTED: NONE")
+
+if not success:
     raise SystemExit(1)
 PY

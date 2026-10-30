@@ -1,13 +1,10 @@
-echo "=== MAX SERVER HEALTH ==="
-curl --noproxy '*' -sS \
-  --connect-timeout 3 --max-time 5 \
-  -o /dev/null \
-  -w 'HTTP STATUS: %{http_code}\n' \
-  http://127.0.0.1:8765/health
+POD="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-echo "=== MEMORY ==="
-free -h
+CID=$($POD ps --format '{{.ID}} {{.Image}}' | awk '$2 ~ /cta-max-faiss/ {print $1; exit}')
 
-echo "=== MAX PROCESSES ==="
-ps -eo pid,etime,%cpu,%mem,rss,stat,comm \
-  --sort=-rss | head -15
+if [ -n "$CID" ]; then
+  echo "=== LIVE MAX WORKER LOGS ==="
+  $POD logs --tail 60 "$CID" 2>&1
+else
+  echo "MAX CONTAINER NOT FOUND"
+fi

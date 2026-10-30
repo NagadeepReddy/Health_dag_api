@@ -1,1 +1,1 @@
-ssh -N -L 18000:127.0.0.1:8765 sajjna8@10.119.98.21
+http://localhost:18000/v2/cta/predict

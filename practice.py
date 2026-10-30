@@ -1,59 +1,49 @@
-python3 -B - <<'PY'
+python3 - <<'PY'
 from pathlib import Path
-import hashlib
-import re
+import tarfile
 
-dev = Path(
-    "/application1/cta_max_true_batch_dev_20261028"
-    "/batch2_candidate/cta_max"
+base = Path("/application1")
+candidate = base / "cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
+original = base / "sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max"
+backend = base / "CTA_MAX_TRUE_BATCH2_DEV_20261029"
+
+names = [
+    "grecbase_fusion_batch2_draft.py",
+    "grecbase_aux_features_max.py",
+    "grecbase_aux_branches_max.py",
+    "main_context_max.py",
+    "nlp_bert_in_graph.py",
+    "parallel_transformer_block_2layers.py",
+    "run/batch2_contract.py",
+]
+
+sources = (
+    [(candidate / n, "candidate/" + n) for n in names]
+    + [
+        (original / "grecbase_fusion_full_head_72_max.py",
+         "reference/grecbase_fusion_full_head_72_max.py"),
+        (original / "main_context_max.py",
+         "reference/main_context_max.py"),
+        (original / "nlp_bert_in_graph.py",
+         "reference/nlp_bert_in_graph.py"),
+        (backend / "real_max_batch2_backend.py",
+         "backend/real_max_batch2_backend.py"),
+    ]
 )
-ref = Path(
-    "/application1/sajjna8/rt-pzaas-cta-offers-v1"
-    "/artifacts/v1.168-max/cta_max"
-)
 
-print("=== BATCH-2 BRANCH POOLING CHECK ===")
+out = backend / "batch2_source_review.tar.gz"
+assert out.parent.is_dir(), "STOP: Development directory missing"
+assert (candidate / names[0]).is_file(), "STOP: Active graph missing"
 
-for name in ("main_context_max.py", "nlp_bert_in_graph.py"):
-    a = dev / name
-    b = ref / name
+with tarfile.open(out, "w:gz") as archive:
+    for src, name in sources:
+        if src.is_file():
+            archive.add(src, arcname=name)
+            print("INCLUDED:", name)
+        else:
+            print("MISSING:", name)
 
-    print("\nMODULE:", name)
-
-    if not a.is_file():
-        print("STOP: Candidate missing")
-        continue
-
-    source = a.read_text()
-    compile(source, str(a), "exec")
-    print("SYNTAX: PASS")
-
-    if b.is_file():
-        same = hashlib.sha256(a.read_bytes()).digest() == \
-               hashlib.sha256(b.read_bytes()).digest()
-        print("ORIGINAL MATCH:", same)
-    else:
-        print("ORIGINAL: Not available at expected path")
-
-    lines = source.splitlines()
-    pattern = re.compile(
-        r"\breturn\b|ops\.(reshape|mean|max|concat|stack|gather)"
-        r"|def main_context_forward|def nlp_bert_forward"
-    )
-
-    matches = [i for i, line in enumerate(lines)
-               if pattern.search(line)]
-
-    shown = set()
-    for i in matches[-22:]:
-        for j in range(max(0, i-1), min(len(lines), i+2)):
-            if j not in shown:
-                print(f"{j+1}: {lines[j]}")
-                shown.add(j)
-
-print("\nEXPECTED FUSION BRANCH: [2,256]")
-print("FAILING INPUT SHAPE: [2,3,128]")
+print("SOURCE ARCHIVE:", out)
 print("ORIGINAL DS/MAX: UNCHANGED")
-print("FILES MODIFIED: NONE")
 print("CONTAINERS RESTARTED: NONE")
 PY

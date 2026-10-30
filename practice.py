@@ -1,83 +1,115 @@
-python3 - <<'PY'
-import json, time, subprocess, urllib.request, urllib.error
+PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
 from pathlib import Path
+import subprocess, json, ast, shutil, urllib.request
+
+base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+overlay = base / "native_batch2_cached_overlay"
+adapter = overlay / "cta_worker_adapter.py"
+candidate = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate")
+name = "cta-batch2-trace-8766-v2"
 
 pod = ["podman", "--root", "/application1/podman/storage",
        "--runroot", "/run/containers/storage"]
-name = "cta-batch2-trace-8766-v2"
-url = "http://127.0.0.1:8766"
-file = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
 
-def logs():
-    r = subprocess.run(pod + ["logs", "--tail", "400", name],
-                       capture_output=True, text=True)
-    keys = ("CTA BATCH RETURNED", "CTA QUEUE SEND",
-            "CTA TRUE MAX BATCH-2", "CTA HTTP QUEUE ITEM",
-            "POST /v2/cta/predict", "ModuleNotFoundError",
-            "ERROR", "Traceback")
-    matches = [x for x in (r.stdout+r.stderr).splitlines()
-               if any(k in x for k in keys)]
-    print("\n=== MAX RESPONSE TRACE ===", flush=True)
-    print("\n".join(matches[-30:]) or "NO MATCHING TRACE")
+def run(*args):
+    r = subprocess.run(pod + list(args), capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(r.stderr or r.stdout)
+    return r.stdout.strip()
 
-r = subprocess.run(pod + ["inspect", name],
-                   capture_output=True, text=True, check=True)
-info = json.loads(r.stdout)[0]
-print("CONTAINER:", info["State"]["Status"])
-print("MEMORY LIMIT GB:", round(info["HostConfig"]["Memory"]/1024**3, 2))
+assert adapter.is_file(), "STOP: Adapter missing"
 
-if info["State"]["Status"] != "running":
-    logs()
-    raise SystemExit("STOP: Isolated server not running")
+module_files = [
+    candidate / "cta_max/run_batch2_contract.py",
+    candidate / "cta_max/run/batch2_contract.py"
+]
+assert any(p.is_file() for p in module_files), \
+    "STOP: Batch contract source not found"
 
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+info = json.loads(run("inspect", name))[0]
+mounts = [m.get("Source") for m in info["Mounts"]]
 
-try:
-    with opener.open(url + "/health", timeout=10) as r:
-        assert r.status == 200
-    print("MAX 8766 HEALTH: PASS")
-except Exception as e:
-    print("HEALTH FAILED:", repr(e))
-    logs()
-    raise SystemExit(1)
+assert str(overlay) in mounts, "STOP: Overlay mismatch"
+assert str(candidate) in mounts, "STOP: Candidate mount missing"
+assert info["State"]["Status"] in ("running", "exited")
+assert info["HostConfig"]["Memory"] >= 5 * 1024**3
 
-assert file.is_file(), "STOP: Previously tested JSON missing"
-body = file.read_bytes()
-json.loads(body)
+with urllib.request.urlopen(
+    "http://127.0.0.1:8765/health", timeout=10
+) as r:
+    assert r.status == 200, "STOP: Original MAX unhealthy"
 
-passed = 0
-for n in (1, 2):
-    print(f"\n=== REQUEST {n} ===", flush=True)
-    start = time.monotonic()
+source = adapter.read_text()
+marker = "spec.loader.exec_module(module)"
+tag = "CTA_EXPLICIT_CONTRACT_IMPORT_V1"
+
+assert source.count(marker) == 1, "STOP: Import location differs"
+assert tag not in source, "STOP: Fix already installed"
+assert shutil.disk_usage(base).free > 1024**3
+
+bridge = '''
+# CTA_EXPLICIT_CONTRACT_IMPORT_V1
+import sys as _cta_sys
+import importlib.util as _cta_importlib
+_cta_contract_files = [
+    Path("/batch2/cta_max/run_batch2_contract.py"),
+    Path("/batch2/cta_max/run/batch2_contract.py"),
+]
+_cta_contract_file = next(
+    (p for p in _cta_contract_files if p.is_file()), None
+)
+if _cta_contract_file is None:
+    raise ModuleNotFoundError("CTA batch contract not mounted")
+_cta_name = "cta_max.run_batch2_contract"
+if _cta_name not in _cta_sys.modules:
+    _cta_spec = _cta_importlib.spec_from_file_location(
+        _cta_name, _cta_contract_file
+    )
+    if _cta_spec is None or _cta_spec.loader is None:
+        raise RuntimeError("CTA batch contract loader unavailable")
+    _cta_mod = _cta_importlib.module_from_spec(_cta_spec)
+    _cta_sys.modules[_cta_name] = _cta_mod
     try:
-        req = urllib.request.Request(
-            url + "/v2/cta/predict",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with opener.open(req, timeout=210) as r:
-            output = json.load(r)
-            assert r.status == 200
+        _cta_spec.loader.exec_module(_cta_mod)
+    except BaseException:
+        _cta_sys.modules.pop(_cta_name, None)
+        raise
+'''.strip("\n")
 
-        prediction = output["jsonData"]["prediction"]
-        assert isinstance(prediction["offerList"], list)
+lines = source.splitlines()
+index = next(i for i, line in enumerate(lines) if marker in line)
+indent = lines[index][:len(lines[index])-len(lines[index].lstrip())]
 
-        passed += 1
-        print("RESULT: PASS HTTP 200", flush=True)
-        print("LATENCY:", round(time.monotonic()-start, 2), "seconds")
+inserted = [
+    indent + line if line else ""
+    for line in bridge.splitlines()
+]
 
-    except urllib.error.HTTPError as e:
-        print("RESULT: HTTP", e.code)
-        print("ERROR BODY:", e.read(1200).decode(errors="replace"))
-        break
-    except Exception as e:
-        print("RESULT: FAILED", repr(e), flush=True)
-        break
+lines[index:index] = inserted
+updated = "\n".join(lines) + "\n"
+ast.parse(updated)
 
-print(f"\nSEQUENTIAL RESULTS: {passed}/2")
-logs()
-print("\nORIGINAL MAX: UNCHANGED")
+backup = adapter.with_name(
+    "cta_worker_adapter.py.before_contract_import_fix"
+)
+assert not backup.exists(), "STOP: Backup already exists"
+
+print("MODULE SOURCE:", next(str(p) for p in module_files if p.is_file()))
+
+if info["State"]["Status"] == "running":
+    run("stop", "-t", "20", name)
+
+shutil.copy2(adapter, backup)
+adapter.write_text(updated)
+
+print("DIRECT CONTRACT IMPORT: INSTALLED")
+print("SYNTAX: PASS")
+print("BACKUP: PRESERVED")
 print("ORIGINAL DS: UNCHANGED")
-print("NO FILES MODIFIED")
+print("ORIGINAL MAX: UNCHANGED")
+
+run("start", name)
+
+print("ISOLATED MAX: RESTART REQUESTED")
+print("HTTP READINESS: PENDING")
 PY

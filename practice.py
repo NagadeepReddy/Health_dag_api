@@ -1,23 +1,7 @@
-echo "=== OPTIMIZED MAX DIAGNOSIS ==="
+BASE=/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension
 
-PID=$(ss -H -ltnp '( sport = :8766 )' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+echo "=== HTTP RESPONSE QUEUE HANDLING ==="
+sed -n '1,165p' "$BASE/cta_http_pipeline.py"
 
-if [ -n "$PID" ]; then
-  echo "SERVER PID: $PID"
-
-  CID=$(sed -nE 's/.*libpod-([0-9a-f]{64})\.scope.*/\1/p' "/proc/$PID/cgroup" | head -1)
-
-  if [ -n "$CID" ]; then
-    echo "=== OPTIMIZED CONTAINER LOGS ==="
-    podman --root /application1/podman/storage \
-      --runroot /run/containers/storage \
-      logs --tail 80 "$CID" 2>&1
-  else
-    echo "Container identity unavailable"
-  fi
-else
-  echo "Optimized server not listening"
-fi
-
-echo "=== AVAILABLE MEMORY ==="
-free -h
+echo "=== ROUTER TIMEOUT AND RESPONSE HANDLING ==="
+grep -nE -C 4 'timeout|wait_for|504|response_queue|request_id' "$BASE/cta_router.py"

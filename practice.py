@@ -1,21 +1,13 @@
-POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+echo "=== HTTP HEALTH ==="
+curl --noproxy '*' -sS --max-time 5 \
+  -o /dev/null -w 'HTTP: %{http_code}\n' \
+  http://127.0.0.1:8765/health
 
-echo "=== NATIVE MAX RESTART CHECK ==="
+echo "=== PORT 8765 ==="
+ss -ltnp '( sport = :8765 )'
 
-if ! "${POD[@]}" container exists cta-native-live; then
-  echo "STOP: Native container not found"
-else
-  AUTO=$("${POD[@]}" inspect --format '{{.HostConfig.AutoRemove}}' cta-native-live)
-
-  if [ "$AUTO" = "true" ]; then
-    echo "RESTART NOT ATTEMPTED: Container uses --rm"
-    echo "Original launch configuration must be preserved"
-  elif [ "$AUTO" = "false" ]; then
-    echo "RESTARTING EXISTING NATIVE MAX CONTAINER"
-    "${POD[@]}" restart --time 30 cta-native-live
-    echo "RESTART COMMAND: COMPLETED"
-    echo "MAX STARTUP: VERIFY NEXT"
-  else
-    echo "STOP: Could not verify restart safety"
-  fi
-fi
+echo "=== NATIVE CONTAINER ==="
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  ps -a --filter name=cta-native-live \
+  --format 'table {{.Names}}\t{{.Status}}\t{{.ID}}'

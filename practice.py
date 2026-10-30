@@ -1,5 +1,5 @@
 python3 - <<'PY'
-import subprocess, json
+import subprocess, json, urllib.request
 from pathlib import Path
 
 pod = [
@@ -7,54 +7,60 @@ pod = [
     "--runroot", "/run/containers/storage"
 ]
 name = "cta-batch2-trace-8766-v2"
+overlay = "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2_cached_overlay"
 
-r = subprocess.run(
-    pod + ["inspect", name],
-    capture_output=True, text=True
+def run(args):
+    r = subprocess.run(
+        pod + args, capture_output=True, text=True
+    )
+    if r.returncode:
+        raise SystemExit("STOP: " + (r.stderr or r.stdout))
+    return r.stdout.strip()
+
+info = json.loads(run(["inspect", name]))[0]
+state = info["State"]
+
+assert state["Status"] == "exited", "STOP: Container not stopped"
+assert state.get("OOMKilled") is True, "STOP: OOM not confirmed"
+assert any(
+    m.get("Source") == overlay for m in info["Mounts"]
+), "STOP: Container identity mismatch"
+
+available = next(
+    int(x.split()[1])
+    for x in Path("/proc/meminfo").read_text().splitlines()
+    if x.startswith("MemAvailable:")
 )
-assert r.returncode == 0, f"STOP: {r.stderr}"
 
-data = json.loads(r.stdout)[0]
-state = data.get("State", {})
-config = data.get("HostConfig", {})
+assert available >= 10 * 1024 * 1024, "STOP: Insufficient available memory"
 
-print("=== WORKER FAILURE CHECK ===")
-print("CONTAINER:", state.get("Status"))
-print("EXIT CODE:", state.get("ExitCode"))
-print("OOM KILLED:", state.get("OOMKilled"))
-print("MEMORY LIMIT MB:", config.get("Memory", 0)//1048576)
+with urllib.request.urlopen(
+    "http://127.0.0.1:8765/health", timeout=10
+) as r:
+    assert r.status == 200, "STOP: Original MAX unhealthy"
 
-print("\n=== HOST MEMORY ===")
-for line in Path("/proc/meminfo").read_text().splitlines():
-    if line.startswith(("MemTotal:", "MemAvailable:")):
-        print(line)
-
-pid = state.get("Pid", 0)
-if pid:
-    cg = Path(f"/proc/{pid}/cgroup")
-    if cg.exists():
-        for line in cg.read_text().splitlines():
-            if line.startswith("0::"):
-                folder = Path("/sys/fs/cgroup") / line.split("::",1)[1].lstrip("/")
-                for key in ("memory.current", "memory.max", "memory.events"):
-                    f = folder / key
-                    if f.exists():
-                        print(f"\n{key}:\n{f.read_text().strip()}")
-
-print("\n=== WORKER ERRORS ===")
-logs = subprocess.run(
-    pod + ["logs", "--tail", "250", name],
-    capture_output=True, text=True
+ports = subprocess.run(
+    ["ss", "-H", "-ltn", "( sport = :8766 )"],
+    capture_output=True, text=True, check=True
 )
-keys = ("OOM", "Killed", "MemoryError", "worker process",
-        "Traceback", "ERROR", "CTA BATCH RETURNED",
-        "CTA QUEUE SEND", "ExitCode")
-matches = [
-    x for x in (logs.stdout + logs.stderr).splitlines()
-    if any(k in x for k in keys)
-]
-print("\n".join(matches[-25:]) or "NO MATCHING ERRORS")
+assert not ports.stdout.strip(), "STOP: Port 8766 occupied"
 
-print("\nORIGINAL DS: UNCHANGED")
-print("NO FILES MODIFIED")
+print("MEMORY FIX: APPLYING", flush=True)
+
+run([
+    "update",
+    "--memory", "6g",
+    "--memory-swap", "6g",
+    name
+])
+
+print("MEMORY LIMIT: 6 GB")
+print("RESTARTING ISOLATED MAX", flush=True)
+
+run(["start", name])
+
+print("ISOLATED MAX: START REQUESTED")
+print("ORIGINAL MAX: UNCHANGED")
+print("ORIGINAL DS: UNCHANGED")
+print("HTTP READINESS: PENDING")
 PY

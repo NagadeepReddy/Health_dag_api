@@ -1,67 +1,47 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1 || exit 1
+POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+NAME=cta-batch2-importfirst-8766
 
-python3 - <<'PY'
-import json
-import time
-import urllib.request
-import urllib.error
-from pathlib import Path
-from threading import Barrier
-from concurrent.futures import ThreadPoolExecutor
+echo "=== CONTAINER AND MEMORY LIMIT ==="
+"${POD[@]}" inspect "$NAME" --format \
+'STATE={{.State.Status}} EXIT={{.State.ExitCode}} OOM={{.State.OOMKilled}} MEMORY_LIMIT_BYTES={{.HostConfig.Memory}}'
 
-fixture = Path("artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
-if not fixture.is_file():
-    raise SystemExit("STOP: Real CTA JSON fixture missing")
+echo "=== WORKER PROCESSES ==="
+"${POD[@]}" top "$NAME" pid ppid comm 2>&1 || true
 
-payload = fixture.read_bytes()
-json.loads(payload)
-barrier = Barrier(2)
+echo "=== MEMORY FAILURE COUNTERS ==="
+"${POD[@]}" exec "$NAME" sh -c '
+for f in /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max; do
+  if [ -r "$f" ]; then
+    echo "$f"
+    cat "$f"
+  fi
+done
+' 2>&1 || true
 
-def test(n):
-    barrier.wait(timeout=10)
-    start = time.monotonic()
-    request = urllib.request.Request(
-        "http://127.0.0.1:8766/v2/cta/predict",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=90) as r:
-            status = r.status
-            body = r.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        status = e.code
-        body = e.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        return n, False, 0, str(e), round(time.monotonic()-start,2)
+echo "=== FIRST WORKER ERRORS WITH FULL CONTEXT ==="
+"${POD[@]}" logs --tail 1800 "$NAME" 2>&1 | python3 -c '
+import sys,re
+lines=sys.stdin.read().splitlines()
+pattern=re.compile(
+ r"Traceback|Exception:|Error:|Worker failed|OOM|"
+ r"out of memory|Killed|Segmentation|Failed to create",
+ re.I
+)
+hits=[i for i,s in enumerate(lines) if pattern.search(s)]
+selected=[]
+for i in hits:
+    if not selected or i-selected[-1]>25:
+        selected.append(i)
+    if len(selected)==3:
+        break
+print("ERROR EVENTS:",len(hits))
+for i in selected:
+    print("\n--- ERROR CONTEXT AT LOG LINE",i+1,"---")
+    for s in lines[max(0,i-15):min(len(lines),i+30)]:
+        print(s[:1000])
+print("\n=== LAST 20 LOG LINES ===")
+for s in lines[-20:]:
+    print(s[:1000])
+'
 
-    try:
-        result = json.loads(body)
-        prediction = result.get("jsonData", {}).get("prediction", {})
-        offers = prediction.get("offerList")
-        passed = status == 200 and isinstance(offers, list)
-        detail = f"offers={len(offers)}" if passed else body[:600]
-    except Exception:
-        passed = False
-        detail = body[:600]
-
-    return n, passed, status, detail, round(time.monotonic()-start,2)
-
-print("=== REAL NATIVE CTA BATCH-2 ===", flush=True)
-
-with ThreadPoolExecutor(max_workers=2) as pool:
-    results = list(pool.map(test, [1, 2]))
-
-for n, passed, status, detail, elapsed in results:
-    print(f"REQUEST {n}: {'PASS' if passed else 'FAIL'} | HTTP {status} | {elapsed}s | {detail}", flush=True)
-
-print("HTTP 2/2:", "PASS" if all(x[1] for x in results) else "FAIL")
-PY
-
-echo "=== NATIVE MAX BATCH EVIDENCE ==="
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  logs --tail 350 cta-batch2-importfirst-8766 2>&1 |
-  grep -Ei 'BATCH|EXECUT|ENGINE_ID|REQUEST.ID|RESPONSE ID|RESHAPE|WORKER FAILED|TRACEBACK|ERROR' |
-  tail -50
+echo "=== READ-ONLY DIAGNOSIS COMPLETE ==="

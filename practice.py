@@ -1,15 +1,10 @@
 POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-CID=$(sed -nE 's/.*libpod-([0-9a-f]{64})\.scope.*/\1/p' /proc/326785/cgroup | head -1)
+STATUS=$("${POD[@]}" inspect -f '{{.State.Status}}' cta-native-live 2>/dev/null) || STATUS="not-found"
 
-if [ -n "$CID" ]; then
-  "${POD[@]}" inspect --format \
-  'NAME={{.Name}}
-AUTO_REMOVE={{.HostConfig.AutoRemove}}
-NETWORK={{.HostConfig.NetworkMode}}
-ENTRYPOINT={{json .Config.Entrypoint}}
-COMMAND={{json .Config.Cmd}}
-CREATE_COMMAND={{json .Config.CreateCommand}}' "$CID"
+if [ "$STATUS" = "exited" ]; then
+  "${POD[@]}" rm cta-native-live
+  echo "OLD STOPPED CONTAINER: REMOVED"
 else
-  echo "STOP: Live container not found"
+  echo "NO REMOVAL: STATUS=$STATUS"
 fi

@@ -1,29 +1,24 @@
-python3 -B - <<'PY'
-from pathlib import Path
+timeout -s TERM -k 5s 75s \
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage \
+exec -i \
+-e PYTHONDONTWRITEBYTECODE=1 \
+-e PYTHONPATH=/workspace/artifacts/v1.168-max/cta_native_batch2_release_candidate:/workspace/artifacts/v1.168/core-artifact:/batch2:/workspace/artifacts/v1.168-max \
+a176e284b50a \
+/opt/venv/bin/python -u -B - <<'PY'
+print("PYTHON STARTUP: PASS", flush=True)
 
-base = Path(
-    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
-    "artifacts/v1.168-max/"
-    "cta_native_batch2_release_candidate/"
-    "cta_batch2_worker_bootstrap"
-)
+from max.serve.scheduler.queues import SchedulerZmqConfigs
+print("MAX QUEUE IMPORT: PASS", flush=True)
 
-active = base / "sitecustomize.py"
-disabled = base / "sitecustomize.py.disabled"
+from maxserve_cta_extension.cta_queue_compat import install
+assert install()
+assert SchedulerZmqConfigs._cta_batch2_queue_compat
+print("BATCH-2 QUEUE COMPATIBILITY: PASS", flush=True)
 
-if active.is_symlink() or disabled.is_symlink():
-    raise SystemExit("STOP: Unexpected symlink")
+from maxserve_cta_extension import cta_spawn_worker
+print("NATIVE WORKER IMPORT: PASS", flush=True)
 
-if active.exists():
-    if disabled.exists():
-        raise SystemExit("STOP: Disabled backup already exists")
-    active.rename(disabled)
-    print("EXPERIMENTAL STARTUP HOOK: DISABLED")
-else:
-    print("STARTUP HOOK: ALREADY ABSENT")
-
-print("WORKING NATIVE RELEASE: UNCHANGED")
-print("ORIGINAL DS/MAX: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
-print("MODEL EXECUTIONS: ZERO")
+print("STARTUP VERIFICATION: COMPLETE", flush=True)
+print("MODEL EXECUTIONS: ZERO", flush=True)
 PY

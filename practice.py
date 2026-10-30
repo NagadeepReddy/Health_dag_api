@@ -1,1 +1,1 @@
-curl -sS --max-time 5 http://127.0.0.1:8765/openapi.json | python3 -c 'import json,sys; d=json.load(sys.stdin); print("API ROUTES:"); [print(method.upper(),path) for path,methods in d.get("paths",{}).items() for method in methods]'
+podman --root /application1/podman/storage --runroot /run/containers/storage exec 0c95d4a8f887 sh -c 'echo MEMORY_USED_BYTES; cat /sys/fs/cgroup/memory.current; echo MEMORY_LIMIT_BYTES; cat /sys/fs/cgroup/memory.max'

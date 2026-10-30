@@ -1,8 +1,1 @@
-echo "=== NATIVE MAX SERVER ==="
-ps -p 326785 -o pid,ppid,etime,%cpu,%mem,rss,stat,wchan:25,cmd
-
-echo "=== WORKER PROCESSES ==="
-ps --ppid 326785 -o pid,ppid,etime,%cpu,%mem,rss,stat,wchan:25,cmd
-
-echo "=== SERVER THREADS ==="
-ps -T -p 326785 -o pid,tid,%cpu,stat,wchan:25,comm | head -30
+top -H -b -n 2 -d 2 -p 326868 | tail -35

@@ -1,47 +1,49 @@
-python3 -B - <<'PY'
-from pathlib import Path
-import ast, re
+podman --root /application1/podman/storage --runroot /run/containers/storage exec -i -w /workspace -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/workspace/artifacts/v1.168-max/cta_native_batch2_release_candidate:/workspace/artifacts/v1.168/core-artifact:/batch2:/workspace/artifacts/v1.168-max a176e284b50a /opt/venv/bin/python -B - <<'PY'
+import inspect
+import re
+from max.serve import api_server
+from max.serve.config import APIType
+from maxserve_cta_extension.cta_router import register_cta_routes
 
-pkg = Path(
-    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
-    "artifacts/v1.168-max/"
-    "cta_native_batch2_release_candidate/"
-    "maxserve_cta_extension"
-)
+print("=== CTA ROUTE REGISTRATION ===")
+result = register_cta_routes()
+print("REGISTER RESULT:", result)
 
-patterns = re.compile(
-    r"register_cta_routes|register_cta|"
-    r"APIType|ROUTES|include_router|"
-    r"add_api_route|add_route|\.post\(|\.get\(|"
-    r"cta/predict|cta/infer|cta/probe|"
-    r"run_module|sys\.argv|max_batch_size|"
-    r"custom_router",
+for api_type, config in api_server.ROUTES.items():
+    print("\nAPI TYPE:", api_type)
+    for route in config.router.routes:
+        path = getattr(route, "path", "")
+        if "cta" in path.lower():
+            print(
+                "CTA ROUTE:",
+                path,
+                "METHODS:",
+                sorted(getattr(route, "methods", []) or [])
+            )
+
+print("\n=== MAX ROUTER MOUNTING ===")
+source = inspect.getsource(api_server)
+lines = source.splitlines()
+
+pattern = re.compile(
+    r"include_router|ROUTES\[|ROUTES\.|"
+    r"APIType\.|prefix=|api_type|/v1|/v2",
     re.I
 )
 
-for filename in ("cta_router.py", "cta_native_launcher.py"):
-    p = pkg / filename
-    print("\n====", filename, "====", flush=True)
+shown = set()
 
-    if not p.is_file():
-        raise SystemExit("STOP: Missing staged file " + str(p))
+for i, line in enumerate(lines):
+    if pattern.search(line):
+        for j in range(max(0, i-2), min(len(lines), i+3)):
+            if j not in shown:
+                print(f"{j+1}: {lines[j][:200]}")
+                shown.add(j)
+        if len(shown) >= 90:
+            break
 
-    source = p.read_text()
-    ast.parse(source)
-    lines = source.splitlines()
-
-    shown = set()
-    for i, line in enumerate(lines):
-        if patterns.search(line):
-            for j in range(max(0, i-1), min(len(lines), i+3)):
-                if j not in shown:
-                    print(f"{j+1}: {lines[j]}")
-                    shown.add(j)
-
-    print("SYNTAX: PASS")
-
-print("\nNATIVE ROUTE SOURCE INSPECTION: COMPLETE")
-print("ORIGINAL DS/MAX: UNCHANGED")
+print("\nROUTE CONFIGURATION INSPECTION: COMPLETE")
+print("SOURCE CHANGES: NONE")
 print("CONTAINERS RESTARTED: NONE")
-print("MODEL EXECUTIONS: ZERO")
+print("MAX EXECUTIONS: ZERO")
 PY

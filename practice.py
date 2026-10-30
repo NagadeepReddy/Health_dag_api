@@ -1,52 +1,23 @@
-python3 - <<'PY'
-import json
-import time
-import urllib.request
-from pathlib import Path
+echo "=== OPTIMIZED MAX DIAGNOSIS ==="
 
-path = Path(
-    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
-    "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
-)
+PID=$(ss -H -ltnp '( sport = :8766 )' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 
-assert path.is_file(), "STOP: CTA input missing"
-body = path.read_bytes()
-json.loads(body)
+if [ -n "$PID" ]; then
+  echo "SERVER PID: $PID"
 
-url = "http://127.0.0.1:8766/v2/cta/predict"
+  CID=$(sed -nE 's/.*libpod-([0-9a-f]{64})\.scope.*/\1/p' "/proc/$PID/cgroup" | head -1)
 
-for n in (1, 2):
-    print(f"\n=== OPTIMIZED MAX REQUEST {n} ===", flush=True)
-    start = time.perf_counter()
+  if [ -n "$CID" ]; then
+    echo "=== OPTIMIZED CONTAINER LOGS ==="
+    podman --root /application1/podman/storage \
+      --runroot /run/containers/storage \
+      logs --tail 80 "$CID" 2>&1
+  else
+    echo "Container identity unavailable"
+  fi
+else
+  echo "Optimized server not listening"
+fi
 
-    try:
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-
-        with urllib.request.urlopen(req, timeout=360) as r:
-            result = json.load(r)
-            status = r.status
-
-        elapsed = time.perf_counter() - start
-
-        assert status == 200
-        prediction = result["jsonData"]["prediction"]
-        assert isinstance(prediction, dict)
-        assert isinstance(prediction["offerList"], list)
-
-        print("HTTP STATUS: 200")
-        print("CTA JSON: PASS")
-        print("OFFERS:", len(prediction["offerList"]))
-        print(f"LATENCY: {elapsed:.2f} seconds", flush=True)
-
-    except Exception as e:
-        print("REQUEST NOT VALIDATED:", str(e), flush=True)
-        break
-
-print("\nOPTIMIZED LATENCY TEST: FINISHED")
-print("ORIGINAL DS: UNCHANGED")
-PY
+echo "=== AVAILABLE MEMORY ==="
+free -h

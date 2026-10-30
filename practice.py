@@ -1,35 +1,13 @@
-python3 - <<'PY'
-import json, time, urllib.request
-from pathlib import Path
+POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-p = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
-assert p.is_file(), "STOP: CTA JSON missing"
-body = p.read_bytes()
-json.loads(body)
+PID=$(ss -H -ltnp '( sport = :8765 )' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 
-for n in (1, 2):
-    print(f"BASELINE SEQUENTIAL REQUEST {n}: START", flush=True)
-    start = time.monotonic()
-    try:
-        req = urllib.request.Request(
-            "http://127.0.0.1:8765/v2/cta/predict",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=240) as r:
-            output = json.load(r)
-            status = r.status
+[ -n "$PID" ] || { echo "STOP: Original server unavailable"; exit 1; }
 
-        prediction = output["jsonData"]["prediction"]
-        assert status == 200
-        assert isinstance(prediction["offerList"], list)
+CID=$(sed -nE 's/.*libpod-([0-9a-f]{64})\.scope.*/\1/p' "/proc/$PID/cgroup" | head -1)
 
-        print(f"REQUEST {n}: PASS HTTP 200")
-        print(f"LATENCY: {time.monotonic()-start:.2f}s", flush=True)
-    except Exception as e:
-        print(f"REQUEST {n}: NOT VERIFIED - {e}", flush=True)
-        break
+[ -n "$CID" ] || { echo "STOP: Container ID unavailable"; exit 1; }
 
-print("ORIGINAL DS: UNCHANGED")
-PY
+"${POD[@]}" logs --tail 800 "$CID" 2>&1 |
+grep -E 'CTA TRUE MAX BATCH-2|CTA WORKER RESPONSE IDS|CTA RESPONSE QUEUE SEND|CTA RESPONSE SOCKET RECEIVED|CTA RESPONSE ID MATCH|CTA HTTP QUEUE ITEM|CTA RESPONSE WORKER LOOP|CTA HTTP FANOUT|POST /v2/cta/predict|Traceback|ERROR' |
+tail -65

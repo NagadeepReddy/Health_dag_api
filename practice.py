@@ -1,30 +1,23 @@
 
 PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import json, subprocess, time
+import ast, json, shutil, subprocess, time
 import urllib.request, urllib.error
 from pathlib import Path
 
-POD = ["podman", "--root", "/application1/podman/storage",
+base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+adapter = base / "native_batch2_cached_overlay/cta_worker_adapter.py"
+repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
+relative = "artifacts/v1.168-max/cta_max/sequence_weights/fn_norm1_g.npy"
+payload = repo / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
+name = "cta-batch2-trace-8766-10g"
+pod = ["podman", "--root", "/application1/podman/storage",
        "--runroot", "/run/containers/storage"]
-NAME = "cta-batch2-trace-8766-10g"
-URL = "http://127.0.0.1:8766"
-PAYLOAD = Path(
-    "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
-    "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
-)
 
-def cmd(*args):
-    return subprocess.run(
-        POD + list(args), capture_output=True, text=True, timeout=30
-    )
+def run(*args, timeout=45):
+    return subprocess.run(pod + list(args), capture_output=True,
+                          text=True, timeout=timeout)
 
-def state():
-    r = cmd("inspect", NAME)
-    if r.returncode:
-        raise RuntimeError("Isolated container not found: " + r.stderr)
-    return json.loads(r.stdout)[0]
-
-def health(port):
+def healthy(port):
     try:
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/health", timeout=3
@@ -33,95 +26,107 @@ def health(port):
     except Exception:
         return False
 
-def logs():
-    r = cmd("logs", "--tail", "100", NAME)
-    lines = (r.stdout + r.stderr).splitlines()
-    print("\n=== RECENT ISOLATED ERRORS ===", flush=True)
-    keys = ("ERROR", "Error", "Traceback", "OOM", "Killed",
-            "STOP", "FileNotFound", "ModuleNotFound", "MemoryError",
-            "graph expects", "WORKER", "worker", "START")
-    matches = [x for x in lines if any(k in x for k in keys)]
-    print("\n".join(matches[-30:]) or "\n".join(lines[-25:]))
+def recent_logs():
+    r = run("logs", "--tail", "75", name)
+    print("\n=== ISOLATED LOGS ===")
+    print("\n".join((r.stdout + r.stderr).splitlines()[-45:]))
 
-print("=== ISOLATED MAX RECOVERY ===", flush=True)
-s = state()
-st = s["State"]
-limit = s.get("HostConfig", {}).get("Memory", 0) / 1024**3
-free = int(next(
-    x.split()[1] for x in Path("/proc/meminfo").read_text().splitlines()
-    if x.startswith("MemAvailable:")
-)) / 1024**2
+print("=== SAFETY AND SOURCE CHECK ===", flush=True)
+r = run("inspect", name)
+assert r.returncode == 0, "Isolated container missing"
+info = json.loads(r.stdout)[0]
+mounts = {m["Destination"]: m["Source"] for m in info["Mounts"]}
 
-print("STATUS:", st.get("Status"))
-print("EXIT:", st.get("ExitCode"))
-print("OOM:", st.get("OOMKilled"))
-print("MEMORY LIMIT GB:", round(limit, 2))
-print("HOST AVAILABLE GB:", round(free, 2))
-print("WORKDIR:", s.get("Config", {}).get("WorkingDir"))
-print("ORIGINAL MAX 8765:", "HEALTHY" if health(8765) else "UNAVAILABLE")
+assert healthy(8765), "STOP: Original MAX unhealthy"
+assert adapter.is_file(), "STOP: Isolated adapter missing"
+assert (repo / relative).is_file(), "STOP: Original weight missing"
+assert payload.is_file(), "STOP: CTA input missing"
+assert mounts.get("/workspace") == str(repo), "STOP: Unexpected workspace mount"
+assert info["State"]["Status"] == "running", "STOP: Container not running"
+assert not info["State"].get("OOMKilled"), "STOP: Previous OOM"
+assert 9 <= info["HostConfig"]["Memory"] / 1024**3 <= 12
 
-if not health(8765):
-    raise SystemExit("STOP: Original MAX health unavailable")
+r = run("exec", name, "test", "-f", "/workspace/" + relative)
+assert r.returncode == 0, "STOP: Weight not accessible inside container"
 
-if st.get("OOMKilled"):
-    logs()
-    raise SystemExit("STOP: OOM detected. Do not restart blindly.")
+source = adapter.read_text()
+tree = ast.parse(source)
+methods = [n for n in ast.walk(tree)
+           if isinstance(n, ast.FunctionDef) and n.name == "predict_batch"]
+assert len(methods) == 1, "STOP: Unexpected adapter structure"
 
-if not (9 <= limit <= 12) or free < 12:
-    logs()
-    raise SystemExit("STOP: Memory safety requirements not met.")
+marker = "# CTA_WORKER_CWD_FIX_V1"
+if marker not in source:
+    node = methods[0]
+    first = node.body[0]
+    if isinstance(first, ast.Expr) and isinstance(
+        getattr(first, "value", None), ast.Constant
+    ) and isinstance(first.value.value, str):
+        line = first.end_lineno + 1
+    else:
+        line = first.lineno
 
-if st.get("Status") != "running":
-    if st.get("Status") not in ("exited", "created") or st.get("ExitCode") not in (0, None):
-        logs()
-        raise SystemExit("STOP: Abnormal exit; examine errors.")
-    print("RESTARTING ONLY:", NAME, flush=True)
-    r = cmd("start", NAME)
-    if r.returncode:
-        logs()
-        raise SystemExit("START FAILED: " + r.stderr.strip())
+    lines = source.splitlines(keepends=True)
+    indent = " " * first.col_offset
+    fix = (
+        f"{indent}{marker}\n"
+        f"{indent}import os as _cta_os\n"
+        f"{indent}_cta_os.chdir('/workspace')\n"
+    )
+    updated = "".join(lines[:line-1]) + fix + "".join(lines[line-1:])
+    ast.parse(updated)
+
+    backup = adapter.with_name("cta_worker_adapter.py.before_cwd_fix")
+    assert not backup.exists(), "STOP: Backup already exists"
+    assert shutil.disk_usage(base).free > 512 * 1024**2
+
+    print("STOPPING ISOLATED CONTAINER ONLY", flush=True)
+    r = run("stop", "--time", "15", name)
+    assert r.returncode == 0, r.stderr
+
+    shutil.copy2(adapter, backup)
+    adapter.write_text(updated)
+    print("ISOLATED WORKER CWD FIX: INSTALLED", flush=True)
+else:
+    print("WORKER CWD FIX: ALREADY INSTALLED", flush=True)
+    raise SystemExit("STOP: Existing fix needs verification; no repeated restart")
+
+print("RESTARTING ISOLATED CONTAINER ONLY", flush=True)
+r = run("start", name)
+assert r.returncode == 0, r.stderr
 
 ready = False
-for i in range(12):
-    if health(8766):
+for _ in range(20):
+    if healthy(8766):
         ready = True
-        break
-    if state()["State"].get("Status") != "running":
         break
     time.sleep(3)
 
 if not ready:
-    logs()
-    print("FINAL STATE:", state()["State"])
-    raise SystemExit("STOP: Port 8766 unavailable; request not sent.")
+    recent_logs()
+    raise SystemExit("STOP: Isolated MAX not ready")
 
-print("ISOLATED 8766 HEALTH: PASS", flush=True)
-
-assert PAYLOAD.is_file(), "Real CTA JSON missing"
-data = json.loads(PAYLOAD.read_text())
-
+print("ISOLATED HTTP HEALTH: PASS", flush=True)
 req = urllib.request.Request(
-    URL + "/v2/cta/predict",
-    data=json.dumps(data).encode(),
+    "http://127.0.0.1:8766/v2/cta/predict",
+    data=payload.read_bytes(),
     headers={"Content-Type": "application/json"},
     method="POST"
 )
 
 try:
-    with urllib.request.urlopen(req, timeout=240) as r:
-        response = json.load(r)
-        offers = response["jsonData"]["prediction"]["offerList"]
+    with urllib.request.urlopen(req, timeout=240) as response:
+        result = json.load(response)
+        offers = result["jsonData"]["prediction"]["offerList"]
         assert isinstance(offers, list)
         print("REAL CTA HTTP: PASS")
-        print("OFFER COUNT:", len(offers))
-except urllib.error.HTTPError as e:
-    print("HTTP ERROR:", e.code, e.read(1500).decode(errors="replace"))
-    logs()
-except Exception as e:
-    print("REQUEST ERROR:", type(e).__name__, str(e))
-    logs()
+        print("OFFERS:", len(offers))
+except Exception as exc:
+    print("REAL CTA HTTP: FAILED", repr(exc))
+    if isinstance(exc, urllib.error.HTTPError):
+        print(exc.read(1000).decode(errors="replace"))
+    recent_logs()
 
-print("FINAL CONTAINER STATE:", state()["State"]["Status"])
 print("ORIGINAL MAX: NOT RESTARTED")
 print("ORIGINAL DS: UNCHANGED")
 PY

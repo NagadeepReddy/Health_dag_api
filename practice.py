@@ -1,135 +1,99 @@
 python3 -B - <<'PY'
-import json
-import subprocess
+import json, subprocess
 
 P = [
-    "podman",
-    "--root", "/application1/podman/storage",
+    "podman", "--root", "/application1/podman/storage",
     "--runroot", "/run/containers/storage"
 ]
 
-targets = {
-    "0c95d4a8f887": 8765,
-    "a176e284b50a": 8766,
-}
+prefix = "a176e284b50a"
+ids = subprocess.check_output(P + ["ps", "-q"], text=True).split()
+matches = [x for x in ids if x.startswith(prefix)]
 
-running = subprocess.check_output(
-    P + ["ps", "-q"], text=True
-).split()
+if len(matches) != 1:
+    raise SystemExit("STOP: Expected native 8766 container not running")
 
-probe = r'''
+cid = matches[0]
+info = json.loads(subprocess.check_output(
+    P + ["inspect", cid], text=True
+))[0]
+
+mounts = info.get("Mounts") or []
+batch_mount = [
+    m for m in mounts
+    if m.get("Destination") == "/batch2"
+    and "CTA_MAX_TRUE_BATCH2_DEV_20261029" in m.get("Source", "")
+]
+
+if len(batch_mount) != 1:
+    raise SystemExit("STOP: Required Batch-2 mount unavailable")
+
+code = r'''
 import os
-import socket
-import urllib.request
-import urllib.error
 from pathlib import Path
+
+args = [
+    x.decode(errors="replace")
+    for x in Path("/proc/1/cmdline").read_bytes().split(b"\0")
+    if x
+]
+
+env = {}
+for item in Path("/proc/1/environ").read_bytes().split(b"\0"):
+    if b"=" in item:
+        k, v = item.split(b"=", 1)
+        if k == b"PYTHONPATH":
+            env["PYTHONPATH"] = v.decode(errors="replace")
 
 stage = Path(
     "/batch2/native_batch2_release_candidate/"
     "maxserve_cta_extension"
 )
 
-print("STAGED PACKAGE VISIBLE:", stage.is_dir(), flush=True)
-
-native_processes = []
-
-for p in Path("/proc").iterdir():
-    if not p.name.isdigit():
-        continue
-    try:
-        cmd = (p / "cmdline").read_bytes().replace(b"\0", b" ")
-        markers = (
-            b"cta_native_launcher",
-            b"max.entrypoints.pipelines",
-            b"maxserve_cta_extension",
-        )
-        if not any(x in cmd for x in markers):
-            continue
-
-        env = (p / "environ").read_bytes()
-        staged = b"/batch2/native_batch2_release_candidate" in env
-
-        native_processes.append((p.name, staged))
-    except (OSError, PermissionError):
-        continue
-
-print("NATIVE PROCESS COUNT:", len(native_processes))
-for pid, staged in native_processes:
-    print("PROCESS PID:", pid)
-    print("STAGED PYTHONPATH:", staged)
-
-port = TARGET_PORT
-
-try:
-    with socket.create_connection(("127.0.0.1", port), timeout=2):
-        print("TCP LISTENER:", port, "PASS")
-
-    url = f"http://127.0.0.1:{port}/v2/cta/probe"
-    request = urllib.request.Request(url, method="GET")
-
-    try:
-        with urllib.request.urlopen(request, timeout=4) as response:
-            print("CTA PROBE HTTP STATUS:", response.status)
-    except urllib.error.HTTPError as exc:
-        print("CTA PROBE HTTP STATUS:", exc.code)
-    except Exception as exc:
-        print("CTA PROBE:", type(exc).__name__)
-
-except OSError:
-    print("TCP LISTENER:", port, "NOT REACHABLE")
-
-print("NO MODEL INFERENCE REQUESTS SENT")
+print("RUNNING ENTRYPOINT:", args[0] if args else "UNKNOWN")
+print("LAUNCHER MODULES:", [
+    a for a in args
+    if any(x in a for x in (
+        "cta_native_launcher",
+        "max.entrypoints",
+        "maxserve_cta_extension"
+    ))
+])
+print("CLI OPTION NAMES:", [
+    a for a in args if a.startswith("--")
+])
+print("PROCESS WORKDIR:", os.readlink("/proc/1/cwd"))
+print("ACTIVE PYTHONPATH:", env.get("PYTHONPATH", "(unset)"))
+print(
+    "STAGED PATH CONFIGURED:",
+    "/batch2/native_batch2_release_candidate"
+    in env.get("PYTHONPATH", "")
+)
+print("STAGED LAUNCHER:", (stage / "cta_native_launcher.py").is_file())
+print("STAGED WORKER HOOK:", (stage / "cta_worker_registration.py").is_file())
+print("STAGED SCHEDULER:", (stage / "cta_native_scheduler.py").is_file())
+print("REAL BATCH BACKEND:", Path(
+    "/batch2/real_max_batch2_backend.py"
+).is_file())
+print("NATIVE LAUNCH CONFIGURATION: INSPECTED")
 '''
 
-for prefix, port in targets.items():
-    ids = [cid for cid in running if cid.startswith(prefix)]
+r = subprocess.run(
+    P + [
+        "exec", "-i",
+        "-e", "PYTHONDONTWRITEBYTECODE=1",
+        cid, "/opt/venv/bin/python", "-B", "-"
+    ],
+    input=code,
+    text=True,
+    capture_output=True,
+    timeout=30
+)
 
-    print("\n=== CONTAINER", prefix, "===")
-
-    if len(ids) != 1:
-        print("STOP: Container not uniquely running")
-        continue
-
-    cid = ids[0]
-    info = json.loads(subprocess.check_output(
-        P + ["inspect", cid], text=True
-    ))[0]
-
-    mounts = info.get("Mounts") or []
-    staged_mount = any(
-        m.get("Destination") == "/batch2"
-        and "CTA_MAX_TRUE_BATCH2_DEV_20261029"
-            in m.get("Source", "")
-        for m in mounts
-    )
-
-    print("BATCH-2 DEVELOPMENT MOUNT:", staged_mount)
-    print("NETWORK:", info.get("HostConfig", {}).get("NetworkMode"))
-
-    code = probe.replace("TARGET_PORT", str(port))
-
-    try:
-        r = subprocess.run(
-            P + [
-                "exec", "-i",
-                "-e", "PYTHONDONTWRITEBYTECODE=1",
-                cid, "/opt/venv/bin/python", "-B", "-"
-            ],
-            input=code,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=20
-        )
-
-        print(r.stdout[-2500:])
-        print("INSPECTION EXIT CODE:", r.returncode)
-
-    except subprocess.TimeoutExpired:
-        print("STOP: Read-only inspection timed out")
-
-print("\nORIGINAL DS/MAX: UNCHANGED")
-print("WORKING RELEASE: UNCHANGED")
+print(r.stdout)
+if r.stderr:
+    print(r.stderr[-1200:])
+print("EXIT CODE:", r.returncode)
 print("CONTAINERS RESTARTED: NONE")
 print("MODEL EXECUTIONS: ZERO")
 PY

@@ -1,39 +1,13 @@
-python3 - <<'PY'
-from pathlib import Path
+POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+PID=$(ss -H -ltnp '( sport = :8766 )' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 
-files = [
-    base / "native_batch2_cached_overlay/cta_native_scheduler.py",
-    base / "native_batch2_cached_overlay/cta_worker_adapter.py",
-    Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py"),
-]
+CID=$(sed -nE 's/.*libpod-([0-9a-f]{64})\.scope.*/\1/p' "/proc/$PID/cgroup" | head -1)
 
-terms = (
-    "predict_batch",
-    "response_queue",
-    "SchedulerResult",
-    "put_nowait",
-    "send_output",
-    "responses[",
-)
-
-for path in files:
-    if not path.is_file():
-        continue
-
-    print(f"\n=== {path} ===")
-    lines = path.read_text().splitlines()
-    selected = set()
-
-    for i, line in enumerate(lines):
-        if any(term in line for term in terms):
-            selected.update(range(max(0, i-5), min(len(lines), i+9)))
-
-    for i in sorted(selected):
-        print(f"{i+1}: {lines[i]}")
-
-print("\nRESULT DELIVERY CODE: EXTRACTED")
-print("ORIGINAL DS: UNCHANGED")
-print("BOTH LIVE SERVERS: UNTOUCHED")
-PY
+if [ -n "$CID" ]; then
+  "${POD[@]}" logs --tail 400 "$CID" 2>&1 |
+    grep -E 'CTA TRUE MAX BATCH-2|CTA RESPONSE SOCKET RECEIVED|CTA RESPONSE ID MATCH|CTA HTTP QUEUE ITEM|CTA WORKER RESPONSE IDS|CTA RESPONSE QUEUE SEND|CTA RESPONSE WORKER LOOP|POST /v2/cta/predict|Gateway Timeout' |
+    tail -45
+else
+  echo "STOP: Optimized container not identified"
+fi

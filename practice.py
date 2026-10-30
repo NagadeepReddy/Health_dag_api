@@ -1,124 +1,130 @@
-PYTHONDONTWRITEBYTECODE=1 python3 -B - <<'PY'
+set -euo pipefail
+
+POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+NAME=cta-batch2-trace-8766-10g
+ROOT=/application1/sajjna8/rt-pzaas-cta-offers-v1
+
+echo "=== SAFETY PRE-FLIGHT ==="
+
+test -r "$ROOT/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json" || {
+  echo "STOP: Real CTA fixture missing"; exit 1;
+}
+
+STATE=$("${POD[@]}" inspect --format '{{.State.Status}}' "$NAME")
+test "$STATE" = running || {
+  echo "STOP: Isolated container not running"; exit 1;
+}
+
+LIMIT=$("${POD[@]}" inspect --format '{{.HostConfig.Memory}}' "$NAME")
+test "$LIMIT" -ge 10000000000 || {
+  echo "STOP: Memory limit below 10GB"; exit 1;
+}
+
+AVAIL=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+test "$AVAIL" -ge 12582912 || {
+  echo "STOP: Less than 12GiB host memory available"; exit 1;
+}
+
+echo "SAFETY: PASS"
+echo "ORIGINAL MAX: NOT TARGETED"
+echo "ORIGINAL DS: UNCHANGED"
+
+echo "=== RESTART ISOLATED SERVER ONLY ==="
+"${POD[@]}" restart --time 15 "$NAME"
+
+echo "=== REAL NATIVE HTTP VALIDATION ==="
+"${POD[@]}" exec -i \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  "$NAME" /opt/venv/bin/python -B - <<'PY'
 import json
-import subprocess
+import time
+import urllib.request
+import urllib.error
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
-pod = [
-    "podman",
-    "--root", "/application1/podman/storage",
-    "--runroot", "/run/containers/storage",
-]
-name = "cta-batch2-trace-8766-10g"
-
-info = json.loads(subprocess.check_output(
-    pod + ["inspect", name], text=True
-))[0]
-
-assert info["State"]["Status"] == "running", \
-    "STOP: Isolated container is not running"
-
-mount = next(
-    (m for m in info["Mounts"]
-     if m["Destination"] == "/batch2"),
-    None
+base = "http://127.0.0.1:8766"
+fixture = Path(
+    "/workspace/artifacts/v1.168-max/"
+    "cta_native_adjusted_sanity_input.json"
 )
-assert mount, "STOP: /batch2 mount missing"
 
-root = Path(mount["Source"]).resolve()
-assert str(root).startswith("/application1/"), \
-    "STOP: Unexpected mount source"
+assert fixture.is_file(), "STOP: Real CTA input missing"
+payload = json.loads(fixture.read_text())
+body = json.dumps(payload).encode()
 
-pkg = root / "cta_max"
-assert pkg.is_dir(), "STOP: Candidate package missing"
+print("=== WAIT FOR ISOLATED NATIVE HEALTH ===", flush=True)
+deadline = time.monotonic() + 150
 
-required = [
-    "grecbase_fusion_batch2_draft.py",
-    "grecbase_aux_features_max.py",
-    "grecbase_aux_branches_max.py",
-    "parallel_transformer_block_2layers.py",
-    "nlp_bert_in_graph.py",
-]
-assert all((pkg / n).is_file() for n in required), \
-    "STOP: Candidate helper missing"
-
-hook = root / "sitecustomize.py"
-marker = "# CTA_BATCH2_IMPORT_PRIORITY"
-
-patch = '''
-# CTA_BATCH2_IMPORT_PRIORITY
-from pathlib import Path as _CTAP
-import cta_max as _cta_pkg
-_cta_overlay = "/batch2/cta_max"
-if _CTAP(_cta_overlay).is_dir():
-    if _cta_overlay in _cta_pkg.__path__:
-        _cta_pkg.__path__.remove(_cta_overlay)
-    _cta_pkg.__path__.insert(0, _cta_overlay)
-'''
-
-old = hook.read_text() if hook.exists() else None
-
-if old is not None and marker in old:
-    print("IMPORT FIX: ALREADY PRESENT")
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen(
+            base + "/health", timeout=3
+        ) as response:
+            if response.status == 200:
+                print("NATIVE HEALTH: PASS", flush=True)
+                break
+    except Exception:
+        pass
+    time.sleep(4)
 else:
-    if old is not None:
-        backup = root / "sitecustomize.py.before_batch2_import"
-        assert not backup.exists(), "STOP: Backup exists"
-        backup.write_text(old)
-        print("BACKUP: PRESERVED")
+    raise SystemExit("STOP: Native server not healthy")
 
-    new = (old or "") + "\n" + patch
-    compile(new, str(hook), "exec")
-    hook.write_text(new)
-    print("IMPORT FIX: INSTALLED")
-
-test = r'''
-import importlib.util
-import cta_max
-from pathlib import Path
-
-print("PACKAGE:", cta_max.__file__)
-print("SEARCH FIRST:", cta_max.__path__[0])
-
-assert cta_max.__path__[0] == "/batch2/cta_max"
-
-names = [
-    "grecbase_aux_features_max",
-    "grecbase_aux_branches_max",
-    "parallel_transformer_block_2layers",
-    "nlp_bert_in_graph",
-]
-
-for name in names:
-    spec = importlib.util.find_spec("cta_max." + name)
-    assert spec and spec.origin, name
-    print(name, "=>", spec.origin)
-    assert Path(spec.origin).resolve().is_relative_to(
-        Path("/batch2/cta_max").resolve()
-    ), "WRONG IMPORT: " + name
-
-print("BATCH-2 IMPORT PRIORITY: PASS")
-'''
-
-try:
-    subprocess.run(
-        pod + [
-            "exec", "-i",
-            "-e", "PYTHONDONTWRITEBYTECODE=1",
-            name, "/opt/venv/bin/python", "-B", "-c", test
-        ],
-        check=True,
-        timeout=40
+def test(n):
+    request = urllib.request.Request(
+        base + "/v2/cta/predict",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST"
     )
-except Exception:
-    if old is None:
-        hook.unlink(missing_ok=True)
-    else:
-        hook.write_text(old)
-    print("STOP: Validation failed; original hook restored")
-    raise
+    try:
+        with urllib.request.urlopen(
+            request, timeout=120
+        ) as r:
+            status = r.status
+            text = r.read().decode()
+    except urllib.error.HTTPError as e:
+        status = e.code
+        text = e.read().decode()
+    except Exception as e:
+        return n, False, repr(e)
 
-print("ORIGINAL DS: UNCHANGED")
+    try:
+        result = json.loads(text)
+    except ValueError:
+        return n, False, f"HTTP {status}: {text[:1200]}"
+
+    if status != 200:
+        return n, False, f"HTTP {status}: {str(result)[:1600]}"
+
+    prediction = (
+        result.get("jsonData", {}).get("prediction")
+        if isinstance(result, dict) else None
+    )
+    if prediction is None:
+        return n, False, f"HTTP 200, prediction missing: {str(result)[:1200]}"
+
+    return n, True, "HTTP 200; CTA prediction returned"
+
+with ThreadPoolExecutor(max_workers=2) as pool:
+    results = list(pool.map(test, (1, 2)))
+
+for n, passed, detail in results:
+    print(
+        f"REQUEST {n}: {'PASS' if passed else 'FAIL'} | {detail}",
+        flush=True
+    )
+
+print(
+    "NATIVE HTTP 2/2:",
+    "PASS" if all(x[1] for x in results) else "FAIL"
+)
+print("SINGLE REAL MAX BATCH EXECUTION: REQUIRES LOG EVIDENCE")
 print("ORIGINAL MAX: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
-print("NEXT: BOUNDED ISOLATED NATIVE HTTP RETEST")
+print("ORIGINAL DS: UNCHANGED")
 PY
+
+echo "=== RECENT BATCH EXECUTION EVIDENCE ==="
+"${POD[@]}" logs --tail 350 "$NAME" 2>&1 |
+  grep -Ei 'CTA.*BATCH|REAL MAX|COMPILE|EXECUT|reshape|worker failed|Traceback|ERROR' |
+  tail -45 || true

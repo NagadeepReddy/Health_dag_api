@@ -1,125 +1,182 @@
 PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import ast, json, shutil, subprocess, textwrap
+import json, time, subprocess, urllib.request, urllib.error
+import concurrent.futures, threading, datetime, re
 from pathlib import Path
 
-base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-backend = base / "real_max_batch2_backend.py"
-backup = base / "real_max_batch2_backend.py.before_ast_batch2_fix"
-name = "cta-batch2-trace-8766-10g"
-
 pod = [
-    "podman", "--root", "/application1/podman/storage",
+    "podman",
+    "--root", "/application1/podman/storage",
     "--runroot", "/run/containers/storage"
 ]
+name = "cta-batch2-trace-8766-10g"
+repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
+sample = repo / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
 
-print("=== CORRECTED BATCH-2 IMPORT FIX ===", flush=True)
+def run(args, timeout=45):
+    return subprocess.run(
+        args, text=True, capture_output=True, timeout=timeout
+    )
 
-r = subprocess.run(
-    pod + ["inspect", name],
-    capture_output=True, text=True, timeout=30
-)
+def health(port):
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/health", timeout=5
+        ) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+print("=== SAFETY PRE-FLIGHT ===", flush=True)
+
+assert health(8765), "STOP: Original MAX not healthy"
+assert sample.is_file(), "STOP: Real CTA JSON fixture missing"
+
+payload = sample.read_bytes()
+assert isinstance(json.loads(payload), dict), "STOP: Invalid CTA JSON"
+
+r = run(pod + ["inspect", name])
 assert r.returncode == 0, "STOP: Isolated container missing"
 
 info = json.loads(r.stdout)[0]
+limit = int(info["HostConfig"]["Memory"])
+assert 9 * 1024**3 <= limit <= 11 * 1024**3, \
+    "STOP: Isolated memory limit is not 10 GB"
+
+meminfo = Path("/proc/meminfo").read_text()
+available_kb = int(re.search(
+    r"MemAvailable:\s*(\d+)", meminfo
+).group(1))
+available_gb = available_kb / 1024**2
+
+print("HOST AVAILABLE GB:", round(available_gb, 2))
+assert available_gb >= 12, "STOP: Insufficient host memory"
+
+assert not health(8766) or info["State"]["Running"], \
+    "STOP: Port 8766 occupied by another process"
+
 mounts = info["Mounts"]
+assert any(
+    m["Destination"] == "/batch2/real_max_batch2_backend.py"
+    and Path(m["Source"]).resolve() ==
+    Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
+         "real_max_batch2_backend.py").resolve()
+    for m in mounts
+), "STOP: Fixed backend is not mounted"
 
-def mounted(destination):
-    matches = [m for m in mounts if m["Destination"] == destination]
-    assert len(matches) == 1, f"STOP: Mount missing: {destination}"
-    return matches[0]
+assert any(
+    m["Destination"] == "/batch2"
+    and (Path(m["Source"]) /
+         "cta_max/grecbase_fusion_batch2_draft.py").is_file()
+    for m in mounts
+), "STOP: Batch-2 graph is not mounted"
 
-candidate_mount = mounted("/batch2")
-backend_mount = mounted("/batch2/real_max_batch2_backend.py")
+print("ORIGINAL MAX: HEALTHY")
+print("MEMORY LIMIT: VERIFIED")
+print("BATCH-2 BACKEND: MOUNTED")
+print("REAL CTA JSON: READY")
 
-assert Path(backend_mount["Source"]).resolve() == backend.resolve(), \
-    "STOP: Backend mount points to different source"
+started = datetime.datetime.now(
+    datetime.timezone.utc
+).isoformat()
 
-graph = Path(candidate_mount["Source"]) / \
-    "cta_max/grecbase_fusion_batch2_draft.py"
+print("\n=== RESTART ISOLATED ONLY ===", flush=True)
+r = run(pod + ["restart", "--time", "15", name], timeout=90)
+assert r.returncode == 0, f"STOP: {r.stderr}"
 
-assert graph.is_file(), "STOP: Corrected graph unavailable"
-assert backend.is_file(), "STOP: Backend unavailable"
+ready = False
+for _ in range(45):
+    if health(8766):
+        ready = True
+        break
+    time.sleep(2)
 
-graph_text = graph.read_text()
-ast.parse(graph_text)
-assert "[2, 256]" in graph_text, "STOP: Batch-2 graph declaration absent"
+assert ready, "STOP: Isolated server did not become healthy"
+assert health(8765), "STOP: Original MAX health changed"
 
-source = backend.read_text()
-marker = "# CTA_AST_BATCH2_GRAPH_FIX"
+print("ISOLATED HTTP: READY")
+print("ORIGINAL MAX: HEALTHY")
 
-if marker not in source:
-    tree = ast.parse(source)
+print("\n=== REAL NATIVE HTTP BATCH-2 ===", flush=True)
 
-    matches = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.ImportFrom)
-        and n.module == "cta_max.grecbase_fusion_full_head_72_max"
-        and any(
-            alias.name == "build_grecbase_fusion_graph_order_correct"
-            for alias in n.names
-        )
-    ]
+barrier = threading.Barrier(2)
 
-    assert len(matches) == 1, \
-        "STOP: Original graph import is not uniquely identified"
-
-    node = matches[0]
-    lines = source.splitlines(keepends=True)
-    original_line = lines[node.lineno - 1]
-    indent = original_line[:len(original_line) - len(original_line.lstrip())]
-
-    patch = '''
-# CTA_AST_BATCH2_GRAPH_FIX
-import importlib.util as _cta_spec_util
-import cta_max as _cta_package
-
-_cta_directory = "/batch2/cta_max"
-if _cta_directory not in _cta_package.__path__:
-    _cta_package.__path__.insert(0, _cta_directory)
-
-_cta_spec = _cta_spec_util.spec_from_file_location(
-    "cta_max._verified_isolated_batch2",
-    _cta_directory + "/grecbase_fusion_batch2_draft.py"
-)
-if _cta_spec is None or _cta_spec.loader is None:
-    raise RuntimeError("Batch-2 graph loader unavailable")
-
-_cta_module = _cta_spec_util.module_from_spec(_cta_spec)
-_cta_spec.loader.exec_module(_cta_module)
-
-build_grecbase_fusion_graph_order_correct = (
-    _cta_module.build_grecbase_fusion_graph_order_correct
-)
-print("CORRECTED BATCH-2 GRAPH: ACTIVE", flush=True)
-'''
-
-    insertion = textwrap.indent(
-        textwrap.dedent(patch).strip() + "\n", indent
+def request(n):
+    barrier.wait(timeout=10)
+    start = time.monotonic()
+    req = urllib.request.Request(
+        "http://127.0.0.1:8766/v2/cta/predict",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST"
     )
+    try:
+        with urllib.request.urlopen(req, timeout=240) as response:
+            result = json.loads(response.read())
+            offers = result["jsonData"]["prediction"]["offerList"]
+            assert isinstance(offers, list)
+            return n, response.status, len(offers), round(
+                time.monotonic() - start, 2
+            )
+    except urllib.error.HTTPError as e:
+        return n, e.code, e.read(1500).decode(
+            errors="replace"
+        ), round(time.monotonic() - start, 2)
+    except Exception as e:
+        return n, "ERROR", repr(e), round(
+            time.monotonic() - start, 2
+        )
 
-    # AST end_lineno includes every line of a multi-line import.
-    lines.insert(node.end_lineno, insertion)
-    updated = "".join(lines)
+with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    futures = [pool.submit(request, n) for n in (1, 2)]
+    results = sorted(f.result() for f in futures)
 
-    compile(updated, str(backend), "exec")
+for result in results:
+    print("REQUEST:", result, flush=True)
 
-    assert not backup.exists(), "STOP: Backup already exists"
-    assert shutil.disk_usage(base).free > 20 * 1024 * 1024, \
-        "STOP: Low disk space"
+print("\n=== REAL MAX EXECUTION EVIDENCE ===")
 
-    shutil.copy2(backend, backup)
-    backend.write_text(updated)
-    print("MULTI-LINE IMPORT: FIXED")
-    print("BACKUP: PRESERVED")
-else:
-    print("IMPORT FIX: ALREADY INSTALLED")
+r = run(
+    pod + ["logs", "--since", started, "--tail", "1000", name],
+    timeout=45
+)
+logs = r.stdout + r.stderr
 
-compile(backend.read_text(), str(backend), "exec")
+markers = [
+    "ISOLATED BATCH-2 GRAPH OVERRIDE",
+    "CORRECTED BATCH-2 GRAPH",
+    "EXECUTING REAL CTA INPUTS",
+    "CTA TRUE MAX BATCH-2",
+    "CTA RESPONSE ID MATCH",
+    "POST /v2/cta/predict",
+    "ERROR",
+    "Traceback",
+    "OOM",
+]
 
-print("BATCH-2 GRAPH: VERIFIED")
-print("SYNTAX: PASS")
+for line in logs.splitlines():
+    if any(marker in line for marker in markers):
+        print(line[:550])
+
+print("\n=== FINAL STATUS ===")
+
+statuses_ok = all(x[1] == 200 for x in results)
+graph_active = (
+    "ISOLATED BATCH-2 GRAPH OVERRIDE" in logs
+    or "CORRECTED BATCH-2 GRAPH" in logs
+)
+batch_evidence = (
+    logs.count("CTA TRUE MAX BATCH-2: TWO JSON RESPONSES PRODUCED")
+    == 1
+)
+
+print("HTTP 2/2:", "PASS" if statuses_ok else "FAIL")
+print("GRAPH OVERRIDE:", "ACTIVE" if graph_active else "NOT CONFIRMED")
+print("BATCH BACKEND:", "PASS" if batch_evidence else "NOT VERIFIED")
+print("ORIGINAL MAX:", "HEALTHY" if health(8765) else "CHECK REQUIRED")
 print("ORIGINAL DS: UNCHANGED")
-print("ORIGINAL MAX: NOT RESTARTED")
-print("ISOLATED CONTAINER: NOT RESTARTED")
-print("NEXT: BOUNDED NATIVE HTTP VALIDATION")
+
+if statuses_ok and graph_active and batch_evidence:
+    print("NATIVE HTTP BATCH-2: PASS")
+else:
+    print("NATIVE HTTP BATCH-2: NOT YET VERIFIED")
 PY

@@ -1,23 +1,13 @@
-echo "=== ACTUAL LIVE MAX SERVER ==="
-ps -p 326785 -o pid,ppid,lstart,etime,cmd
+CID=$(sed -nE 's@.*/container/([0-9a-f]{64}).*@\1@p' /proc/326785/cgroup | head -1)
 
-echo "=== LIVE WORKERS ==="
-ps --ppid 326785 -o pid,ppid,stat,etime,cmd
+echo "LIVE CONTAINER ID: $CID"
 
-echo "=== LIVE CONTAINER IDENTITY ==="
-cat /proc/326785/cgroup
-
-echo "=== OPTIMIZED BACKEND MOUNT ==="
-LIVE=/proc/326785/root/batch2/real_max_batch2_backend.py
-DEV=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py
-
-if [ -f "$LIVE" ]; then
-    sha256sum "$LIVE" "$DEV"
-    if cmp -s "$LIVE" "$DEV"; then
-        echo "OPTIMIZED BACKEND FILE: MOUNTED"
-    else
-        echo "LIVE BACKEND FILE: DIFFERENT"
-    fi
-else
-    echo "LIVE BACKEND MOUNT: NOT FOUND"
-fi
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  inspect --format \
+  'NAME={{.Name}}
+IMAGE={{.ImageName}}
+AUTO_REMOVE={{.HostConfig.AutoRemove}}
+COMMAND={{json .Config.Cmd}}
+MOUNTS={{json .Mounts}}' "$CID" \
+  || echo "STOP: Live container not managed by this Podman store"

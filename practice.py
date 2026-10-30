@@ -1,149 +1,130 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import ast, hashlib, os, re, shutil
+import subprocess, json
 
-root = Path('/application1')
-repo = root / 'sajjna8/rt-pzaas-cta-offers-v1'
-native = repo / 'artifacts/v1.168-max/maxserve_cta_extension'
-dev = root / 'CTA_MAX_TRUE_BATCH2_DEV_20261029'
-source = dev / 'native_batch2'
-target = dev / 'native_batch2_release_candidate'
-tmp = dev / '.native_batch2_release_candidate_build'
+base = Path("/application1")
+dev = base / "CTA_MAX_TRUE_BATCH2_DEV_20261029"
+stage = dev / "native_batch2_release_candidate/maxserve_cta_extension"
+
+P = [
+    "podman",
+    "--root", "/application1/podman/storage",
+    "--runroot", "/run/containers/storage"
+]
 
 required = [
-    native / 'cta_worker_adapter.py',
-    native / 'cta_native_scheduler.py',
-    native / 'cta_scheduler_factory.py',
-    native / 'cta_worker_registration.py',
-    source / 'cta_worker_adapter.py',
-    source / 'cta_native_scheduler.py',
-    dev / 'real_max_batch2_backend.py',
-    repo / 'artifacts/v1.168/core-artifact/pipeline.py'
+    stage / "cta_worker_adapter.py",
+    stage / "cta_native_scheduler.py",
+    stage / "cta_scheduler_factory.py",
+    stage / "cta_spawn_worker.py",
+    dev / "real_max_batch2_backend.py",
 ]
 
 for p in required:
-    if not p.is_file() or p.is_symlink():
-        raise SystemExit('STOP: Missing source: ' + str(p))
+    if not p.is_file():
+        raise SystemExit("STOP: Missing " + str(p))
 
-if target.exists() or tmp.exists():
-    raise SystemExit('STOP: Staging directory already exists')
+ids = []
 
-if any(p.is_symlink() for p in native.rglob('*')):
-    raise SystemExit('STOP: Native source contains symlinks')
+for cid in subprocess.check_output(
+    P + ["ps", "-q"], text=True
+).split():
+    info = json.loads(
+        subprocess.check_output(
+            P + ["inspect", cid], text=True
+        )
+    )[0]
 
-if shutil.disk_usage(dev).free < 50 * 1024 * 1024:
-    raise SystemExit('STOP: Insufficient disk space')
+    if any(
+        m.get("Source") == str(dev)
+        and m.get("Destination") == "/batch2"
+        for m in info.get("Mounts", [])
+    ):
+        ids.append(cid)
 
-def names(p):
-    tree = ast.parse(p.read_text())
-    return {
-        n.name for n in tree.body
-        if isinstance(n, (ast.ClassDef, ast.FunctionDef))
-    }
+if len(ids) != 1:
+    raise SystemExit("STOP: Existing development container unavailable")
 
-if not (
-    names(native / 'cta_worker_adapter.py')
-    & names(source / 'cta_worker_adapter.py')
-):
-    raise SystemExit('STOP: Adapter class names differ')
+code = r'''
+import sys, inspect, importlib
+from pathlib import Path
 
-for p in (native / 'cta_native_scheduler.py',
-          source / 'cta_native_scheduler.py'):
-    if 'CTANativeScheduler' not in names(p):
-        raise SystemExit('STOP: Scheduler contract differs')
-
-adapter_tree = ast.parse(
-    (source / 'cta_worker_adapter.py').read_text()
+root = Path(
+    "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
+    "native_batch2_release_candidate"
 )
 
-if not any(
-    isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    and n.name == 'predict_batch'
-    for n in ast.walk(adapter_tree)
-):
-    raise SystemExit('STOP: Development predict_batch missing')
+pkg = root / "maxserve_cta_extension"
 
-if 'CTA_NATIVE_BATCH_DISPATCH_V1' not in (
-    source / 'cta_native_scheduler.py'
-).read_text():
-    raise SystemExit('STOP: Batch dispatch unavailable')
+assert pkg.is_dir(), "Staged package not visible"
 
-protected = [
-    native / 'cta_worker_adapter.py',
-    native / 'cta_native_scheduler.py',
-    native / 'cta_scheduler_factory.py',
-    native / 'cta_worker_registration.py',
-    repo / 'artifacts/v1.168/core-artifact/pipeline.py'
+sys.path.insert(0, str(root))
+
+adapter = importlib.import_module(
+    "maxserve_cta_extension.cta_worker_adapter"
+)
+scheduler = importlib.import_module(
+    "maxserve_cta_extension.cta_native_scheduler"
+)
+factory = importlib.import_module(
+    "maxserve_cta_extension.cta_scheduler_factory"
+)
+
+assert Path(adapter.__file__).resolve() == (
+    pkg / "cta_worker_adapter.py"
+).resolve()
+
+assert Path(scheduler.__file__).resolve() == (
+    pkg / "cta_native_scheduler.py"
+).resolve()
+
+batch_classes = [
+    c for _, c in inspect.getmembers(adapter, inspect.isclass)
+    if c.__module__ == adapter.__name__
+    and callable(getattr(c, "predict_batch", None))
 ]
 
-def hashes():
-    return {
-        str(p): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in protected
-    }
+assert len(batch_classes) == 1
 
-before = hashes()
+assert callable(
+    getattr(scheduler.CTANativeScheduler, "run_iteration", None)
+)
 
-try:
-    pkg = tmp / 'maxserve_cta_extension'
+assert "predict_batch" in inspect.getsource(
+    scheduler.CTANativeScheduler.run_iteration
+)
 
-    shutil.copytree(
-        native, pkg,
-        ignore=shutil.ignore_patterns('__pycache__', '*.pyc')
-    )
+assert callable(getattr(factory, "create_cta_scheduler", None))
 
-    for name in ('cta_worker_adapter.py',
-                 'cta_native_scheduler.py'):
-        shutil.copy2(source / name, pkg / name)
+backend = Path("/batch2/real_max_batch2_backend.py")
+assert backend.is_file()
 
-    # Only the staged copies receive Batch-2 defaults.
-    for name in ('cta_scheduler_factory.py',
-                 'cta_native_scheduler.py'):
-        p = pkg / name
-        content = p.read_text()
+print("STAGED ADAPTER IMPORT: PASS")
+print("STAGED BATCH SCHEDULER IMPORT: PASS")
+print("STAGED FACTORY IMPORT: PASS")
+print("REAL MAX BACKEND: VISIBLE")
+print("NATIVE BATCH-2 RUNTIME PREFLIGHT: PASS")
+'''
 
-        updated, count = re.subn(
-            r'(\bmax_items_per_iteration\s*=\s*)1\b',
-            r'\g<1>2',
-            content
-        )
+r = subprocess.run(
+    P + [
+        "exec", "-i",
+        "-e", "PYTHONDONTWRITEBYTECODE=1",
+        "-e", "PYTHONPATH=" + str(stage.parent) +
+              ":/workspace/artifacts/v1.168-max",
+        ids[0], "/opt/venv/bin/python", "-B", "-"
+    ],
+    input=code,
+    text=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    timeout=45
+)
 
-        if count != 1:
-            raise RuntimeError(
-                f'{name}: Unexpected batch-limit definition'
-            )
-
-        ast.parse(updated)
-        p.write_text(updated)
-
-    for p in pkg.rglob('*.py'):
-        ast.parse(p.read_text())
-
-    adapter_code = (pkg / 'cta_worker_adapter.py').read_text()
-    scheduler_code = (pkg / 'cta_native_scheduler.py').read_text()
-
-    if ('predict_batch' not in adapter_code
-            or 'batch_fn(' not in scheduler_code):
-        raise RuntimeError('Batch wiring missing')
-
-    if hashes() != before:
-        raise RuntimeError('Original source changed unexpectedly')
-
-    os.replace(tmp, target)
-
-except BaseException:
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    raise
-
-print('NATIVE BATCH-2 STAGING: PASS')
-print('CANDIDATE:', target / 'maxserve_cta_extension')
-print('BATCH ADAPTER: STAGED')
-print('BATCH SCHEDULER: STAGED')
-print('STAGED BATCH SIZE: 2')
-print('ALL PYTHON SYNTAX: PASS')
-print('ORIGINAL DS/MAX: UNCHANGED')
-print('WORKING NATIVE RELEASE: UNCHANGED')
-print('CONTAINERS RESTARTED: NONE')
-print('LIVE HTTP BATCHING: NOT YET VALIDATED')
+print(r.stdout[-3500:])
+print("EXIT CODE:", r.returncode)
+print("ORIGINAL DS/MAX: UNCHANGED")
+print("WORKING RELEASE: UNCHANGED")
+print("CONTAINERS RESTARTED: NONE")
+print("MODEL EXECUTIONS: ZERO")
 PY

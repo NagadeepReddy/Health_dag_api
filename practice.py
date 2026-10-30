@@ -1,7 +1,12 @@
-if [ "$(id -u)" -eq 0 ]; then
-  podman --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    ps -a --format '{{.Names}} | {{.Status}}'
-else
-  echo "STOP: Return to the previous root@10-119-98-21 terminal. Do not use sudo."
-fi
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  inspect cta-batch2-trace-8766-10g \
+  --format 'IMAGE={{.ImageName}}
+STATE={{.State.Status}}
+EXIT={{.State.ExitCode}}
+OOM={{.State.OOMKilled}}
+CREATE={{json .Config.CreateCommand}}
+ENTRYPOINT={{json .Config.Entrypoint}}
+CMD={{json .Config.Cmd}}
+WORKDIR={{.Config.WorkingDir}}
+MOUNTS={{json .Mounts}}'

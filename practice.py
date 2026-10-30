@@ -1,87 +1,135 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import difflib, ast
+import ast
+import os
+import shutil
 
 root = Path(
     "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
     "artifacts/v1.168-max"
 )
 
-working = root / "maxserve_cta_extension"
+working = root / "maxserve_cta_extension/cta_native_scheduler.py"
 staged = (
     root / "cta_native_batch2_release_candidate/"
-    "maxserve_cta_extension"
+    "maxserve_cta_extension/cta_native_scheduler.py"
 )
 
-names = [
-    "cta_router.py",
-    "cta_http_pipeline.py",
-    "cta_spawn_worker.py",
-    "cta_native_scheduler.py",
-]
+def get_method(tree):
+    methods = [
+        node
+        for cls in tree.body
+        if isinstance(cls, ast.ClassDef)
+        for node in cls.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "run_iteration"
+    ]
+    if len(methods) != 1:
+        raise RuntimeError("Unexpected scheduler structure")
+    return methods[0]
 
-keywords = (
-    "response_queue", "request_queue", "pending",
-    "receiver", "request_id", "batch_id",
-    "SchedulerZmqConfigs", "get_nowait",
-    "put_nowait", "worker", "asyncio",
-)
+def has_response_send(method):
+    for node in ast.walk(method):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if (
+            isinstance(f, ast.Attribute)
+            and f.attr in ("put_nowait", "put")
+            and isinstance(f.value, ast.Attribute)
+            and f.value.attr == "response_queue"
+            and isinstance(f.value.value, ast.Name)
+            and f.value.value.id == "self"
+        ):
+            return True
+    return False
 
-for name in names:
-    old = working / name
-    new = staged / name
+if not working.is_file() or not staged.is_file():
+    raise SystemExit("STOP: Required scheduler source missing")
 
-    print("\n==========", name, "==========")
+if working.is_symlink() or staged.is_symlink():
+    raise SystemExit("STOP: Unexpected scheduler symlink")
 
-    if not new.is_file():
-        print("STAGED FILE: MISSING")
-        continue
+original = working.read_text()
+current = staged.read_text()
 
-    new_text = new.read_text()
-    ast.parse(new_text)
-    print("STAGED SYNTAX: PASS")
+old_method = get_method(ast.parse(original))
+new_method = get_method(ast.parse(current))
 
-    if not old.is_file():
-        print("WORKING COMPARISON: NOT AVAILABLE")
-        continue
+if not has_response_send(old_method):
+    raise SystemExit("STOP: Working response contract not verified")
 
-    old_text = old.read_text()
-    ast.parse(old_text)
+print("WORKING RESPONSE CONTRACT: VERIFIED")
 
-    if old_text == new_text:
-        print("COMPARED SOURCES: IDENTICAL")
-        continue
+if has_response_send(new_method):
+    print("STAGED RESPONSE DISPATCH: ALREADY PRESENT")
+else:
+    returns = [
+        n for n in new_method.body
+        if isinstance(n, ast.Return)
+    ]
 
-    print("RELEVANT DIFFERENCES:")
-    diff = list(difflib.unified_diff(
-        old_text.splitlines(),
-        new_text.splitlines(),
-        fromfile="WORKING/" + name,
-        tofile="STAGED/" + name,
-        n=2,
-    ))
+    if len(returns) != 1 or new_method.body[-1] is not returns[0]:
+        raise SystemExit("STOP: Unsafe insertion location")
 
-    selected = set()
-    for i, line in enumerate(diff):
-        if any(k in line.lower() for k in keywords):
-            selected.update(range(
-                max(0, i-2),
-                min(len(diff), i+3)
-            ))
+    ret = returns[0]
 
-    count = 0
-    for i in sorted(selected):
-        print(diff[i][:180])
-        count += 1
-        if count >= 65:
-            print("... additional differences omitted")
-            break
+    if not any(
+        isinstance(n, ast.Name)
+        and n.id == "responses"
+        and isinstance(n.ctx, ast.Load)
+        for n in ast.walk(new_method)
+    ):
+        raise SystemExit("STOP: Response dictionary not confirmed")
 
-    if not selected:
-        print("NO RESPONSE/QUEUE-RELATED DIFFERENCES FOUND")
+    lines = current.splitlines(keepends=True)
+    indent = " " * ret.col_offset
 
-print("\nNATIVE RESPONSE BRIDGE COMPARISON: COMPLETE")
+    fix = (
+        f"{indent}# CTA_BATCH2_RESPONSE_DISPATCH_FIX\n"
+        f"{indent}if responses:\n"
+        f"{indent}    self.response_queue.put_nowait(responses)\n"
+        "\n"
+    )
+
+    lines.insert(ret.lineno - 1, fix)
+    updated = "".join(lines)
+
+    ast.parse(updated)
+    compile(updated, str(staged), "exec")
+
+    backup = staged.with_name(
+        "cta_native_scheduler.py.before_response_fix.bak"
+    )
+    temp = staged.with_name(
+        "cta_native_scheduler.py.response_fix.tmp"
+    )
+
+    if backup.exists() or temp.exists():
+        raise SystemExit("STOP: Backup/temp already exists")
+
+    shutil.copy2(staged, backup)
+
+    try:
+        with temp.open("x") as file:
+            file.write(updated)
+        os.replace(temp, staged)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+    print("ISOLATED RESPONSE FIX: INSTALLED")
+    print("BACKUP:", backup)
+
+verified = get_method(ast.parse(staged.read_text()))
+
+if not has_response_send(verified):
+    raise SystemExit("STOP: Response dispatch verification failed")
+
+print("NATIVE RESPONSE QUEUE: PASS")
+print("SYNTAX: PASS")
 print("ORIGINAL DS/MAX: UNCHANGED")
+print("WORKING NATIVE RELEASE: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")
 print("MODEL EXECUTIONS: ZERO")
 PY

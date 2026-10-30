@@ -1,67 +1,118 @@
+
 PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import ast
 from pathlib import Path
+import ast, json, re, shutil, subprocess
 
 base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-candidate = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+backend = base / "real_max_batch2_backend.py"
+graph = Path(
+    "/application1/cta_max_true_batch_dev_20261028/"
+    "batch2_candidate/cta_max/"
+    "grecbase_fusion_full_head_72_max.py"
+)
+backup = base / "real_max_batch2_backend.before_graph2.py"
 
-targets = [
-    base / "real_max_batch2_backend.py",
-    candidate / "run_batch2_contract.py",
-    candidate / "run/batch2_contract.py",
+old = "cta_max.grecbase_fusion_order_correct_max"
+new = "cta_max.grecbase_fusion_full_head_72_max"
+name = "cta-batch2-trace-8766-v2"
+
+def check(ok, message):
+    if not ok:
+        raise SystemExit("STOP: " + message)
+
+check(backend.is_file(), "Backend missing")
+check(graph.is_file(), "Batch-2 graph missing")
+
+source = backend.read_text()
+candidate = graph.read_text()
+ast.parse(source)
+tree = ast.parse(candidate)
+
+builders = [
+    n for n in tree.body
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "build_grecbase_fusion_graph_order_correct"
+]
+check(len(builders) == 1, "Graph builder mismatch")
+
+check(
+    re.search(r"TensorType\(DType\.float32,\s*\[2,\s*256\]", candidate)
+    is not None,
+    "Graph does not declare batch-2 inputs"
+)
+check(
+    re.search(r"ops\.reshape\(outs,\s*\[2,\s*2048\]\)", candidate)
+    is not None,
+    "Batch-2 output contract not confirmed"
+)
+
+pod = [
+    "podman",
+    "--root", "/application1/podman/storage",
+    "--runroot", "/run/containers/storage",
 ]
 
-if candidate.is_dir():
-    targets += list(candidate.rglob("*.py"))
+r = subprocess.run(
+    pod + ["ps", "-aq"],
+    capture_output=True, text=True
+)
+check(r.returncode == 0, "Cannot verify containers")
 
-seen = set()
-names = {
-    "infer_max_batch",
-    "build_grecbase_fusion_graph_order_correct",
-    "pack_two_requests",
-}
+ids = r.stdout.split()
+check(bool(ids), "No containers found")
 
-print("=== TARGETED GRAPH CONTRACT CHECK ===")
+r = subprocess.run(
+    pod + ["inspect"] + ids,
+    capture_output=True, text=True
+)
+check(r.returncode == 0, "Container inspection failed")
 
-for path in targets:
-    if path in seen or not path.is_file():
-        continue
-    seen.add(path)
+containers = json.loads(r.stdout)
+found = False
 
-    if path.stat().st_size > 500000:
-        continue
+for container in containers:
+    cname = container.get("Name", "").lstrip("/")
+    mounts = container.get("Mounts") or []
+    shared = any(
+        str(m.get("Source", "")) == str(backend)
+        for m in mounts
+    )
+    if cname == name:
+        found = True
+        check(shared, "Isolated backend mount differs")
+        check(
+            not container.get("State", {}).get("Running", False),
+            "Isolated container running; do not edit live code"
+        )
+    elif shared and container.get("State", {}).get("Running", False):
+        raise SystemExit(
+            "STOP: Backend shared with running container " + cname
+        )
 
-    src = path.read_text(errors="replace")
-    lines = src.splitlines()
+check(found, "Target isolated container not found")
 
-    try:
-        tree = ast.parse(src)
-    except SyntaxError:
-        continue
+if new in source:
+    print("BATCH-2 GRAPH: ALREADY SELECTED")
+else:
+    check(source.count(old) == 1, "Expected import differs")
+    check(not backup.exists(), "Backup already exists")
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name in names:
-                print(f"\n=== {path} :: {node.name} ===")
-                start = node.lineno
-                end = min(node.end_lineno, start + 150)
-                for i in range(start, end + 1):
-                    print(f"{i}: {lines[i-1]}")
+    updated = source.replace(old, new, 1)
+    ast.parse(updated)
 
-    if path.name == "real_max_batch2_backend.py":
-        print("\n=== GRAPH LOAD / CACHE REFERENCES ===")
-        for i, line in enumerate(lines):
-            if any(x in line for x in (
-                "session.load(",
-                "_max_model",
-                "graph.inputs",
-                "runtime_inputs",
-                "build_grecbase_fusion_graph_order_correct"
-            )):
-                print(f"{i+1}: {line}")
+    shutil.copy2(backend, backup)
+    backend.write_text(updated)
 
-print("\nGRAPH INSPECTION: COMPLETE")
-print("FILES MODIFIED: 0")
-print("CONTAINERS RESTARTED: 0")
+    check(
+        ast.parse(backend.read_text()) is not None,
+        "Syntax verification failed"
+    )
+
+    print("BATCH-2 GRAPH: SELECTED")
+    print("BACKUP: PRESERVED")
+
+print("SYNTAX: PASS")
 print("ORIGINAL DS: UNCHANGED")
+print("ORIGINAL MAX: NOT RESTARTED")
+print("ISOLATED HTTP VALIDATION: PENDING")
 PY

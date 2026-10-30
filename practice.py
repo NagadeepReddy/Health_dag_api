@@ -1,4 +1,1 @@
-curl --noproxy '*' -sS \
-  --connect-timeout 3 --max-time 10 \
-  -w '\nHTTP STATUS: %{http_code}\n' \
-  http://127.0.0.1:8765/health
+ssh -N -L 18765:127.0.0.1:8765 YOUR_VSCODE_SSH_HOST

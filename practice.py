@@ -1,42 +1,39 @@
 python3 - <<'PY'
-import ast
 from pathlib import Path
+import ast, shutil
 
-base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+p = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2_cached_overlay/cta_native_scheduler.py")
+assert p.is_file(), "STOP: Isolated scheduler missing"
 
-files = [
-    base / "native_batch2_cached_overlay/cta_worker_adapter.py",
-    base / "native_batch2_cached_overlay/cta_native_scheduler.py",
-    base / "real_max_batch2_backend.py",
-]
+src = p.read_text()
+assert "CTA QUEUE SEND COMPLETE" not in src, "STOP: Already instrumented"
 
-for path in files:
-    print(f"\n=== {path.name} ===", flush=True)
-    if not path.is_file():
-        print("FILE NOT FOUND")
-        continue
+lines = src.splitlines()
+a = [i for i,s in enumerate(lines) if s.strip() == "if not isinstance(results, (list, tuple)):"]
+b = [i for i,s in enumerate(lines) if s.strip() == "self.response_queue.put_nowait(responses)"]
 
-    lines = path.read_text().splitlines()
-    tree = ast.parse("\n".join(lines))
-    selected = set()
+assert len(a) == len(b) == 1, "STOP: Scheduler structure differs"
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name in ("predict_batch", "infer_max_batch"):
-                start = max(node.lineno, node.end_lineno - 55)
-                selected.update(range(start, node.end_lineno + 1))
+for i in sorted([a[0], b[0]], reverse=True):
+    indent = lines[i][:len(lines[i])-len(lines[i].lstrip())]
+    if i == a[0]:
+        lines.insert(i, indent + 'print("CTA BATCH RETURNED:", type(results).__name__, flush=True)')
+    else:
+        lines.insert(i+1, indent + 'print("CTA QUEUE SEND COMPLETE", flush=True)')
+        lines.insert(i, indent + 'print("CTA QUEUE SEND BEGIN:", len(responses), flush=True)')
 
-    for i, line in enumerate(lines, 1):
-        if any(x in line for x in (
-            "TWO JSON RESPONSES PRODUCED",
-            "response_queue.put_nowait",
-            "CTA WORKER RESPONSE IDS",
-        )):
-            selected.update(range(max(1, i-5), min(len(lines), i+12)+1))
+patched = "\n".join(lines) + "\n"
+ast.parse(patched)
 
-    for i in sorted(selected):
-        print(f"{i}: {lines[i-1]}")
+backup = p.with_suffix(".py.before_queue_trace")
+assert not backup.exists(), "STOP: Backup already exists"
+shutil.copy2(p, backup)
+p.write_text(patched)
 
-print("\nTARGETED RETURN-PATH INSPECTION: COMPLETE")
-print("NO FILES MODIFIED")
+print("ISOLATED SCHEDULER TRACE: INSTALLED")
+print("SYNTAX: PASS")
+print("BACKUP: PRESERVED")
+print("ORIGINAL DS: UNCHANGED")
+print("WORKING MAX SERVER: UNCHANGED")
+print("NEXT: ISOLATED HTTP RETEST")
 PY

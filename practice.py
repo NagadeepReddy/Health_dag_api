@@ -1,10 +1,12 @@
-POD="podman --root /application1/podman/storage --runroot /run/containers/storage"
+echo "=== NATIVE MAX HEALTH ==="
+curl --noproxy '*' -sS --max-time 5 \
+  -o /dev/null -w 'HTTP: %{http_code}\n' \
+  http://127.0.0.1:8765/health
 
-CID=$($POD ps --format '{{.ID}} {{.Image}}' | awk '$2 ~ /cta-max-faiss/ {print $1; exit}')
+echo "=== CONTAINER STATUS ==="
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  ps -a --format 'table {{.ID}}\t{{.Status}}\t{{.Names}}'
 
-if [ -n "$CID" ]; then
-  echo "=== LIVE MAX WORKER PROCESSES ==="
-  $POD top "$CID"
-else
-  echo "NO RUNNING MAX CONTAINER"
-fi
+echo "=== PORT 8765 ==="
+ss -ltnp '( sport = :8765 )'

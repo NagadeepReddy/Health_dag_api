@@ -1,79 +1,55 @@
 python3 -B <<'PY'
 from pathlib import Path
-import ast, re
+import ast
 
-BASE = Path(
-    "/application1/cta_max_true_batch_dev_20261028/"
-    "batch2_candidate/cta_max"
-)
-REF = Path(
-    "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
-    "real_max_batch2_backend.py"
-)
+DEV = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+ORIG = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
 
-FILES = [
-    ("ACTIVE NATIVE GRAPH",
-     BASE / "grecbase_fusion_batch2_draft.py", 35, 90),
-    ("ACTIVE AUXILIARY HELPER",
-     BASE / "grecbase_aux_features_max.py", 1, 85),
-    ("ACTIVE NLP HELPER",
-     BASE / "nlp_bert_in_graph.py", 1, 165),
-]
+print("=== CONTEXT BRANCH ROOT-CAUSE CHECK ===")
 
-print("=== BATCH-2 ROOT-CAUSE SOURCE COMPARISON ===")
+for label, root in [
+    ("ISOLATED BATCH-2", DEV),
+    ("PREVIOUS VALIDATED MAX", ORIG),
+]:
+    print("\n===", label, "===")
+    for name in [
+        "main_context_max.py",
+        "grecbase_fusion_full_head_72_max.py",
+        "grecbase_fusion_batch2_draft.py",
+    ]:
+        p = root / name
+        if not p.is_file():
+            continue
 
-for title, path, start, end in FILES:
-    print("\n===", title, "===")
-    print("PATH:", path)
+        print("\nFILE:", p)
+        lines = p.read_text().splitlines()
 
-    if not path.is_file():
-        print("MISSING")
-        continue
+        for i, line in enumerate(lines):
+            if (
+                "def main_context_forward" in line
+                or "main_context_forward(" in line
+                or "context, deep_extract =" in line
+                or "ops.reshape(x, [2, 1, 256])" in line
+            ):
+                a = max(0, i - 5)
+                b = min(len(lines), i + 12)
+                for j in range(a, b):
+                    print(f"{j+1}: {lines[j]}")
 
-    source = path.read_text()
-    try:
-        ast.parse(source)
-        print("SYNTAX: PASS")
-    except SyntaxError as e:
-        print("SYNTAX ERROR:", e)
-        continue
+        if name == "main_context_max.py":
+            print("\nCONTEXT FUNCTION RETURN / POOLING:")
+            for i, line in enumerate(lines):
+                if any(x in line for x in (
+                    "return ", "ops.mean(", "ops.max(",
+                    "ops.sum(", "ops.concat(", "ops.reshape("
+                )):
+                    print(f"{i+1}: {line}")
 
-    lines = source.splitlines()
-
-    if title == "ACTIVE NLP HELPER":
-        patterns = (
-            "return ", "def ", "ops.reshape",
-            "ops.mean", "ops.max", "ops.concat"
-        )
-        selected = [
-            (i, line) for i, line in enumerate(lines, 1)
-            if any(p in line for p in patterns)
-        ]
-        for i, line in selected[:32]:
-            print(f"{i}: {line}")
-    else:
-        for i in range(start, min(end, len(lines)) + 1):
-            print(f"{i}: {lines[i-1]}")
-
-print("\n=== PREVIOUSLY WORKING CPU BATCH BACKEND ===")
-print("PATH:", REF)
-
-if REF.is_file():
-    lines = REF.read_text().splitlines()
-    for i, line in enumerate(lines, 1):
-        if re.search(
-            r"def |import |grecbase|graph|execute|batch|infer",
-            line, re.I
-        ):
-            print(f"{i}: {line[:220]}")
-else:
-    print("Reference unavailable at known path")
-
-print("\n=== CURRENT VERIFIED STATUS ===")
-print("NATIVE CONTAINER: HEALTHY IN LAST CHECK")
-print("CPU BATCH-2: PREVIOUSLY PASSED")
-print("NATIVE HTTP BATCH-2: BLOCKED BY SHAPE")
+print("\n=== RESULT ===")
+print("FAULT: 3x128 context candidate versus 256-wide fusion")
+print("PREVIOUSLY PASSED CPU BATCH-2: PRESERVED")
+print("ORIGINAL DS/MAX: UNCHANGED")
 print("FILES MODIFIED: NONE")
 print("CONTAINERS RESTARTED: NONE")
-print("NEXT: IDENTIFY FAULTY BRANCH BEFORE PATCH")
+print("NEXT: USE VERIFIED CONTEXT AGGREGATION, NOT ARBITRARY RESHAPE")
 PY

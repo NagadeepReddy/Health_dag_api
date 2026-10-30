@@ -1,41 +1,52 @@
 python3 - <<'PY'
 from pathlib import Path
+import ast
 
-base = Path("/application1")
+base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
+
 files = [
-    base / "cta_max_true_batch_dev_20261028/batch2_candidate/cta_max/parallel_transformer_block_2layers.py",
-    base / "CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py",
-    base / "CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_after_cache_fix.log",
+    base / "native_batch2/cta_worker_adapter.py",
+    base / "native_batch2/cta_native_scheduler.py",
+    base / "real_max_batch2_backend.py",
 ]
 
 for p in files:
-    print(f"\n===== {p.name} =====")
+    print("\n===== " + p.name + " =====")
     if not p.is_file():
-        print("FILE NOT FOUND")
+        print("MISSING:", p)
         continue
 
-    lines = p.read_text(errors="replace").splitlines()
+    source = p.read_text()
+    tree = ast.parse(source)
+    lines = source.splitlines()
 
-    if p.suffix == ".log":
-        selected = [
-            (i, line) for i, line in enumerate(lines, 1)
-            if any(k in line.lower() for k in
-                   ("pass", "weight", "batch", "error"))
-        ]
-        for i, line in selected[-25:]:
-            print(f"{i}: {line[:250]}")
-    else:
-        for i, line in enumerate(lines, 1):
-            if any(k in line.lower() for k in
-                   ("weight", "np.load", "sequence_weights",
-                    "model.execute", "sys.path", "chdir")):
-                start = max(0, i - 3)
-                end = min(len(lines), i + 3)
-                print(f"\nLINES {start+1}-{end}")
-                for j in range(start, end):
-                    print(f"{j+1}: {lines[j]}")
+    print("FUNCTIONS:")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if any(x in node.name.lower() for x in
+                   ("predict", "batch", "infer", "dispatch", "execute")):
+                print(f"  {node.lineno}: {node.name}")
 
-print("\nREAD-ONLY INSPECTION COMPLETE")
+    print("INTEGRATION POINTS:")
+    keywords = (
+        "real_max_batch2_backend",
+        "predict_batch",
+        "infer_max_batch",
+        "model.execute",
+        "batch2_contract",
+        "request_id",
+    )
+
+    matches = [
+        (i, line.strip())
+        for i, line in enumerate(lines, 1)
+        if any(k in line for k in keywords)
+    ]
+
+    for i, line in matches[:35]:
+        print(f"  {i}: {line[:180]}")
+
+print("\nINSPECTION COMPLETE")
 print("ORIGINAL DS/MAX: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")
 PY

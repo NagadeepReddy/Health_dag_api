@@ -1,5 +1,4 @@
 python3 -B - <<'PY'
-from pathlib import Path
 import subprocess, json
 
 P = ["podman", "--root", "/application1/podman/storage",
@@ -15,102 +14,155 @@ for cid in subprocess.check_output(P + ["ps", "-q"], text=True).split():
         ids.append(cid)
 
 if len(ids) != 1:
-    raise SystemExit("STOP: Existing Batch-2 container unavailable")
+    raise SystemExit("STOP: Expected one existing development container")
 
 code = r'''
-import sys, os, ast, json, inspect, hashlib
-import numpy as np
+import sys, os, ast, json, hashlib, inspect, io, contextlib
 from pathlib import Path
+import numpy as np
 
 root = Path("/workspace")
 core = root / "artifacts/v1.168/core-artifact"
 mx = root / "artifacts/v1.168-max"
+
 sys.path[:0] = [str(core), str(mx), "/batch2"]
 
 spawn = mx / "maxserve_cta_extension/cta_spawn_worker.py"
 if spawn.is_file():
     for n in ast.walk(ast.parse(spawn.read_text())):
-        if not (isinstance(n, ast.Call) and
-                isinstance(n.func, ast.Attribute) and
-                n.func.attr == "setdefault" and len(n.args) >= 2):
+        if not (isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "setdefault"
+                and len(n.args) >= 2):
             continue
         try:
-            k, v = ast.literal_eval(n.args[0]), ast.literal_eval(n.args[1])
+            k = ast.literal_eval(n.args[0])
+            v = ast.literal_eval(n.args[1])
         except (TypeError, ValueError, SyntaxError):
             continue
         if k in ("modelId", "expThrottleLabel") and isinstance(v, str):
             os.environ.setdefault(k, v)
 
 import pipeline
-from native_batch2 import cta_worker_adapter as mod
+from native_batch2 import cta_worker_adapter
 
 classes = [
-    c for _, c in inspect.getmembers(mod, inspect.isclass)
-    if c.__module__ == mod.__name__
+    c for _, c in inspect.getmembers(cta_worker_adapter, inspect.isclass)
+    if c.__module__ == cta_worker_adapter.__name__
     and callable(getattr(c, "predict_batch", None))
 ]
+
 assert len(classes) == 1
 
-# Preprocessing only — no model execution.
-adapter = classes[0](pipeline.pipeline, lambda x: x)
-instance = adapter.initialize()
+with contextlib.redirect_stdout(io.StringIO()):
+    adapter = classes[0](pipeline.pipeline, lambda x: x)
+    original = adapter.initialize()
 
-fixtures = [
-    mx / "test-results/cta_max_tiles_smoketest_input.json",
-    mx / "cta_native_adjusted_sanity_input.json",
-    root / "artifacts/v1.168/samples/sanity_input.json"
+def fingerprint(v):
+    if hasattr(v, "detach"):
+        v = v.detach().cpu().numpy()
+    try:
+        a = np.asarray(v)
+        if a.dtype.kind not in "OUSV":
+            return (str(a.dtype), tuple(a.shape),
+                    hashlib.sha256(
+                        np.ascontiguousarray(a).tobytes()
+                    ).hexdigest())
+    except (ValueError, TypeError):
+        pass
+    return ("other", hashlib.sha256(
+        repr(v).encode()).hexdigest())
+
+def preprocess(path):
+    body = json.loads(path.read_text())
+    if not isinstance(body, dict):
+        return None
+    with contextlib.redirect_stdout(io.StringIO()):
+        result = original.preprocess(body)
+    inputs = result[0]
+    if not isinstance(inputs, dict) or len(inputs) != 17:
+        return None
+    return {k: fingerprint(v) for k, v in inputs.items()}
+
+baseline = mx / "test-results/cta_max_tiles_smoketest_input.json"
+if not baseline.is_file():
+    raise SystemExit("STOP: Verified baseline unavailable")
+
+reference = preprocess(baseline)
+if reference is None:
+    raise SystemExit("STOP: Baseline preprocessing changed")
+
+# Exclude the three already-tested fixtures.
+excluded = {
+    baseline.resolve(),
+    (mx / "cta_native_adjusted_sanity_input.json").resolve(),
+    (root / "artifacts/v1.168/samples/sanity_input.json").resolve()
+}
+
+folders = [
+    root / "artifacts/v1.168/samples",
+    mx / "test-results",
+    mx
 ]
 
-def fingerprint(value):
-    if hasattr(value, "detach"):
-        value = value.detach().cpu().numpy()
-    try:
-        arr = np.asarray(value)
-        if arr.dtype.kind not in "OUSV":
-            return (
-                str(arr.dtype), tuple(arr.shape),
-                hashlib.sha256(
-                    np.ascontiguousarray(arr).tobytes()
-                ).hexdigest()
-            )
-    except (TypeError, ValueError):
-        pass
-    return ("other", repr(value))
+files = set()
+for folder in folders:
+    if folder.is_dir():
+        for p in folder.rglob("*.json"):
+            if (p.is_file() and not p.is_symlink()
+                and p.resolve() not in excluded
+                and p.stat().st_size < 2_000_000
+                and any(word in p.name.lower() for word in
+                    ("input", "request", "sample",
+                     "fixture", "payload", "smoke"))):
+                files.add(p)
 
-prepared = []
-for path in fixtures:
-    if not path.is_file():
-        print("SKIP MISSING:", path.name, flush=True)
-        continue
-    try:
-        body = json.loads(path.read_text())
-        result = instance.preprocess(body)
-        inputs = result[0]
-        assert isinstance(inputs, dict)
-        prepared.append((path.name, {
-            k: fingerprint(v) for k, v in inputs.items()
-        }))
-        print("PREPROCESS PASS:", path.name,
-              "INPUTS:", len(inputs), flush=True)
-    except Exception as exc:
-        print("SKIP INVALID:", path.name,
-              type(exc).__name__, str(exc)[:200], flush=True)
+candidates = sorted(files)[:60]
+print("NEW REQUEST FIXTURES FOUND:", len(candidates), flush=True)
 
-found = False
-for i in range(len(prepared)):
-    for j in range(i + 1, len(prepared)):
-        name1, a = prepared[i]
-        name2, b = prepared[j]
-        different = sum(
-            a.get(k) != b.get(k)
-            for k in a.keys() | b.keys()
+tested = 0
+found = None
+
+for p in candidates:
+    try:
+        signature = preprocess(p)
+        if signature is None:
+            continue
+        tested += 1
+
+        if signature.keys() != reference.keys():
+            continue
+
+        # Require matching tensor types and shapes.
+        compatible = all(
+            a[:-1] == signature[k][:-1]
+            for k, a in reference.items()
         )
-        print("PAIR:", name1, "+", name2,
-              "DIFFERENT INPUTS:", different, flush=True)
-        if different > 0:
-            found = True
+        if not compatible:
+            continue
 
-print("DISTINCT MODEL INPUT PAIR:", "FOUND" if found else "NOT FOUND")
+        different = sum(
+            reference[k] != signature[k]
+            for k in reference
+        )
+
+        if different:
+            found = (p, different)
+            break
+
+    except Exception:
+        continue
+
+print("ADDITIONAL VALID FIXTURES:", tested)
+
+if found:
+    print("DISTINCT MODEL INPUT PAIR: FOUND")
+    print("REQUEST 1:", baseline)
+    print("REQUEST 2:", found[0])
+    print("DIFFERENT MODEL INPUTS:", found[1])
+else:
+    print("DISTINCT MODEL INPUT PAIR: NOT FOUND IN EXISTING FIXTURES")
+
 print("MAX EXECUTIONS: ZERO")
 print("ORIGINAL DS/MAX: UNCHANGED")
 '''
@@ -123,12 +175,12 @@ try:
         input=code, text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=90
+        timeout=120
     )
-    print(r.stdout[-4500:])
+    print(r.stdout[-4000:])
     print("EXIT CODE:", r.returncode)
 except subprocess.TimeoutExpired:
-    print("STOP: Preprocessing check exceeded 90 seconds")
+    print("STOP: Fixture scan exceeded 120 seconds")
 
 print("CONTAINERS RESTARTED: NONE")
 PY

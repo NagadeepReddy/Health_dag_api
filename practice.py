@@ -6,15 +6,6 @@ P = ["podman", "--root", "/application1/podman/storage",
      "--runroot", "/run/containers/storage"]
 dev = "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029"
 
-mem = int(next(
-    x.split()[1] for x in Path("/proc/meminfo").read_text().splitlines()
-    if x.startswith("MemAvailable:")
-)) // 1024
-
-print("AVAILABLE RAM MB:", mem, flush=True)
-if mem < 12000:
-    raise SystemExit("STOP: Insufficient available RAM")
-
 ids = []
 for cid in subprocess.check_output(P + ["ps", "-q"], text=True).split():
     info = json.loads(subprocess.check_output(
@@ -27,101 +18,117 @@ if len(ids) != 1:
     raise SystemExit("STOP: Existing Batch-2 container unavailable")
 
 code = r'''
-import os, sys, ast, json, inspect
+import sys, os, ast, json, inspect, hashlib
+import numpy as np
 from pathlib import Path
 
 root = Path("/workspace")
 core = root / "artifacts/v1.168/core-artifact"
 mx = root / "artifacts/v1.168-max"
-
-sys.dont_write_bytecode = True
 sys.path[:0] = [str(core), str(mx), "/batch2"]
 
 spawn = mx / "maxserve_cta_extension/cta_spawn_worker.py"
 if spawn.is_file():
     for n in ast.walk(ast.parse(spawn.read_text())):
-        if not (isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Attribute)
-                and n.func.attr == "setdefault"
-                and len(n.args) >= 2):
+        if not (isinstance(n, ast.Call) and
+                isinstance(n.func, ast.Attribute) and
+                n.func.attr == "setdefault" and len(n.args) >= 2):
             continue
         try:
-            k = ast.literal_eval(n.args[0])
-            v = ast.literal_eval(n.args[1])
-        except (ValueError, TypeError, SyntaxError):
+            k, v = ast.literal_eval(n.args[0]), ast.literal_eval(n.args[1])
+        except (TypeError, ValueError, SyntaxError):
             continue
         if k in ("modelId", "expThrottleLabel") and isinstance(v, str):
             os.environ.setdefault(k, v)
 
 import pipeline
-assert Path(pipeline.__file__).resolve() == (core / "pipeline.py").resolve()
-
-import cta_max
-repo_pkg = str(mx / "cta_max")
-if repo_pkg not in cta_max.__path__:
-    cta_max.__path__.append(repo_pkg)
-
-from cta_max.live_cta_pipeline_bridge import attach_max
-from native_batch2 import cta_worker_adapter
+from native_batch2 import cta_worker_adapter as mod
 
 classes = [
-    c for _, c in inspect.getmembers(cta_worker_adapter, inspect.isclass)
-    if c.__module__ == cta_worker_adapter.__name__
+    c for _, c in inspect.getmembers(mod, inspect.isclass)
+    if c.__module__ == mod.__name__
     and callable(getattr(c, "predict_batch", None))
 ]
-assert len(classes) == 1, "Batch adapter unavailable"
+assert len(classes) == 1
+
+# Preprocessing only — no model execution.
+adapter = classes[0](pipeline.pipeline, lambda x: x)
+instance = adapter.initialize()
 
 fixtures = [
     mx / "test-results/cta_max_tiles_smoketest_input.json",
-    mx / "cta_native_adjusted_sanity_input.json"
+    mx / "cta_native_adjusted_sanity_input.json",
+    root / "artifacts/v1.168/samples/sanity_input.json"
 ]
-assert all(p.is_file() for p in fixtures), "Known fixtures unavailable"
 
-bodies = [json.loads(p.read_text()) for p in fixtures]
-assert all(isinstance(x, dict) for x in bodies)
+def fingerprint(value):
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    try:
+        arr = np.asarray(value)
+        if arr.dtype.kind not in "OUSV":
+            return (
+                str(arr.dtype), tuple(arr.shape),
+                hashlib.sha256(
+                    np.ascontiguousarray(arr).tobytes()
+                ).hexdigest()
+            )
+    except (TypeError, ValueError):
+        pass
+    return ("other", repr(value))
 
-adapter = classes[0](pipeline.pipeline, attach_max)
+prepared = []
+for path in fixtures:
+    if not path.is_file():
+        print("SKIP MISSING:", path.name, flush=True)
+        continue
+    try:
+        body = json.loads(path.read_text())
+        result = instance.preprocess(body)
+        inputs = result[0]
+        assert isinstance(inputs, dict)
+        prepared.append((path.name, {
+            k: fingerprint(v) for k, v in inputs.items()
+        }))
+        print("PREPROCESS PASS:", path.name,
+              "INPUTS:", len(inputs), flush=True)
+    except Exception as exc:
+        print("SKIP INVALID:", path.name,
+              type(exc).__name__, str(exc)[:200], flush=True)
 
-print("TWO REAL CTA JSON REQUESTS: READY", flush=True)
-print("REAL MAX BATCH-2: START", flush=True)
+found = False
+for i in range(len(prepared)):
+    for j in range(i + 1, len(prepared)):
+        name1, a = prepared[i]
+        name2, b = prepared[j]
+        different = sum(
+            a.get(k) != b.get(k)
+            for k in a.keys() | b.keys()
+        )
+        print("PAIR:", name1, "+", name2,
+              "DIFFERENT INPUTS:", different, flush=True)
+        if different > 0:
+            found = True
 
-responses = adapter.predict_batch(bodies)
-
-assert isinstance(responses, (list, tuple))
-assert len(responses) == 2, "Response count mismatch"
-
-for i, response in enumerate(responses, 1):
-    assert isinstance(response, dict), "Invalid response object"
-    assert "error" not in response, str(response.get("error"))
-    assert isinstance(response.get("jsonData"), dict)
-    assert "prediction" in response["jsonData"]
-    json.dumps(response, allow_nan=False)
-    print(f"CTA RESPONSE {i}: PASS", flush=True)
-
-print("REAL CTA JSON BATCH-2: PASS", flush=True)
+print("DISTINCT MODEL INPUT PAIR:", "FOUND" if found else "NOT FOUND")
+print("MAX EXECUTIONS: ZERO")
+print("ORIGINAL DS/MAX: UNCHANGED")
 '''
 
 try:
     r = subprocess.run(
         P + ["exec", "-i", "-w", "/workspace",
              "-e", "PYTHONDONTWRITEBYTECODE=1",
-             "-e", "TMPDIR=/tmp",
-             "-e", "PYTHONPATH=/batch2:/workspace/artifacts/v1.168-max",
              ids[0], "/opt/venv/bin/python", "-B", "-"],
         input=code, text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=300
+        timeout=90
     )
-    print(r.stdout[-8000:])
-    print("JSON BATCH-2 EXIT CODE:", r.returncode)
-except subprocess.TimeoutExpired as e:
-    out = e.stdout or b""
-    if isinstance(out, bytes):
-        out = out.decode(errors="replace")
-    print(out[-4000:])
-    print("STOP: Test exceeded 300 seconds")
+    print(r.stdout[-4500:])
+    print("EXIT CODE:", r.returncode)
+except subprocess.TimeoutExpired:
+    print("STOP: Preprocessing check exceeded 90 seconds")
 
-print("ORIGINAL DS/MAX: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")
 PY

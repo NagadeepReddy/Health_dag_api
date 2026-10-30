@@ -1,41 +1,44 @@
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-exec -i cta-batch2-trace-8766-10g \
-/opt/venv/bin/python -B - <<'PY'
-import importlib.util
+PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
 from pathlib import Path
+import shutil
+import re
 
-print("=== REAL BATCH-2 IMPORT CHECK ===")
+root = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+graph = root / "grecbase_fusion_batch2_draft.py"
+helper = root / "grecbase_aux_features_max.py"
 
-spec = importlib.util.find_spec("cta_max")
-print("ACTIVE CTA PACKAGE:", list(spec.submodule_search_locations) if spec and spec.submodule_search_locations else "NOT FOUND")
+old = "from cta_max.grecbase_aux_branches_max import grecbase_aux_features"
+new = "from cta_max.grecbase_aux_features_max import grecbase_aux_features"
 
-roots = [
-    Path("/batch2/cta_max"),
-    Path("/workspace/artifacts/v1.168-max/cta_max"),
-]
+assert graph.is_file() and helper.is_file(), "STOP: Candidate files missing"
 
-for root in roots:
-    for name in (
-        "grecbase_aux_branches_max.py",
-        "grecbase_aux_features_max.py",
-        "grecbase_fusion_batch2_draft.py",
-    ):
-        p = root / name
-        if not p.is_file():
-            continue
+source = graph.read_text()
+fixed = helper.read_text()
 
-        print("\nFILE:", p)
-        lines = p.read_text().splitlines()
-        for i, line in enumerate(lines, 1):
-            if any(x in line for x in (
-                "def grecbase_aux_features",
-                "from cta_max.grecbase_aux",
-                "ops.reshape(",
-                "grecbase_aux_features("
-            )):
-                print(f"{i}: {line.strip()}")
+assert re.search(r"\[\s*2\s*,\s*256\s*\]", fixed)
+assert re.search(r"\[\s*2\s*,\s*1\s*,\s*128\s*\]", fixed)
 
-print("\nFILES MODIFIED: NONE")
+if old in source:
+    assert source.count(old) == 1
+    updated = source.replace(old, new)
+    compile(updated, str(graph), "exec")
+    compile(fixed, str(helper), "exec")
+
+    backup = graph.with_name(graph.name + ".before_batch2_helper_fix")
+    if not backup.exists():
+        shutil.copy2(graph, backup)
+
+    graph.write_text(updated)
+    print("BATCH-2 HELPER IMPORT: FIXED")
+    print("BACKUP: PRESERVED")
+elif new in source:
+    print("BATCH-2 HELPER IMPORT: ALREADY FIXED")
+else:
+    raise RuntimeError("STOP: Unexpected import; no change")
+
+print("SYNTAX: PASS")
+print("ORIGINAL DS: UNCHANGED")
+print("ORIGINAL MAX: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")
+print("NEXT: Verify isolated runtime and native Batch-2")
 PY

@@ -1,56 +1,51 @@
-python3 - <<'PY'
-from pathlib import Path
-import ast
+run_cta_batch2() {
+  local R=/application1
+  local DEV=$R/CTA_MAX_TRUE_BATCH2_DEV_20261029
+  local CAND=$R/cta_max_true_batch_dev_20261028/batch2_candidate
+  local REPO=$R/sajjna8/rt-pzaas-cta-offers-v1
+  local NAME=cta-batch2-importfirst-8766
+  local POD=(podman --root "$R/podman/storage" --runroot /run/containers/storage)
 
-base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/native_batch2_cached_overlay")
-target = base / "cta_native_batch2_import_first.py"
+  test -f "$DEV/native_batch2_cached_overlay/cta_native_batch2_import_first.py" || {
+    echo "STOP: Launcher missing"; return 1;
+  }
+  test -f "$CAND/cta_max/grecbase_aux_features_max.py" || {
+    echo "STOP: Batch-2 candidate missing"; return 1;
+  }
+  test -f "$DEV/real_max_batch2_backend.py" || {
+    echo "STOP: Real MAX backend missing"; return 1;
+  }
+  test -d "$DEV/mojo_cache_8766" || {
+    echo "STOP: Existing Mojo cache missing"; return 1;
+  }
+  if "${POD[@]}" container exists "$NAME"; then
+    echo "STOP: Container name already exists"
+    return 1
+  fi
+  python3 -c 'import socket; s=socket.socket(); s.bind(("0.0.0.0",8766)); s.close()' || {
+    echo "STOP: Port 8766 occupied"; return 1;
+  }
 
-assert base.is_dir(), "STOP: Isolated overlay missing"
-assert (base / "cta_native_batch2_proven_server.py").is_file(), "STOP: Existing native server missing"
-assert Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max").is_dir(), "STOP: Batch-2 candidate missing"
-assert not target.exists(), "STOP: Launcher already exists"
+  "${POD[@]}" run -d \
+    --name "$NAME" \
+    --network host \
+    --read-only \
+    --memory 1700m \
+    --memory-swap 1700m \
+    --tmpfs /tmp:rw,exec,size=1024m \
+    --tmpfs /run:rw,size=64m \
+    -e PYTHONDONTWRITEBYTECODE=1 \
+    -e PYTHONUNBUFFERED=1 \
+    -e PYTHONPATH=/batch2:/workspace:/workspace/artifacts/v1.168-max \
+    -v "$REPO:/workspace:ro" \
+    -v "$DEV/native_batch2_cached_overlay:/workspace/artifacts/v1.168-max/maxserve_cta_extension:ro" \
+    -v "$CAND:/batch2:ro" \
+    -v "$DEV/real_max_batch2_backend.py:/batch2/real_max_batch2_backend.py:ro" \
+    -v "$DEV/mojo_cache_8766:/opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw" \
+    -w /workspace \
+    --entrypoint /opt/venv/bin/python \
+    localhost/cta-max-faiss:local \
+    -B /workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_batch2_import_first.py
+}
 
-source = '''
-import sys
-import importlib
-import importlib.util
-import runpy
-
-sys.path.insert(0, "/batch2")
-sys.path.insert(1, "/workspace/artifacts/v1.168-max")
-
-import cta_max
-cta_max.__path__.insert(0, "/batch2/cta_max")
-importlib.invalidate_caches()
-
-modules = [
-    "grecbase_aux_features_max",
-    "grecbase_aux_branches_max",
-    "parallel_transformer_block_2layers",
-    "nlp_bert_in_graph",
-]
-
-for name in modules:
-    spec = importlib.util.find_spec("cta_max." + name)
-    assert spec and spec.origin.startswith("/batch2/cta_max/"), (
-        "STOP: Wrong module loaded: " + name
-    )
-    print("BATCH-2 MODULE:", name, spec.origin, flush=True)
-
-print("BATCH-2 IMPORT PRIORITY: PASS", flush=True)
-
-runpy.run_path(
-    "/workspace/artifacts/v1.168-max/maxserve_cta_extension/cta_native_batch2_proven_server.py",
-    run_name="__main__"
-)
-'''
-
-ast.parse(source)
-target.write_text(source)
-
-print("ISOLATED LAUNCHER: CREATED")
-print("SYNTAX: PASS")
-print("ORIGINAL DS/MAX: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
-print("NEXT: RUN CORRECTED NATIVE BATCH-2")
-PY
+run_cta_batch2

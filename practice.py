@@ -1,128 +1,171 @@
 
 PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import ast, re
+import ast
+import shutil
 from pathlib import Path
 
 root = Path(
     "/application1/cta_max_true_batch_dev_20261028/"
     "batch2_candidate/cta_max"
 )
-assert root.is_dir(), "STOP: Candidate path missing"
 
-focus = {
-    "grecbase_aux_features_max.py",
-    "grecbase_fusion_batch2_draft.py",
-    "parallel_transformer_block_2layers.py",
-    "nlp_bert_in_graph.py",
-    "grecbase_get_path_max.py",
+assert root.is_dir(), "STOP: Candidate directory missing"
+
+files = {
+    "grecbase_aux_features_max.py": "aux",
+    "grecbase_fusion_batch2_draft.py": "fusion",
+    "nlp_bert_in_graph.py": "nlp",
+    "parallel_transformer_block_2layers.py": "length",
+    "sequence_transformer_max.py": "length",
 }
 
-print("=== ACTIVE BATCH-2 RESHAPE ROOT-CAUSE CHECK ===")
+required = {
+    "grecbase_aux_features_max.py",
+    "grecbase_fusion_batch2_draft.py",
+}
 
-records = []
-for path in sorted(root.rglob("*.py")):
-    if path.stat().st_size > 500000:
+print("=== ACTIVE BATCH-2 FIX ===")
+
+plans = []
+
+for name, mode in files.items():
+    path = root / name
+    if not path.is_file():
+        if name in required:
+            raise SystemExit(f"STOP: Missing {path}")
         continue
 
-    src = path.read_text()
-    lines = src.splitlines()
-    try:
-        tree = ast.parse(src)
-    except SyntaxError:
-        continue
+    original = path.read_text()
+    tree = ast.parse(original)
+    lines = original.splitlines(keepends=True)
+    edits = {}
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         if not isinstance(node.func, ast.Attribute):
             continue
-        if node.func.attr not in ("reshape", "view"):
+        if node.func.attr != "reshape" or len(node.args) < 2:
             continue
 
-        expr = ast.get_source_segment(src, node) or ""
-        expr_flat = " ".join(expr.split())
-        if len(expr_flat) > 250:
-            expr_flat = expr_flat[:250]
-
-        # Detect fixed, symbolic and inferred shape dimensions.
-        target = (
-            ast.get_source_segment(src, node.args[-1])
-            if node.args else ""
-        ) or ""
-
-        target_flat = " ".join(target.split())
-        first_one = bool(re.search(
-            r"[\[(]\s*1\s*[,)]", target_flat
-        ))
-
-        suspicious = (
-            first_one
-            or "128" in target_flat
-            or "-1" in target_flat
-            or re.search(r"\bbatch\b|\bbsz\b", target_flat)
-        )
-
-        if not suspicious:
+        shape = node.args[-1]
+        if not isinstance(shape, (ast.List, ast.Tuple)):
+            continue
+        if not shape.elts:
             continue
 
-        score = 3
-        if re.search(r"[\[(]\s*1\s*,\s*128\s*[\])]", target_flat):
-            score = 0
-        elif re.search(
-            r"[\[(]\s*1\s*,\s*1\s*,\s*1\s*,\s*1\s*[\])]",
-            target_flat
-        ):
-            score = 0
-        elif first_one:
-            score = 1
-        elif "128" in target_flat:
-            score = 2
+        first = shape.elts[0]
+        if not isinstance(first, ast.Constant) or first.value != 1:
+            continue
 
-        if path.name in focus:
-            score -= 1
+        shape_text = ast.unparse(shape)
+        value_text = ast.unparse(node.args[0])
+        fix = False
 
-        records.append((
-            score, str(path), node.lineno,
-            expr_flat, lines
-        ))
+        if mode == "aux":
+            fix = shape_text in {
+                "[1, 2 * dim]",
+                "[1, 256]",
+                "[1, 1, 128]",
+            }
 
-records.sort(key=lambda x: (x[0], x[1], x[2]))
+        elif mode == "fusion":
+            fix = shape_text in {
+                "[1, 1, 128]",
+                "[1, 1, 256]",
+                "[1, 8, 1]",
+                "[1, 2048]",
+            }
 
-print("CANDIDATE CALLS:", len(records))
+        elif mode == "nlp":
+            fix = (
+                "seq_len" in shape_text
+                and any(
+                    x in value_text
+                    for x in (
+                        "attention_mask",
+                        "ops.gather(",
+                        "ops.permute(",
+                        "q",
+                        "k",
+                        "v",
+                    )
+                )
+            )
 
-for score, name, line, expr, lines in records[:45]:
-    print("\nFILE:", name)
-    print("LINE:", line)
-    print("CALL:", expr)
-    for i in range(max(1, line-2), min(len(lines), line+3)+1):
-        print(f"{i}: {lines[i-1]}")
+        elif mode == "length":
+            fix = (
+                shape_text == "[1, 1, 1, 1]"
+                and any(
+                    x in value_text
+                    for x in (
+                        "valid_length",
+                        "sequence_length",
+                    )
+                )
+            )
 
-print("\n=== POSSIBLE SYMBOLIC SHAPE DEFINITIONS ===")
+        if not fix:
+            continue
 
-for filename in sorted(focus):
-    path = root / filename
-    if not path.is_file():
-        continue
+        line = first.lineno - 1
+        col = first.col_offset
 
-    lines = path.read_text().splitlines()
-    matches = [
-        (i, line.strip())
-        for i, line in enumerate(lines, 1)
-        if re.search(
-            r"\b(batch_size|bsz|batch|seq_len|hidden_size)"
-            r"\s*=\s*1\b|"
-            r"reshape|"
-            r"\bshape\s*=\s*[\[(]\s*1\b",
-            line
+        assert lines[line][col] == "1", (
+            f"STOP: Unsafe source position {name}:{line+1}"
         )
-    ]
-    print("\n", filename, "MATCHES:", len(matches))
-    for i, line in matches[:25]:
-        print(f"{i}: {line[:200]}")
 
-print("\n=== SAFETY ===")
-print("FILES MODIFIED: 0")
-print("CONTAINERS RESTARTED: 0")
+        edits.setdefault(line, []).append(col)
+        print(f"FIX: {name}:{line+1} {shape_text}")
+
+    for line, positions in edits.items():
+        for col in sorted(set(positions), reverse=True):
+            lines[line] = (
+                lines[line][:col]
+                + "2"
+                + lines[line][col+1:]
+            )
+
+    updated = "".join(lines)
+    compile(updated, str(path), "exec")
+
+    if updated != original:
+        plans.append((path, original, updated))
+
+if not plans:
+    print("STOP: No eligible changes found")
+    raise SystemExit(1)
+
+# Verify every patch before modifying any source.
+for path, original, updated in plans:
+    assert path.is_file()
+    assert updated != original
+    assert "def " in updated
+
+# Preserve original versions on the same /application1 filesystem.
+for path, original, updated in plans:
+    backup = path.with_name(
+        path.name + ".before_batch2_shape_fix"
+    )
+
+    if not backup.exists():
+        shutil.copy2(path, backup)
+    else:
+        assert backup.is_file(), "STOP: Invalid backup"
+
+    temp = path.with_name(path.name + ".batch2_fix_tmp")
+    assert not temp.exists(), "STOP: Temporary file already exists"
+    temp.write_text(updated)
+    compile(temp.read_text(), str(path), "exec")
+    temp.replace(path)
+
+print("\n=== RESULTS ===")
+print("FILES PATCHED:", len(plans))
+print("BATCH SIZE TARGET: 2")
+print("SYNTAX: PASS")
+print("BACKUPS: PRESERVED")
 print("ORIGINAL DS: UNCHANGED")
-print("ORIGINAL MAX: UNCHANGED")
+print("ORIGINAL MAX: NOT RESTARTED")
+print("CONTAINERS: NOT RESTARTED")
+print("NEXT: BOUNDED NATIVE EXECUTION")
 PY

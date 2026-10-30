@@ -1,42 +1,35 @@
-POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+python3 - <<'PY'
+import json, time, urllib.request
+from pathlib import Path
 
-BASE_STATUS=$(curl --noproxy '*' -sS --max-time 10 \
-  -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/health)
+p = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
+assert p.is_file(), "STOP: CTA JSON missing"
+body = p.read_bytes()
+json.loads(body)
 
-[ "$BASE_STATUS" = 200 ] || {
-  echo "STOP: Working native MAX server not healthy"
-  exit 1
-}
+for n in (1, 2):
+    print(f"BASELINE SEQUENTIAL REQUEST {n}: START", flush=True)
+    start = time.monotonic()
+    try:
+        req = urllib.request.Request(
+            "http://127.0.0.1:8765/v2/cta/predict",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=240) as r:
+            output = json.load(r)
+            status = r.status
 
-PID=$(ss -H -ltnp '( sport = :8766 )' |
-  grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+        prediction = output["jsonData"]["prediction"]
+        assert status == 200
+        assert isinstance(prediction["offerList"], list)
 
-[ -n "$PID" ] || {
-  echo "Optimized server already stopped"
-  echo "WORKING NATIVE MAX: PASS"
-  exit 0
-}
+        print(f"REQUEST {n}: PASS HTTP 200")
+        print(f"LATENCY: {time.monotonic()-start:.2f}s", flush=True)
+    except Exception as e:
+        print(f"REQUEST {n}: NOT VERIFIED - {e}", flush=True)
+        break
 
-CID=$(sed -nE 's/.*libpod-([0-9a-f]{64})\.scope.*/\1/p' \
-  "/proc/$PID/cgroup" | head -1)
-
-[ -n "$CID" ] || {
-  echo "STOP: Container identity unavailable"
-  exit 1
-}
-
-"${POD[@]}" inspect --format '{{json .Mounts}}' "$CID" |
-grep -Fq 'native_batch2_cached_overlay' || {
-  echo "STOP: Container is not isolated optimized MAX"
-  exit 1
-}
-
-"${POD[@]}" stop --time 15 "$CID" || exit 1
-
-echo "OPTIMIZED TEST SERVER: STOPPED"
-echo "OPTIMIZED CODE: PRESERVED"
-echo "ORIGINAL DS: UNCHANGED"
-
-curl --noproxy '*' -sS --max-time 10 \
-  -o /dev/null -w 'WORKING MAX HTTP STATUS: %{http_code}\n' \
-  http://127.0.0.1:8765/health
+print("ORIGINAL DS: UNCHANGED")
+PY

@@ -1,52 +1,54 @@
 python3 -B - <<'PY'
+import subprocess, json
+
+P = ["podman", "--root", "/application1/podman/storage",
+     "--runroot", "/run/containers/storage"]
+
+target = "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029"
+matches = []
+
+for cid in subprocess.check_output(P + ["ps", "-q"], text=True).split():
+    info = json.loads(subprocess.check_output(
+        P + ["inspect", cid], text=True))[0]
+
+    for m in info.get("Mounts", []):
+        if m.get("Source") == target and m.get("Destination") == "/batch2":
+            matches.append(cid)
+
+if len(matches) != 1:
+    raise SystemExit(f"STOP: Expected one Batch-2 container; found {len(matches)}")
+
+code = '''
 from pathlib import Path
-import ast, shutil
+import importlib.util
 
-dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-backend = dev / "real_max_batch2_backend.py"
-candidate = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+p = Path("/batch2/real_max_batch2_backend.py")
+print("BACKEND:", p.is_file(), flush=True)
 
-if not backend.is_file():
-    raise SystemExit("STOP: Backend missing")
+paths = [
+    Path("/batch2/cta_max/parallel_transformer_block_2layers.py"),
+    Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max/parallel_transformer_block_2layers.py")
+]
+for path in paths:
+    print("TRANSFORMER:", path, path.is_file(), flush=True)
 
-if not (candidate / "parallel_transformer_block_2layers.py").is_file():
-    raise SystemExit("STOP: Corrected transformer missing")
+spec = importlib.util.spec_from_file_location("cta_batch2_test", p)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 
-src = backend.read_text()
+assert callable(module.infer_max_batch)
+print("BATCH-2 BACKEND IMPORT: PASS")
+'''
 
-changes = {
-    '_b2_dir = "/batch2/cta_max"':
-        f'_b2_dir = "{candidate}"',
+r = subprocess.run(
+    P + ["exec", "-i", "-e", "PYTHONDONTWRITEBYTECODE=1",
+         matches[0], "/opt/venv/bin/python", "-B", "-"],
+    input=code, text=True, capture_output=True, timeout=30
+)
 
-    '_b2_pkg.__path__ = [_b2_dir] + [':
-        '_b2_pkg.__path__ = [_b2_dir, "/batch2/cta_max"] + [',
-
-    '_b2_expected = _b2_dir + "/" + _b2_short + ".py"':
-        '_b2_expected = (_b2_dir if _b2_short == '
-        '"parallel_transformer_block_2layers" '
-        'else "/batch2/cta_max") + "/" + _b2_short + ".py"'
-}
-
-for old, new in changes.items():
-    if src.count(old) != 1:
-        raise SystemExit("STOP: Unexpected backend version")
-    src = src.replace(old, new, 1)
-
-ast.parse(src)
-
-backup = dev / "real_max_batch2_backend.py.before_split_helper_fix"
-
-if backup.exists():
-    raise SystemExit("STOP: Backup already exists")
-
-if shutil.disk_usage(dev).free < 10 * 1024 * 1024:
-    raise SystemExit("STOP: Low disk space")
-
-shutil.copy2(backend, backup)
-backend.write_text(src)
-
-print("BATCH-2 HELPER PATH FIX: INSTALLED")
-print("SYNTAX: PASS")
-print("ORIGINAL DS/MAX: UNCHANGED")
+print(r.stdout)
+if r.returncode:
+    print(r.stderr[-2500:])
+print("EXIT CODE:", r.returncode)
 print("CONTAINERS RESTARTED: NONE")
 PY

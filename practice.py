@@ -1,63 +1,98 @@
 podman --root /application1/podman/storage --runroot /run/containers/storage exec -i -w /workspace -e PYTHONDONTWRITEBYTECODE=1 a176e284b50a /opt/venv/bin/python -B - <<'PY'
-import os, sys, time, signal, socket, json
-import subprocess, threading, collections
-import urllib.request, urllib.error
-import concurrent.futures
+import os, sys, time, signal, socket, json, threading, collections
+import subprocess, urllib.request, urllib.error
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
-root = Path("/workspace/artifacts/v1.168-max")
-stage_root = root / "cta_native_batch2_release_candidate"
-stage = stage_root / "maxserve_cta_extension"
-model = root / "cta_native_model"
-backend = Path("/batch2/real_max_batch2_backend.py")
-
-fixtures = [
-    root / "test-results/cta_max_tiles_smoketest_input.json",
-    root / "cta_native_adjusted_sanity_input.json"
-]
+mx = Path("/workspace/artifacts/v1.168-max")
+core = Path("/workspace/artifacts/v1.168/core-artifact")
+stage = mx / "cta_native_batch2_release_candidate"
+pkg = stage / "maxserve_cta_extension"
+model = mx / "cta_native_model"
+port = 18767
 
 required = [
-    stage / "cta_native_launcher.py",
-    stage / "cta_worker_adapter.py",
-    stage / "cta_native_scheduler.py",
+    core / "pipeline.py",
+    pkg / "cta_native_launcher.py",
+    pkg / "cta_worker_adapter.py",
+    pkg / "cta_native_scheduler.py",
     model / "config.json",
-    backend,
-    *fixtures
+    Path("/batch2/real_max_batch2_backend.py"),
+    mx / "test-results/cta_max_tiles_smoketest_input.json",
+    mx / "cta_native_adjusted_sanity_input.json"
 ]
 
 if not all(p.is_file() for p in required):
-    raise SystemExit("STOP: Required staged runtime file unavailable")
+    raise SystemExit("STOP: Required source or fixture missing")
 
-memory = lambda: int(next(
-    x.split()[1]
-    for x in Path("/proc/meminfo").read_text().splitlines()
-    if x.startswith("MemAvailable:")
-)) // 1024
+def available_mb():
+    return int(next(
+        x.split()[1]
+        for x in Path("/proc/meminfo").read_text().splitlines()
+        if x.startswith("MemAvailable:")
+    )) // 1024
 
-free_gb = os.statvfs("/workspace")
-free_gb = free_gb.f_bavail * free_gb.f_frsize / (1024**3)
+print("AVAILABLE RAM MB:", available_mb(), flush=True)
 
-print("AVAILABLE RAM MB:", memory(), flush=True)
-print("WORKSPACE FREE GB:", round(free_gb, 1), flush=True)
+if available_mb() < 14000:
+    raise SystemExit("STOP: Insufficient available memory")
 
-if memory() < 14000 or free_gb < 20:
-    raise SystemExit("STOP: Shared VM resource safety check failed")
+if os.statvfs("/workspace").f_bavail * \
+        os.statvfs("/workspace").f_frsize < 20 * 1024**3:
+    raise SystemExit("STOP: Insufficient workspace space")
 
-port = 18767
-
-with socket.socket() as sock:
-    if sock.connect_ex(("127.0.0.1", port)) == 0:
-        raise SystemExit("STOP: Isolated test port already occupied")
+with socket.socket() as s:
+    if s.connect_ex(("127.0.0.1", port)) == 0:
+        raise SystemExit("STOP: Test port already occupied")
 
 env = os.environ.copy()
 env.update({
+    "PYTHONPATH": ":".join([
+        str(stage),
+        str(core),
+        "/batch2",
+        str(mx)
+    ]),
     "PYTHONDONTWRITEBYTECODE": "1",
-    "PYTHONPATH": f"{stage_root}:/batch2:{root}",
     "HOME": "/tmp",
-    "XDG_CACHE_HOME": "/tmp/cta_native_batch2_cache",
     "TMPDIR": "/tmp",
+    "XDG_CACHE_HOME": "/tmp/cta_batch2_cache",
     "CUDA_VISIBLE_DEVICES": ""
 })
+
+# Confirm the exact missing import is resolved in the
+# environment inherited by the native model worker.
+preflight = r'''
+import importlib.util
+from pathlib import Path
+
+expected = Path(
+    "/workspace/artifacts/v1.168/core-artifact/pipeline.py"
+)
+
+spec = importlib.util.find_spec("pipeline")
+assert spec and Path(spec.origin).resolve() == expected.resolve()
+
+launcher = importlib.util.find_spec(
+    "maxserve_cta_extension.cta_native_launcher"
+)
+
+assert launcher
+assert "cta_native_batch2_release_candidate" in launcher.origin
+
+print("ORIGINAL CTA PIPELINE PATH: PASS")
+print("STAGED MAX LAUNCHER PATH: PASS")
+'''
+
+check = subprocess.run(
+    [sys.executable, "-B", "-c", preflight],
+    env=env, text=True, capture_output=True, timeout=30
+)
+
+print(check.stdout, flush=True)
+if check.returncode:
+    print(check.stderr[-2500:])
+    raise SystemExit("STOP: Import preflight failed")
 
 command = [
     sys.executable, "-B", "-m",
@@ -67,146 +102,148 @@ command = [
     "--devices", "cpu"
 ]
 
-print("ISOLATED NATIVE MAX SERVE: STARTING", flush=True)
-
-logs = collections.deque(maxlen=120)
-process = subprocess.Popen(
-    command,
-    cwd="/workspace",
-    env=env,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    text=True,
-    bufsize=1,
-    start_new_session=True
-)
-
-def capture_logs():
-    for line in process.stdout:
-        logs.append(line.rstrip("\n"))
-
-threading.Thread(target=capture_logs, daemon=True).start()
-
-stop_monitor = threading.Event()
-
-def monitor_memory():
-    while not stop_monitor.wait(2):
-        if process.poll() is not None:
-            return
-        if memory() < 5500:
-            logs.append("STOP: Shared VM memory reserve below 5500 MB")
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            return
-
-threading.Thread(target=monitor_memory, daemon=True).start()
+logs = collections.deque(maxlen=220)
+stop = threading.Event()
+server = None
+passed = False
 
 try:
-    ready = False
+    print("ISOLATED NATIVE MAX SERVE: STARTING", flush=True)
+
+    server = subprocess.Popen(
+        command, cwd="/workspace", env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+        start_new_session=True
+    )
+
+    def capture():
+        for line in server.stdout:
+            logs.append(line.rstrip())
+
+    threading.Thread(target=capture, daemon=True).start()
+
+    def monitor():
+        while not stop.wait(2):
+            if server.poll() is not None:
+                return
+            if available_mb() < 5500:
+                logs.append("STOP: Host memory reserve too low")
+                try:
+                    os.killpg(server.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                return
+
+    threading.Thread(target=monitor, daemon=True).start()
+
     deadline = time.monotonic() + 180
+    ready = False
 
     while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError("Native server exited during startup")
+        if server.poll() is not None:
+            raise RuntimeError("Native model worker exited during startup")
 
-        with socket.socket() as sock:
-            sock.settimeout(1)
-            if sock.connect_ex(("127.0.0.1", port)) == 0:
+        with socket.socket() as s:
+            s.settimeout(1)
+            if s.connect_ex(("127.0.0.1", port)) == 0:
                 ready = True
                 break
 
         time.sleep(2)
 
     if not ready:
-        raise RuntimeError("Native server startup did not complete")
+        raise RuntimeError("Native server did not become ready")
 
-    print("ISOLATED MAX SERVE LISTENER: PASS", flush=True)
+    print("NATIVE HTTP LISTENER: PASS", flush=True)
 
+    fixtures = [
+        mx / "test-results/cta_max_tiles_smoketest_input.json",
+        mx / "cta_native_adjusted_sanity_input.json"
+    ]
     bodies = [json.loads(p.read_text()) for p in fixtures]
+    barrier = threading.Barrier(2)
 
-    def request(index):
+    def request(i):
+        barrier.wait(timeout=10)
+
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/v2/cta/predict",
-            data=json.dumps(bodies[index]).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "X-CTA-Test-Request": f"batch2-{index+1}"
-            },
+            data=json.dumps(bodies[i]).encode(),
+            headers={"Content-Type": "application/json"},
             method="POST"
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=190) as response:
+            with urllib.request.urlopen(req, timeout=210) as response:
                 status = response.status
                 payload = json.loads(response.read(4 * 1024 * 1024))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read(1500).decode(errors="replace")
-            raise RuntimeError(
-                f"Request {index+1}: HTTP {exc.code}: {detail}"
-            )
+        except urllib.error.HTTPError as e:
+            detail = e.read(2000).decode(errors="replace")
+            raise RuntimeError(f"HTTP {e.code}: {detail}")
 
-        if (
-            status != 200
-            or not isinstance(payload, dict)
-            or "error" in payload
-            or not isinstance(payload.get("jsonData"), dict)
-            or "prediction" not in payload["jsonData"]
-        ):
-            raise RuntimeError(
-                f"Request {index+1}: invalid CTA response"
-            )
+        if status != 200:
+            raise RuntimeError(f"Request {i+1}: HTTP {status}")
 
-        return status
+        if not isinstance(payload, dict):
+            raise RuntimeError("Invalid response object")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        if "error" in payload:
+            raise RuntimeError(str(payload["error"]))
+
+        if not isinstance(payload.get("jsonData"), dict):
+            raise RuntimeError("Missing jsonData")
+
+        if "prediction" not in payload["jsonData"]:
+            raise RuntimeError("Missing prediction")
+
+        print(f"CTA HTTP RESPONSE {i+1}: PASS", flush=True)
+        return payload
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(request, i) for i in range(2)]
+        responses = [f.result(timeout=230) for f in futures]
 
-        for i, future in enumerate(futures, 1):
-            status = future.result(timeout=210)
-            print(
-                f"NATIVE CTA HTTP RESPONSE {i}: {status} PASS",
-                flush=True
-            )
-
+    assert len(responses) == 2
     print("TWO NATIVE CTA HTTP RESPONSES: PASS", flush=True)
+    passed = True
 
-except Exception as exc:
+except Exception as e:
     print(
-        "NATIVE HTTP ACCEPTANCE: NOT PASSED",
-        type(exc).__name__,
-        str(exc),
+        "NATIVE HTTP TEST: NOT PASSED",
+        type(e).__name__, str(e),
         flush=True
     )
-    print("SERVER ERROR DETAILS:", flush=True)
-    print("\n".join(logs)[-4500:], flush=True)
+    print("LATEST SERVER LOGS:", flush=True)
+    print("\n".join(logs)[-7000:], flush=True)
 
 finally:
-    stop_monitor.set()
+    stop.set()
 
-    if process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
+    if server is not None:
+        if server.poll() is None:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(server.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            process.wait(timeout=5)
 
-    with socket.socket() as sock:
-        still_listening = (
-            sock.connect_ex(("127.0.0.1", port)) == 0
-        )
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(server.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            server.wait(timeout=5)
 
-    print("TEST PROCESS STOPPED:", process.poll() is not None)
-    print("TEST PORT STILL LISTENING:", still_listening)
+    with socket.socket() as s:
+        listening = s.connect_ex(("127.0.0.1", port)) == 0
+
+    print("TEST PORT STILL LISTENING:", listening)
     print("EXISTING CONTAINER RESTARTED: NO")
     print("ORIGINAL DS/MAX: UNCHANGED")
+
+if not passed:
+    raise SystemExit(1)
 PY

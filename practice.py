@@ -1,69 +1,62 @@
 python3 -B - <<'PY'
-import subprocess
-import json
 from pathlib import Path
+import ast
+import shutil
 
-P = [
-    "podman",
-    "--root", "/application1/podman/storage",
-    "--runroot", "/run/containers/storage"
-]
+base = Path("/application1")
+dev = base / "CTA_MAX_TRUE_BATCH2_DEV_20261029"
+candidate = base / "cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
+backend = dev / "real_max_batch2_backend.py"
 
-target = "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029"
-ids = subprocess.check_output(P + ["ps", "-q"], text=True).split()
+transformer = candidate / "parallel_transformer_block_2layers.py"
+nlp = dev / "cta_max/nlp_bert_in_graph.py"
 
-matches = []
-for cid in ids:
-    info = json.loads(
-        subprocess.check_output(P + ["inspect", cid], text=True)
-    )[0]
-    for m in info.get("Mounts", []):
-        if (m.get("Source") == target and
-                m.get("Destination") == "/batch2"):
-            matches.append(cid)
+if not all(p.is_file() for p in (backend, transformer, nlp)):
+    raise SystemExit("STOP: Required existing source file missing")
 
-if len(matches) != 1:
-    raise SystemExit(
-        f"STOP: Expected one Batch-2 container, found {len(matches)}"
+src = backend.read_text()
+
+changes = [
+    (
+        '_b2_dir = "/batch2/cta_max"',
+        f'_b2_dir = "{candidate}"'
+    ),
+    (
+        '_b2_pkg.__path__ = [_b2_dir] + [',
+        '_b2_pkg.__path__ = [_b2_dir, "/batch2/cta_max"] + ['
+    ),
+    (
+        '_b2_expected = _b2_dir + "/" + _b2_short + ".py"',
+        '_b2_expected = (_b2_dir if _b2_short == '
+        '"parallel_transformer_block_2layers" '
+        'else "/batch2/cta_max") + "/" + _b2_short + ".py"'
     )
-
-code = '''
-from pathlib import Path
-import importlib.util
-
-paths = [
-    "/batch2/cta_max",
-    "/batch2/batch2_candidate/cta_max",
-    "/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max",
 ]
 
-for root in paths:
-    p = Path(root)
-    print("PACKAGE:", root)
-    print("  transformer:", (p / "parallel_transformer_block_2layers.py").is_file())
-    print("  NLP:", (p / "nlp_bert_in_graph.py").is_file())
-    print("  contract:", (p / "run_batch2_contract.py").is_file())
+for old, new in changes:
+    if src.count(old) != 1:
+        raise SystemExit("STOP: Unexpected backend version: " + old)
+    src = src.replace(old, new, 1)
 
-import cta_max
-print("ACTIVE CTA PACKAGE:", list(cta_max.__path__))
-print("CONTAINER PATH CHECK: COMPLETE")
-'''
+ast.parse(src)
 
-r = subprocess.run(
-    P + [
-        "exec", "-i",
-        "-e", "PYTHONDONTWRITEBYTECODE=1",
-        matches[0], "/opt/venv/bin/python", "-B", "-"
-    ],
-    input=code,
-    text=True,
-    capture_output=True,
-    timeout=30
+backup = backend.with_name(
+    backend.name + ".before_split_helper_fix"
 )
 
-print(r.stdout)
-if r.returncode:
-    print(r.stderr[-1500:])
-print("EXIT CODE:", r.returncode)
+if backup.exists():
+    raise SystemExit("STOP: Backup already exists")
+
+if shutil.disk_usage(dev).free < 10 * 1024 * 1024:
+    raise SystemExit("STOP: Insufficient disk space")
+
+shutil.copy2(backend, backup)
+backend.write_text(src)
+
+print("BATCH-2 HELPER PATH FIX: INSTALLED")
+print("TRANSFORMER: CORRECTED CANDIDATE")
+print("NLP: EXISTING /batch2 SOURCE")
+print("SYNTAX: PASS")
+print("ORIGINAL DS/MAX: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")
 PY

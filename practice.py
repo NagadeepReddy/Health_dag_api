@@ -1,14 +1,39 @@
-PID=$(ss -H -ltnp '( sport = :8766 )' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+python3 - <<'PY'
+from pathlib import Path
 
-if [ -z "$PID" ]; then
-  echo "STOP: Optimized server not running"
-else
-  Q="/proc/$PID/root/opt/venv/lib/python3.12/site-packages/max/serve/scheduler/queues.py"
+base = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
 
-  if [ -f "$Q" ]; then
-    echo "=== MAX RESPONSE QUEUE IMPLEMENTATION ==="
-    sed -n '125,265p' "$Q"
-  else
-    echo "STOP: MAX queue source unavailable"
-  fi
-fi
+files = [
+    base / "native_batch2_cached_overlay/cta_native_scheduler.py",
+    base / "native_batch2_cached_overlay/cta_worker_adapter.py",
+    Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/maxserve_cta_extension/cta_native_scheduler.py"),
+]
+
+terms = (
+    "predict_batch",
+    "response_queue",
+    "SchedulerResult",
+    "put_nowait",
+    "send_output",
+    "responses[",
+)
+
+for path in files:
+    if not path.is_file():
+        continue
+
+    print(f"\n=== {path} ===")
+    lines = path.read_text().splitlines()
+    selected = set()
+
+    for i, line in enumerate(lines):
+        if any(term in line for term in terms):
+            selected.update(range(max(0, i-5), min(len(lines), i+9)))
+
+    for i in sorted(selected):
+        print(f"{i+1}: {lines[i]}")
+
+print("\nRESULT DELIVERY CODE: EXTRACTED")
+print("ORIGINAL DS: UNCHANGED")
+print("BOTH LIVE SERVERS: UNTOUCHED")
+PY

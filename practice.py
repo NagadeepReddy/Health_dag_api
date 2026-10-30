@@ -1,125 +1,107 @@
 python3 -B - <<'PY'
-import json
-import subprocess
 from pathlib import Path
+import ast
 
-dev = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029")
-stage = dev / "native_batch2_release_candidate/maxserve_cta_extension"
+pkg = Path(
+    "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"
+    "native_batch2_release_candidate/maxserve_cta_extension"
+)
 
-P = [
-    "podman",
-    "--root", "/application1/podman/storage",
-    "--runroot", "/run/containers/storage"
+names = [
+    "cta_worker_adapter.py",
+    "cta_native_scheduler.py",
+    "cta_scheduler_factory.py",
+    "cta_worker_registration.py",
+    "cta_spawn_worker.py",
+    "cta_native_launcher.py",
 ]
 
-if not stage.is_dir():
-    raise SystemExit("STOP: Host staging directory missing")
-
-ids = []
-for cid in subprocess.check_output(P + ["ps", "-q"], text=True).split():
-    info = json.loads(
-        subprocess.check_output(P + ["inspect", cid], text=True)
-    )[0]
-    if any(
-        m.get("Source") == str(dev)
-        and m.get("Destination") == "/batch2"
-        for m in info.get("Mounts", [])
-    ):
-        ids.append(cid)
-
-if len(ids) != 1:
-    raise SystemExit("STOP: Expected one existing development container")
-
-code = r'''
-import sys
-import importlib
-import inspect
-from pathlib import Path
-
-root = Path("/batch2/native_batch2_release_candidate")
-pkg = root / "maxserve_cta_extension"
-
-required = [
-    pkg / "cta_worker_adapter.py",
-    pkg / "cta_native_scheduler.py",
-    pkg / "cta_scheduler_factory.py",
-    Path("/batch2/real_max_batch2_backend.py")
-]
-
-for p in required:
+trees = {}
+for name in names:
+    p = pkg / name
     if not p.is_file():
-        raise SystemExit(f"STOP: Container file missing: {p}")
+        raise SystemExit("STOP: Missing staged file: " + name)
+    trees[name] = ast.parse(p.read_text())
 
-print("STAGED PACKAGE VISIBLE: PASS", flush=True)
+print("STAGED NATIVE SOURCE: PASS")
 
-sys.path.insert(0, str(root))
+def default_value(tree, function, parameter):
+    for n in ast.walk(tree):
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if n.name != function:
+            continue
+        args = n.args.posonlyargs + n.args.args
+        defaults = n.args.defaults
+        mapping = dict(zip(
+            [a.arg for a in args[len(args)-len(defaults):]],
+            defaults
+        )) if defaults else {}
+        if parameter in mapping:
+            return ast.literal_eval(mapping[parameter])
+    return None
 
-adapter = importlib.import_module(
-    "maxserve_cta_extension.cta_worker_adapter"
-)
-scheduler = importlib.import_module(
-    "maxserve_cta_extension.cta_native_scheduler"
-)
-factory = importlib.import_module(
-    "maxserve_cta_extension.cta_scheduler_factory"
-)
-
-for module in (adapter, scheduler, factory):
-    if Path(module.__file__).resolve().parent != pkg.resolve():
-        raise RuntimeError("Wrong module imported: " + module.__name__)
-
-classes = [
-    cls for _, cls in inspect.getmembers(adapter, inspect.isclass)
-    if cls.__module__ == adapter.__name__
-    and callable(getattr(cls, "predict_batch", None))
-]
-
-assert len(classes) == 1, "Batch adapter unavailable"
-
-assert callable(
-    getattr(scheduler.CTANativeScheduler, "run_iteration", None)
+factory_limit = default_value(
+    trees["cta_scheduler_factory.py"],
+    "create_cta_scheduler",
+    "max_items_per_iteration"
 )
 
-assert "predict_batch" in inspect.getsource(
-    scheduler.CTANativeScheduler.run_iteration
+scheduler_limit = default_value(
+    trees["cta_native_scheduler.py"],
+    "__init__",
+    "max_items_per_iteration"
 )
 
-assert callable(
-    getattr(factory, "create_cta_scheduler", None)
+print("FACTORY BATCH LIMIT:", factory_limit)
+print("SCHEDULER BATCH LIMIT:", scheduler_limit)
+
+adapter_methods = {
+    n.name
+    for n in ast.walk(trees["cta_worker_adapter.py"])
+    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+}
+
+scheduler_source = (
+    pkg / "cta_native_scheduler.py"
+).read_text()
+
+print("PREDICT_BATCH:", "predict_batch" in adapter_methods)
+print("BATCH DISPATCH:", "batch_fn(" in scheduler_source)
+
+overrides = []
+for name in (
+    "cta_worker_registration.py",
+    "cta_spawn_worker.py",
+    "cta_native_launcher.py",
+):
+    for n in ast.walk(trees[name]):
+        if not isinstance(n, ast.Call):
+            continue
+        for kw in n.keywords:
+            if kw.arg == "max_items_per_iteration":
+                try:
+                    value = ast.literal_eval(kw.value)
+                except (ValueError, TypeError):
+                    value = "dynamic"
+                overrides.append((name, n.lineno, value))
+
+print("WORKER BATCH OVERRIDES:", overrides or "NONE")
+
+ready = (
+    factory_limit == 2
+    and scheduler_limit == 2
+    and "predict_batch" in adapter_methods
+    and "batch_fn(" in scheduler_source
+    and not any(v == 1 for _, _, v in overrides)
 )
 
-print("STAGED BATCH ADAPTER: PASS")
-print("STAGED BATCH SCHEDULER: PASS")
-print("STAGED FACTORY: PASS")
-print("REAL MAX BACKEND VISIBLE: PASS")
-print("NATIVE BATCH-2 IMPORT PREFLIGHT: PASS")
-'''
-
-try:
-    r = subprocess.run(
-        P + [
-            "exec", "-i", "-w", "/workspace",
-            "-e", "PYTHONDONTWRITEBYTECODE=1",
-            "-e",
-            "PYTHONPATH=/batch2/native_batch2_release_candidate:"
-            "/workspace/artifacts/v1.168-max",
-            ids[0], "/opt/venv/bin/python", "-B", "-"
-        ],
-        input=code,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=45
-    )
-
-    print(r.stdout[-4000:])
-    print("EXIT CODE:", r.returncode)
-
-except subprocess.TimeoutExpired:
-    print("STOP: Import preflight exceeded 45 seconds")
-
+print(
+    "NATIVE BATCH-2 WIRING:",
+    "PASS" if ready else "NEEDS CORRECTION"
+)
 print("ORIGINAL DS/MAX: UNCHANGED")
-print("WORKING NATIVE RELEASE: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")
-print("MAX EXECUTIONS: ZERO")
+print("MODEL EXECUTIONS: ZERO")
+print("LIVE HTTP BATCHING: NOT YET VERIFIED")
 PY

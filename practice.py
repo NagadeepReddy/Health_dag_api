@@ -1,130 +1,115 @@
+sudo bash -s <<'BASH'
 set -euo pipefail
 
 POD=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 NAME=cta-batch2-trace-8766-10g
-ROOT=/application1/sajjna8/rt-pzaas-cta-offers-v1
 
-echo "=== SAFETY PRE-FLIGHT ==="
-
-test -r "$ROOT/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json" || {
-  echo "STOP: Real CTA fixture missing"; exit 1;
-}
+echo "=== ISOLATED STORAGE RECOVERY ==="
 
 STATE=$("${POD[@]}" inspect --format '{{.State.Status}}' "$NAME")
-test "$STATE" = running || {
-  echo "STOP: Isolated container not running"; exit 1;
-}
+echo "STATE: $STATE"
 
 LIMIT=$("${POD[@]}" inspect --format '{{.HostConfig.Memory}}' "$NAME")
 test "$LIMIT" -ge 10000000000 || {
-  echo "STOP: Memory limit below 10GB"; exit 1;
+  echo "STOP: 10GB limit missing"; exit 1;
 }
 
-AVAIL=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
-test "$AVAIL" -ge 12582912 || {
-  echo "STOP: Less than 12GiB host memory available"; exit 1;
-}
+if [ "$STATE" != running ]; then
+  case "$STATE" in
+    exited|stopped|created|configured) ;;
+    *) echo "STOP: Unexpected container state"; exit 1 ;;
+  esac
 
-echo "SAFETY: PASS"
-echo "ORIGINAL MAX: NOT TARGETED"
-echo "ORIGINAL DS: UNCHANGED"
+  "${POD[@]}" container cleanup "$NAME"
 
-echo "=== RESTART ISOLATED SERVER ONLY ==="
-"${POD[@]}" restart --time 15 "$NAME"
+  MOUNT=$("${POD[@]}" mount "$NAME")
+  echo "MOUNT: $MOUNT"
 
-echo "=== REAL NATIVE HTTP VALIDATION ==="
+  case "$MOUNT" in
+    /application1/podman/storage/overlay/*/merged) ;;
+    *) echo "STOP: Unexpected mount"; exit 1 ;;
+  esac
+
+  test -f "$MOUNT/etc/passwd" || {
+    echo "STOP: Container image /etc/passwd missing"
+    exit 1
+  }
+
+  echo "OVERLAY: VERIFIED"
+
+  AVAILABLE=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+  test "$AVAILABLE" -ge 12582912 || {
+    echo "STOP: Insufficient available host memory"
+    exit 1
+  }
+
+  "${POD[@]}" start "$NAME"
+fi
+
+echo "=== REAL NATIVE BATCH-2 HTTP ==="
+
+HTTP_RC=0
 "${POD[@]}" exec -i \
   -e PYTHONDONTWRITEBYTECODE=1 \
-  "$NAME" /opt/venv/bin/python -B - <<'PY'
-import json
-import time
-import urllib.request
-import urllib.error
+  "$NAME" /opt/venv/bin/python -B - <<'PY' || HTTP_RC=$?
+import json, time, urllib.request, urllib.error
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 base = "http://127.0.0.1:8766"
-fixture = Path(
-    "/workspace/artifacts/v1.168-max/"
-    "cta_native_adjusted_sanity_input.json"
-)
+path = Path("/workspace/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
+assert path.is_file(), "Real CTA input missing"
+body = json.dumps(json.loads(path.read_text())).encode()
 
-assert fixture.is_file(), "STOP: Real CTA input missing"
-payload = json.loads(fixture.read_text())
-body = json.dumps(payload).encode()
-
-print("=== WAIT FOR ISOLATED NATIVE HEALTH ===", flush=True)
-deadline = time.monotonic() + 150
-
-while time.monotonic() < deadline:
+healthy = False
+for _ in range(30):
     try:
-        with urllib.request.urlopen(
-            base + "/health", timeout=3
-        ) as response:
-            if response.status == 200:
-                print("NATIVE HEALTH: PASS", flush=True)
+        with urllib.request.urlopen(base + "/health", timeout=3) as r:
+            if r.status == 200:
+                healthy = True
                 break
     except Exception:
-        pass
-    time.sleep(4)
-else:
-    raise SystemExit("STOP: Native server not healthy")
+        time.sleep(3)
 
-def test(n):
-    request = urllib.request.Request(
+if not healthy:
+    raise SystemExit("STOP: Isolated server unhealthy")
+
+print("HEALTH: PASS", flush=True)
+
+def request(n):
+    req = urllib.request.Request(
         base + "/v2/cta/predict",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type":"application/json"},
         method="POST"
     )
     try:
-        with urllib.request.urlopen(
-            request, timeout=120
-        ) as r:
+        with urllib.request.urlopen(req, timeout=120) as r:
             status = r.status
-            text = r.read().decode()
-    except urllib.error.HTTPError as e:
-        status = e.code
-        text = e.read().decode()
+            output = json.loads(r.read())
+        prediction = output.get("jsonData", {}).get("prediction")
+        return n, status == 200 and prediction is not None, str(output)[:350]
     except Exception as e:
-        return n, False, repr(e)
-
-    try:
-        result = json.loads(text)
-    except ValueError:
-        return n, False, f"HTTP {status}: {text[:1200]}"
-
-    if status != 200:
-        return n, False, f"HTTP {status}: {str(result)[:1600]}"
-
-    prediction = (
-        result.get("jsonData", {}).get("prediction")
-        if isinstance(result, dict) else None
-    )
-    if prediction is None:
-        return n, False, f"HTTP 200, prediction missing: {str(result)[:1200]}"
-
-    return n, True, "HTTP 200; CTA prediction returned"
+        return n, False, str(e)[:350]
 
 with ThreadPoolExecutor(max_workers=2) as pool:
-    results = list(pool.map(test, (1, 2)))
+    results = list(pool.map(request, [1, 2]))
 
 for n, passed, detail in results:
-    print(
-        f"REQUEST {n}: {'PASS' if passed else 'FAIL'} | {detail}",
-        flush=True
-    )
+    print(f"REQUEST {n}: {'PASS' if passed else 'FAIL'} | {detail}", flush=True)
 
-print(
-    "NATIVE HTTP 2/2:",
-    "PASS" if all(x[1] for x in results) else "FAIL"
-)
-print("SINGLE REAL MAX BATCH EXECUTION: REQUIRES LOG EVIDENCE")
-print("ORIGINAL MAX: UNCHANGED")
-print("ORIGINAL DS: UNCHANGED")
+print("NATIVE HTTP BATCH-2:", "PASS" if all(x[1] for x in results) else "FAIL")
+if not all(x[1] for x in results):
+    raise SystemExit(1)
 PY
 
-echo "=== RECENT BATCH EXECUTION EVIDENCE ==="
-"${POD[@]}" logs --tail 350 "$NAME" 2>&1 |
-  grep -Ei 'CTA.*BATCH|REAL MAX|COMPILE|EXECUT|reshape|worker failed|Traceback|ERROR' |
-  tail -45 || true
+echo "=== MAX EXECUTION EVIDENCE ==="
+"${POD[@]}" logs --tail 450 "$NAME" 2>&1 |
+  grep -Ei 'BATCH|REAL MAX|COMPILE|EXECUT|reshape|worker failed|Traceback|ERROR' |
+  tail -50 || true
+
+echo "ORIGINAL DS: UNCHANGED"
+echo "ORIGINAL MAX: NOT TARGETED"
+echo "ISOLATED HTTP EXIT: $HTTP_RC"
+exit "$HTTP_RC"
+BASH

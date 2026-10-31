@@ -1,1 +1,1 @@
-free -h && df -h /application1 && podman --root /application1/podman/storage --runroot /run/containers/storage stats --no-stream 0c95d4a8f887
+ss -ltnp '( sport = :18767 )'; ps -eo pid,ppid,stat,args | grep -E '[c]ta_native_launcher|[c]ta_postman_native|[m]axserve' | head -20

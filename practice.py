@@ -1,3 +1,4 @@
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  stop --time 20 cta-postman-validated-20261030
+  inspect cta-postman-validated-20261030 \
+  --format 'STATUS={{.State.Status}} EXIT_CODE={{.State.ExitCode}} OOM_KILLED={{.State.OOMKilled}}'

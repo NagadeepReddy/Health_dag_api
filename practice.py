@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage exec 0c95d4a8f887 sh -c 'grep -Ei "predict|timeout|model.load|worker|batch|error|exception" /tmp/cta_postman_native_18767.log | tail -n 45'
+podman --root /application1/podman/storage --runroot /run/containers/storage exec 0c95d4a8f887 sh -c 'grep -E "CTA MODEL LOAD ELAPSED|CTA PREDICT RAW ELAPSED|CTA RESPONSE WORKER LOOP|CTA HTTP FANOUT" /tmp/cta_postman_native_18767.log | tail -n 20'

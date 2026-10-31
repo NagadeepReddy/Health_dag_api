@@ -1,30 +1,41 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import re, ast, hashlib
+import ast
 
-p = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py")
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+folders = [
+    root / "batch2",
+    root / "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension",
+    root / "artifacts/v1.168-max/cta_native_model",
+]
 
-if not p.is_file():
-    raise SystemExit("STOP: clean worker adapter missing")
+files = sorted(set(
+    p for folder in folders if folder.is_dir()
+    for p in folder.rglob("*.py")
+))
 
-source = p.read_text()
+errors = []
+old_paths = []
 
-fallback = r'Path\(\s*"/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/"\s*"real_max_batch2_backend\.py"\s*\),'
-old_package = r'Path\(\s*"/application1/cta_max_true_batch_dev_20261028/"\s*"batch2_candidate/cta_max"\s*\)'
+for p in files:
+    source = p.read_text(errors="replace")
+    try:
+        ast.parse(source, filename=str(p))
+    except SyntaxError as e:
+        errors.append(f"{p.relative_to(root)}:{e.lineno}: {e.msg}")
 
-updated, a = re.subn(fallback, "", source)
-updated, b = re.subn(old_package, 'Path("/batch2/cta_max")', updated)
+    for n, line in enumerate(source.splitlines(), 1):
+        if "/application1/" in line:
+            old_paths.append(f"{p.relative_to(root)}:{n}: {line.strip()[:150]}")
 
-if (a, b) != (1, 1):
-    raise SystemExit(f"STOP: unexpected references: fallback={a}, package={b}; nothing changed")
+print("PYTHON FILES CHECKED:", len(files))
+print("SYNTAX:", "PASS" if not errors else "FAIL")
+for e in errors:
+    print("ERROR:", e)
 
-ast.parse(updated, filename=str(p))
-p.write_text(updated)
+print("ABSOLUTE VM PATH REFERENCES:", len(old_paths))
+for item in old_paths:
+    print(item)
 
-print("OLD BACKEND FALLBACK REMOVED:", a)
-print("CTA_MAX PACKAGE PATH UPDATED:", b)
-print("NEW PACKAGE PATH: /batch2/cta_max")
-print("PYTHON SYNTAX: PASS")
-print("CLEAN WORKER SHA256:", hashlib.sha256(p.read_bytes()).hexdigest())
-print("VALIDATED ORIGINAL: UNCHANGED")
+print("READ-ONLY CHECK COMPLETE")
 PY

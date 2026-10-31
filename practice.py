@@ -1,17 +1,18 @@
 REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
+STAGE=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
 
-echo "=== TRITON FILE REMOVAL HISTORY ==="
-git -C "$REPO" log --all --oneline \
-  --diff-filter=D -- \
-  artifacts/v1.168-triton/1/model.py \
-  artifacts/v1.168-triton/config.pbtxt \
-  artifacts/v1.168-triton/test_triton_client.py |
-head -20
-
-echo "=== LATEST PATCH SUMMARY ==="
-git -C "$REPO" show --format=fuller \
-  --summary --stat origin/triton |
-head -70
-
-echo "=== CURRENT BRANCH ==="
+echo "=== CURRENT GIT BRANCH ==="
 git -C "$REPO" branch --show-current
+
+echo "=== EXISTING CHANGES ==="
+git -C "$REPO" status --short --untracked-files=no
+
+echo "=== CLEAN HANDOFF CONTENTS ==="
+find "$STAGE" -mindepth 1 -maxdepth 2 \
+  -printf '%y %P\n' | head -80
+
+echo "=== PACKAGE SIZE BREAKDOWN ==="
+du -sh "$STAGE"/* 2>/dev/null | sort -h
+
+echo "=== EXISTING MAX FILES IN GIT ==="
+git -C "$REPO" ls-files 'artifacts/v1.168-max/*' | head -40

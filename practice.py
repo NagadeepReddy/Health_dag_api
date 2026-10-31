@@ -1,43 +1,38 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import hashlib
+import shutil, hashlib
 
-repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts")
-clean = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts")
+repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
+clean = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
 
-pairs = [
-    ("Original CTA", repo / "v1.168", clean / "v1.168"),
-    ("Native MAX model", repo / "v1.168-max/cta_native_model",
-     clean / "v1.168-max/cta_native_model"),
+files = [
+    (
+        Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py"),
+        clean / "batch2/real_max_batch2_backend.py"
+    ),
+    (
+        repo / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json",
+        clean / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
+    ),
 ]
 
-def inventory(root):
-    result = {}
-    for p in root.rglob("*"):
-        if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":
-            h = hashlib.sha256()
-            with p.open("rb") as f:
-                for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
-                    h.update(chunk)
-            result[p.relative_to(root).as_posix()] = h.hexdigest()
-    return result
+for src, dst in files:
+    if not src.is_file():
+        raise SystemExit(f"STOP: source missing: {src}")
+    if dst.exists():
+        raise SystemExit(f"STOP: destination already exists: {dst}")
 
-all_pass = True
-for label, source, target in pairs:
-    if not source.is_dir() or not target.is_dir():
-        print("FAIL:", label, "missing directory")
-        all_pass = False
-        continue
-    original = inventory(source)
-    copied = inventory(target)
-    ok = original == copied
-    print(f"{label}: {'PASS' if ok else 'FAIL'} | Files: {len(original)}")
-    if not ok:
-        for name in sorted(set(original) | set(copied)):
-            if original.get(name) != copied.get(name):
-                print("MISMATCH:", name)
-        all_pass = False
+for src, dst in files:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
 
-print("ALL COPIED DEPENDENCIES MATCH:", all_pass)
+    original = hashlib.sha256(src.read_bytes()).hexdigest()
+    copied = hashlib.sha256(dst.read_bytes()).hexdigest()
+    if original != copied:
+        raise SystemExit(f"FAIL: checksum mismatch: {dst}")
+
+    print("PASS:", dst)
+
 print("ORIGINAL FILES: UNCHANGED")
+print("BACKEND AND TEST INPUT: COPIED AND VERIFIED")
 PY

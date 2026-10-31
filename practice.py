@@ -1,19 +1,7 @@
-SRC=/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max
-DST=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max
+CLEAN=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
 
-echo "=== ROTARY WEIGHT ERROR SOURCE ==="
-grep -RFn --include='*.py' \
-  'No exported 256-d rotary frequency weights found' \
-  "$SRC/cta_max" "$DST/cta_max" 2>/dev/null | head -10
+echo "=== ROTARY WEIGHT LOOKUP ==="
+nl -ba "$CLEAN/artifacts/v1.168-max/cta_max/run_real_sanity_input_adapter.py" | sed -n '35,85p'
 
-echo "=== ORIGINAL ROTARY/FREQUENCY FILES ==="
-find "$SRC/cta_max" -type f \
-  \( -iname '*rotary*' -o -iname '*freq*' \) \
-  -not -path '*/__pycache__/*' | head -35
-
-echo "=== CLEAN ROTARY/FREQUENCY FILES ==="
-find "$DST/cta_max" -type f \
-  \( -iname '*rotary*' -o -iname '*freq*' \) \
-  -not -path '*/__pycache__/*' | head -35
-
-echo "READ-ONLY CHECK COMPLETE"
+echo "=== CLEAN ROTARY WEIGHT FILE ==="
+ls -lh "$CLEAN/artifacts/v1.168-max/cta_max/sequence_weights/"*rotary*

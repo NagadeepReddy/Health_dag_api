@@ -1,10 +1,11 @@
 REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
 
-echo "=== TRITON SERVING FILES ==="
-git -C "$REPO" ls-tree -r --name-only triton |
-grep -Ei 'config.pbtxt$|model.py$|Dockerfile.triton$|triton.*\.(py|sh)$|backend.*\.py$|server.*\.py$|launch.*\.sh$' |
-head -60
+echo "=== TRITON MODEL CONFIG ==="
+git -C "$REPO" show \
+  triton:artifacts/v1.168-triton/config.pbtxt |
+  head -120
 
-echo "=== TRITON DOCKERFILE ==="
-git -C "$REPO" show triton:artifacts/baseImage/Dockerfile.triton |
-head -100
+echo "=== TRITON INFERENCE IMPLEMENTATION ==="
+git -C "$REPO" show \
+  triton:artifacts/v1.168-triton/1/model.py |
+  head -200

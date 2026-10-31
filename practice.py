@@ -1,30 +1,19 @@
 STAGE=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
 SAFE=/application1/CTA_MAX_CLEANUP_QUARANTINE_20261031
 
-USED="$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py"
-EXTRA="$STAGE/batch2/real_max_batch2_backend.py"
-BACKUP="$SAFE/real_max_batch2_backend.py"
+EXT=artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
 
-echo "=== SAFE BACKEND CLEANUP ==="
-
-if [ ! -f "$USED" ] || [ ! -f "$EXTRA" ]; then
-  echo "STOP: Required files missing"
-elif [ -e "$BACKUP" ]; then
-  echo "STOP: Quarantine destination occupied"
-elif ! grep -Fq '$ART/real_max_batch2_backend.py' "$STAGE/run_cta_native.sh"; then
-  echo "STOP: Launcher reference not confirmed"
-else
-  mkdir -p "$SAFE"
-  if mv "$EXTRA" "$BACKUP"; then
-    if bash "$STAGE/run_cta_native.sh" check; then
-      echo "CLEAN BACKEND CLEANUP: PASS"
-      echo "PORTABLE BACKEND: PRESERVED"
-      echo "ORIGINAL CODE: UNCHANGED"
-    else
-      mv "$BACKUP" "$EXTRA"
-      echo "CLEANUP ROLLED BACK"
-    fi
-  else
-    echo "STOP: Move failed"
+for REL in \
+ "$EXT/cta_native_e2e_test.py" \
+ "$EXT/cta_native_startup_test.py" \
+ "artifacts/v1.168-max/cta_max/grecbase_integration_weights/seq_dense.weight.npy.before_fix.bak"
+do
+  if [ -e "$STAGE/$REL" ] && [ ! -e "$SAFE/$REL" ]; then
+    mkdir -p "$SAFE/$(dirname "$REL")"
+    mv "$STAGE/$REL" "$SAFE/$REL"
+    echo "QUARANTINED: $REL"
   fi
-fi
+done
+
+echo "=== CLEAN PACKAGE CHECK ==="
+bash "$STAGE/run_cta_native.sh" check

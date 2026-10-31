@@ -1,17 +1,21 @@
-echo "=== FIND TRITON IMPLEMENTATION ==="
+echo "=== TRITON PROJECT FILES ==="
 
-ROOTS=(/application1)
-[ -d /application ] && ROOTS+=(/application)
+find /application1 /application /home -maxdepth 7 \
+  \( -type d \( \
+    -name site-packages -o \
+    -name .cache -o \
+    -name podman -o \
+    -name __pycache__ -o \
+    -name 'CTA_MAX_*' \
+  \) \) -prune -o \
+  \( -iname '*triton*' -o \
+     -name config.pbtxt -o \
+     -iname '*model_repository*' \) \
+  -print 2>/dev/null | head -60
 
-find "${ROOTS[@]}" -maxdepth 8 \
-  \( -name podman -o -name .git -o -name __pycache__ \
-     -name node_modules -o -name venv -o \
-     -name '.venv' -o -name 'CTA_MAX_*' \
-     -name rt-pzaas-cta-offers-v1 \) -prune -o \
-  \( -iname '*triton*' \
-     -o -iname '*model_repository*' \
-     -o -name config.pbtxt \
-     -o -iname '*tritonserver*' \) \
-  -print 2>/dev/null | head -80
+echo "=== TRITON CONTAINERS ==="
 
-echo "TRITON SEARCH COMPLETE"
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  ps -a --format '{{.Names}} {{.Image}}' |
+  grep -Ei 'triton|sriram' || true

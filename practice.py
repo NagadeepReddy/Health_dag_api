@@ -1,25 +1,26 @@
 python3 -B - <<'PY'
 from pathlib import Path
+import ast, hashlib
 
-root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
-files = [
-    root / "batch2/real_max_batch2_backend.py",
-    root / "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py",
-    root / "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_native_launcher.py",
-]
+p = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/batch2/real_max_batch2_backend.py")
+old = "/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
+new = "/batch2/cta_max"
 
-for p in files:
-    print("\n===", p.name, "===")
-    if not p.is_file():
-        print("MISSING")
-        continue
-    for n, line in enumerate(p.read_text().splitlines(), 1):
-        if any(x in line for x in (
-            "/application1/", "/workspace/", "/batch2/",
-            "sys.path", "PYTHONPATH"
-        )):
-            print(f"{n}: {line.strip()[:160]}")
+if not p.is_file():
+    raise SystemExit("STOP: clean backend missing")
 
-print("\nCLEAN WEIGHTS:", (root / "batch2/cta_max/grecbase_integration_weights/seq_dense.weight.npy").is_file())
-print("READ-ONLY CHECK COMPLETE")
+source = p.read_text()
+count = source.count(old)
+if count == 0:
+    raise SystemExit("STOP: expected old path not found; nothing changed")
+
+updated = source.replace(old, new)
+ast.parse(updated, filename=str(p))
+
+p.write_text(updated)
+print("CLEAN BACKEND PATHS UPDATED:", count)
+print("NEW PATH:", new)
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL BACKEND: UNCHANGED")
+print("CLEAN BACKEND SHA256:", hashlib.sha256(p.read_bytes()).hexdigest())
 PY

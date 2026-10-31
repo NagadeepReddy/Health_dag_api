@@ -1,7 +1,8 @@
 BASE=/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
 
-grep -nEi 'timeout|response_queue|wait_for|recv|worker_ready' \
-  "$BASE/cta_queue_compat.py" \
-  "$BASE/cta_native_launcher.py" \
-  "$BASE/cta_native_scheduler.py" \
-  "$BASE/cta_worker_adapter.py" | head -60
+echo "=== RESPONSE QUEUE CONFIGURATION ==="
+sed -n '48,67p' "$BASE/cta_queue_compat.py"
+
+echo "=== SCHEDULER QUEUE HANDOFF ==="
+sed -n '20,38p' "$BASE/cta_native_scheduler.py"
+sed -n '112,125p' "$BASE/cta_native_scheduler.py"

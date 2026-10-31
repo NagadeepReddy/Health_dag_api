@@ -1,28 +1,27 @@
-set -euo pipefail
-
 STAGE=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
 SAFE=/application1/CTA_MAX_CLEANUP_QUARANTINE_20261031
 
-KEEP="$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py"
-DUP="$STAGE/batch2/real_max_batch2_backend.py"
+echo "=== CLEANUP DIAGNOSIS ==="
 
-test -f "$KEEP" && test -f "$DUP"
-cmp -s "$KEEP" "$DUP"
+for f in \
+ "$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py" \
+ "$STAGE/batch2/real_max_batch2_backend.py" \
+ "$SAFE/real_max_batch2_backend.py" \
+ "$STAGE/run_cta_native.sh"; do
+  if [ -f "$f" ]; then
+    echo "FOUND: $f"
+  else
+    echo "MISSING: $f"
+  fi
+done
 
-grep -qF '$ART/real_max_batch2_backend.py' \
-  "$STAGE/run_cta_native.sh"
+echo "=== BACKEND COMPARISON ==="
+sha256sum \
+ "$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py" \
+ "$STAGE/batch2/real_max_batch2_backend.py" 2>&1
 
-test ! -e "$SAFE/real_max_batch2_backend.py"
+echo "=== LAUNCHER REFERENCE ==="
+grep -n 'real_max_batch2_backend' \
+ "$STAGE/run_cta_native.sh" || true
 
-mkdir -p "$SAFE"
-
-mv "$DUP" "$SAFE/real_max_batch2_backend.py"
-
-echo "=== CHECK CLEAN PACKAGE ==="
-if bash "$STAGE/run_cta_native.sh" check; then
-    echo "DUPLICATE BACKEND QUARANTINED: PASS"
-    echo "ORIGINAL WORKING CODE: UNCHANGED"
-else
-    mv "$SAFE/real_max_batch2_backend.py" "$DUP"
-    echo "CLEANUP ROLLED BACK"
-fi
+echo "DIAGNOSIS COMPLETE"

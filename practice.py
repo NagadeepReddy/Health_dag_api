@@ -1,3 +1,4 @@
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  ps -a --format 'ID={{.ID}} | NAME={{.Names}} | STATUS={{.Status}} | IMAGE={{.Image}}'
+  inspect cta-distinct-batch2-final \
+  --format 'STATUS={{.State.Status}} MEMORY={{.HostConfig.Memory}} NETWORK={{.HostConfig.NetworkMode}}{{println}}{{range .Mounts}}MOUNT={{.Source}} -> {{.Destination}}{{println}}{{end}}'

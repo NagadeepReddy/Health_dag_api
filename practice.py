@@ -1,12 +1,20 @@
+ROOT=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
 PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-echo "=== LATEST CTA EXECUTION ==="
-$PODMAN logs --timestamps --tail 500 \
-  cta-clean-native-batch2 2>&1 |
-grep -E \
-'CTA PREDICT RAW|CTA RESPONSE SOCKET|CTA RESPONSE ID MATCH|CTA PREDICT EXCEPTION|CTA HTTP QUEUE ITEM|FileNotFoundError|AssertionError|killed|OOM' |
-tail -40
-
-echo "=== CONTAINER STATUS ==="
+echo "=== ACTIVE CONTAINER MOUNTS ==="
 $PODMAN inspect cta-clean-native-batch2 \
-  --format 'STATUS={{.State.Status}} PID={{.State.Pid}}'
+  --format '{{range .Mounts}}{{println .Source "=>" .Destination}}{{end}}'
+
+echo "=== EXTERNAL PATH REFERENCES ==="
+grep -RInE \
+  --include='*.py' --include='*.sh' \
+  '(/workspace/batch2|/application1/|CTA_MAX_TRUE_BATCH2_DEV|batch2/cta_max)' \
+  "$ROOT/run_cta_native.sh" \
+  "$ROOT/artifacts/v1.168-max" \
+  2>/dev/null | head -35
+
+echo "=== ACTIVE PACKAGE SYMLINKS ==="
+find "$ROOT/artifacts/v1.168-max" -type l -ls
+
+echo "=== REFERENCE FOLDER ==="
+test -d "$ROOT/batch2/cta_max" && echo "REFERENCE: PRESENT"

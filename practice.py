@@ -1,6 +1,7 @@
-python3 - <<'PY'
+python3 -B - <<'PY'
 from pathlib import Path
-import numpy as np
+import ast
+import struct
 
 roots = [
     Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029"),
@@ -9,14 +10,21 @@ roots = [
 ]
 
 for root in roots:
-    print(f"\n=== {root.name} ===")
+    print("\n===", root, "===")
     if not root.is_dir():
         continue
     for name in ("seq_dense.weight.npy", "seq_dense_weight.npy"):
         for p in root.rglob(name):
             try:
-                a = np.load(p, mmap_mode="r")
-                print(f"{a.shape} | {p}")
+                with p.open("rb") as f:
+                    assert f.read(6) == b"\x93NUMPY"
+                    major, minor = f.read(2)
+                    length = struct.unpack(
+                        "<H" if major == 1 else "<I",
+                        f.read(2 if major == 1 else 4)
+                    )[0]
+                    header = ast.literal_eval(f.read(length).decode("latin1"))
+                print("SHAPE:", header["shape"], "|", p)
             except Exception as e:
-                print(f"ERROR: {p} | {e}")
+                print("ERROR:", p, str(e))
 PY

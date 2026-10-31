@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage exec 0c95d4a8f887 sh -c 'echo CPU_STAT; cat /sys/fs/cgroup/cpu.stat; echo CPU_LIMIT; cat /sys/fs/cgroup/cpu.max'
+find /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_batch2_release_candidate -maxdepth 4 -type f \( -name '*.py' -o -name '*.json' -o -name '*.md' \) -printf '%P\n' | sort

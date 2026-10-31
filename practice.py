@@ -1,23 +1,30 @@
 python3 -B - <<'PY'
 from pathlib import Path
+from collections import defaultdict
 
-clean = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
-p = clean / "batch2/cta_max/grecbase_fusion_full_head_72_max.py"
+roots = [
+    Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029"),
+    Path("/application1/cta_max_true_batch_dev_20261028"),
+    Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max"),
+]
 
-print("=== WEIGHT LOADING CODE ===")
-for n, line in enumerate(p.read_text().splitlines(), 1):
-    if n <= 100:
-        print(f"{n}: {line}")
+found = defaultdict(list)
 
-print("\n=== WEIGHT FOLDERS ===")
-for root in [
-    Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max/grecbase_integration_weights"),
-    clean / "batch2/cta_max/grecbase_integration_weights",
-]:
-    print(root, "FOUND" if root.is_dir() else "MISSING")
-    if root.is_dir():
-        for f in sorted(root.iterdir()):
-            print(" ", f.name)
+for root in roots:
+    if not root.is_dir():
+        continue
+    for p in root.rglob("*.npy"):
+        if "__pycache__" not in p.parts:
+            found[str(p.parent)].append(p.name)
 
-print("\nREAD-ONLY CHECK COMPLETE")
+print("=== NUMPY WEIGHT LOCATIONS ===")
+for folder, names in sorted(found.items()):
+    print("FOLDER:", folder)
+    print("COUNT:", len(names))
+    for name in sorted(names):
+        if "seq_dense" in name or "rotary_emb" in name:
+            print("  IMPORTANT:", name)
+
+print("TOTAL NUMPY FILES:", sum(map(len, found.values())))
+print("READ-ONLY CHECK COMPLETE")
 PY

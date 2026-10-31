@@ -1,26 +1,15 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import ast, hashlib
 
-p = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/batch2/real_max_batch2_backend.py")
-old = "/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
-new = "/batch2/cta_max"
+p = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py")
 
+print("=== CLEAN WORKER ADAPTER: LINES 75-115 ===")
 if not p.is_file():
-    raise SystemExit("STOP: clean backend missing")
+    raise SystemExit("STOP: clean worker adapter missing")
 
-source = p.read_text()
-count = source.count(old)
-if count == 0:
-    raise SystemExit("STOP: expected old path not found; nothing changed")
+lines = p.read_text().splitlines()
+for n in range(75, min(116, len(lines) + 1)):
+    print(f"{n}: {lines[n-1]}")
 
-updated = source.replace(old, new)
-ast.parse(updated, filename=str(p))
-
-p.write_text(updated)
-print("CLEAN BACKEND PATHS UPDATED:", count)
-print("NEW PATH:", new)
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL BACKEND: UNCHANGED")
-print("CLEAN BACKEND SHA256:", hashlib.sha256(p.read_bytes()).hexdigest())
+print("READ-ONLY CHECK COMPLETE")
 PY

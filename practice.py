@@ -1,3 +1,4 @@
-find /application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030 \
-  -type f \( -name 'seq_dense_weight.npy' -o -name 'fh_rotary_emb_inv_freq.npy' \) \
-  -print
+find /application1/sajjna8/rt-pzaas-cta-offers-v1 \
+     /application1/CTA_MAX_TRUE_BATCH2_DEV_20261029 \
+     -type f -name 'fh_rotary_emb_inv_freq.npy' \
+     -print 2>/dev/null

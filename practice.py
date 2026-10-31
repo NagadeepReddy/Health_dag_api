@@ -1,35 +1,19 @@
-python3 -B - <<'PY'
-import json
-import urllib.request
-import urllib.error
-from pathlib import Path
+SRC=/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max
+DST=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max
 
-root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
-source = root / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
+echo "=== ROTARY WEIGHT ERROR SOURCE ==="
+grep -RFn --include='*.py' \
+  'No exported 256-d rotary frequency weights found' \
+  "$SRC/cta_max" "$DST/cta_max" 2>/dev/null | head -10
 
-if not source.is_file():
-    raise SystemExit("STOP: Clean package input JSON missing")
+echo "=== ORIGINAL ROTARY/FREQUENCY FILES ==="
+find "$SRC/cta_max" -type f \
+  \( -iname '*rotary*' -o -iname '*freq*' \) \
+  -not -path '*/__pycache__/*' | head -35
 
-request = urllib.request.Request(
-    "http://127.0.0.1:18767/v2/cta/predict",
-    data=source.read_bytes(),
-    headers={"Content-Type": "application/json"},
-    method="POST"
-)
+echo "=== CLEAN ROTARY/FREQUENCY FILES ==="
+find "$DST/cta_max" -type f \
+  \( -iname '*rotary*' -o -iname '*freq*' \) \
+  -not -path '*/__pycache__/*' | head -35
 
-try:
-    with urllib.request.urlopen(request, timeout=150) as response:
-        result = json.load(response)
-        assert response.status == 200
-        assert result not in (None, {}, [])
-
-        print("CLEAN VM NATIVE HTTP: 200 PASS")
-        print("CTA RESPONSE JSON: PASS")
-        print("RESPONSE TYPE:", type(result).__name__)
-        print("RESPONSE KEYS:", list(result)[:15] if isinstance(result, dict) else "Array")
-except urllib.error.HTTPError as e:
-    print("HTTP FAILED:", e.code)
-    print(e.read(1000).decode(errors="replace"))
-except Exception as e:
-    print("HTTP FAILED:", type(e).__name__, str(e)[:500])
-PY
+echo "READ-ONLY CHECK COMPLETE"

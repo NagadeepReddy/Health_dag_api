@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage inspect 0c95d4a8f887 --format 'OLD CONTAINER STATUS: {{.State.Status}}'; free -h; ss -ltnp '( sport = :18767 )'
+podman --root /application1/podman/storage --runroot /run/containers/storage images --format 'table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}' | grep -E 'REPOSITORY|modular|max|cta'

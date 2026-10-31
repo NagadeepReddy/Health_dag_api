@@ -1,4 +1,6 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec cta-clean-native-batch2 /opt/venv/bin/python -c \
-  "from pathlib import Path; import numpy as np; p=Path('/batch2/cta_max/grecbase_integration_weights/seq_dense_weight.npy'); print('RESOLVED:',p.resolve()); print('LOAD:',np.load(p).shape)"
+curl --max-time 120 -sS \
+  -o /application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/clean_http_result.json \
+  -w 'HTTP_STATUS:%{http_code}\n' \
+  -X POST http://127.0.0.1:18767/v2/cta/predict \
+  -H 'Content-Type: application/json' \
+  --data-binary @/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json

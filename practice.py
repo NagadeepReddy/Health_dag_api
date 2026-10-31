@@ -1,47 +1,47 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import ast
+import shutil, hashlib
 
-root = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
-entries = ["run_real_sanity_input_adapter", "grecbase_fusion_full_head_72_max"]
-required = set()
-missing = set()
+src = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/batch2/cta_max")
 
-def scan(name):
-    if name in required:
-        return
-    path = root / (name.replace(".", "/") + ".py")
-    if not path.is_file():
-        missing.add(name)
-        return
-    required.add(name)
-    tree = ast.parse(path.read_text(), filename=str(path))
-    for node in ast.walk(tree):
-        candidates = []
-        if isinstance(node, ast.Import):
-            candidates = [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            prefix = node.module or ""
-            if prefix.startswith("cta_max."):
-                candidates = [prefix]
-            elif prefix == "cta_max":
-                candidates = ["cta_max." + a.name for a in node.names]
-            elif node.level:
-                candidates = ["cta_max." + prefix] if prefix else []
-        for module in candidates:
-            if module.startswith("cta_max."):
-                local = module.removeprefix("cta_max.")
-                if (root / (local.replace(".", "/") + ".py")).is_file():
-                    scan(local)
+names = [
+    "att_pooling_max",
+    "grecbase_aux_branches_batch2_verified",
+    "grecbase_fusion_full_head_72_max",
+    "grecbase_get_path_max",
+    "main_context_max_batch2_verified",
+    "nlp_bert_in_graph",
+    "nlp_bert_max",
+    "parallel_transformer_block_2layers",
+    "run_real_sanity_input_adapter",
+    "sequence_pooling_max",
+    "sequence_postprocess_max",
+    "sequence_transformer_max",
+    "sibling_context_max_batch2_fix",
+]
 
-for entry in entries:
-    scan(entry)
+if not src.is_dir() or dst.exists():
+    raise SystemExit("STOP: source missing or destination already exists")
 
-print("=== REQUIRED CTA_MAX MODULES (STATIC IMPORTS) ===")
-for name in sorted(required):
-    print(name + ".py")
-print("MODULE COUNT:", len(required))
-print("UNRESOLVED ENTRY MODULES:", sorted(missing))
-print("DYNAMIC IMPORTS STILL REQUIRE REVIEW")
-print("READ-ONLY CHECK COMPLETE")
+files = [src / (name + ".py") for name in names]
+if any(not p.is_file() for p in files):
+    raise SystemExit("STOP: required module missing")
+
+if shutil.disk_usage(dst.parent).free < 2 * sum(p.stat().st_size for p in files):
+    raise SystemExit("STOP: insufficient disk space")
+
+dst.mkdir(parents=True)
+
+for p in files:
+    target = dst / p.name
+    shutil.copy2(p, target)
+    a = hashlib.sha256(p.read_bytes()).hexdigest()
+    b = hashlib.sha256(target.read_bytes()).hexdigest()
+    if a != b:
+        raise SystemExit("FAIL: checksum mismatch: " + p.name)
+    print("PASS:", p.name)
+
+print("MODULES COPIED:", len(files))
+print("ORIGINALS UNCHANGED")
 PY

@@ -1,1 +1,1 @@
-podman ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"
+podman info --format '{{.Store.GraphRoot}} | {{.Store.RunRoot}}'

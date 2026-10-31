@@ -1,13 +1,21 @@
-ROOT=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
-PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
+ROOT=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_max
 
-date -u
-curl --max-time 45 -sS \
-  -o "$ROOT/clean_http_result.json" \
-  -w 'HTTP_STATUS:%{http_code}\n' \
-  -X POST http://127.0.0.1:18767/v2/cta/predict \
-  -H 'Content-Type: application/json' \
-  --data-binary @"$ROOT/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
+if [ -L "$ROOT/grecbase_integration_weights" ] &&
+   [ -f "$ROOT/sequence_weights/seq_dense_weight.npy" ] &&
+   [ ! -e "$ROOT/grecbase_integration_weights.link_backup" ] &&
+   [ ! -e "$ROOT/.weights_stage" ] &&
+   [ "$(df -Pk "$ROOT" | awk 'NR==2 {print $4}')" -gt 102400 ]; then
 
-echo "=== FRESH ERRORS ==="
-$PODMAN logs --timestamps --since 1m --tail 35 cta-clean-native-batch2 2>&1
+  mkdir "$ROOT/.weights_stage" &&
+  cp -a "$ROOT/sequence_weights/." "$ROOT/.weights_stage/" &&
+
+  test -f "$ROOT/.weights_stage/seq_dense_weight.npy" &&
+  mv "$ROOT/grecbase_integration_weights" \
+     "$ROOT/grecbase_integration_weights.link_backup" &&
+  mv "$ROOT/.weights_stage" \
+     "$ROOT/grecbase_integration_weights" &&
+
+  echo "CLEAN REAL WEIGHT DIRECTORY: PASS"
+else
+  echo "STOP: Precheck failed; no changes attempted"
+fi

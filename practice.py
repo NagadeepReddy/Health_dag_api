@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage exec 0c95d4a8f887 sh -c 'echo MEMORY_USED; cat /sys/fs/cgroup/memory.current; echo MEMORY_LIMIT; cat /sys/fs/cgroup/memory.max; echo MEMORY_EVENTS; cat /sys/fs/cgroup/memory.events; echo CPU_QUOTA; cat /sys/fs/cgroup/cpu.max; echo CPU_PRESSURE; cat /sys/fs/cgroup/cpu.pressure'
+podman --root /application1/podman/storage --runroot /run/containers/storage exec 0c95d4a8f887 sh -c 'echo CPU_STAT; cat /sys/fs/cgroup/cpu.stat; echo CPU_LIMIT; cat /sys/fs/cgroup/cpu.max'

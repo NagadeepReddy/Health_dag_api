@@ -1,24 +1,26 @@
 python3 -B - <<'PY'
 from pathlib import Path
 
-roots = {
-    "ORIGINAL": Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max"),
-    "CLEAN": Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_max"),
-}
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+base = root / "artifacts/v1.168-max/cta_max"
+p = base / "run_real_sanity_input_adapter.py"
 
-for label, root in roots.items():
-    print(f"\n=== {label} ROTARY WEIGHTS ===")
-    files = sorted(root.rglob("*inv_freq*.npy"))
-    if not files:
-        print("MISSING")
-    for p in files:
-        with p.open("rb") as f:
-            valid = f.read(6) == b"\x93NUMPY"
-        print(
-            "VALID_NPY=" + str(valid),
-            "SIZE=" + str(p.stat().st_size),
-            "PATH=" + str(p.relative_to(root))
-        )
+old = 'freq_dir = BASE / "grecbase_integration_weights"'
+new = 'freq_dir = BASE / "sequence_weights"'
 
-print("\nREAD-ONLY CHECK COMPLETE")
+assert (base / "sequence_weights/fn_rotary_emb_inv_freq.npy").is_file(), "STOP: Rotary weight missing"
+
+s = p.read_text()
+
+if new in s and old not in s:
+    print("ROTARY PATH FIX: ALREADY APPLIED")
+else:
+    assert s.count(old) == 1, "STOP: Unexpected adapter content"
+    updated = s.replace(old, new)
+    compile(updated, str(p), "exec")
+    p.write_text(updated)
+    print("ROTARY PATH FIX: APPLIED")
+
+print("ORIGINAL DS CODE: UNCHANGED")
+print("CONTAINERS RESTARTED: NONE")
 PY

@@ -1,36 +1,18 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec -i cta-clean-batch2-http-20261030 \
-  /opt/venv/bin/python -B - <<'PY'
-from pathlib import Path
-import re
+PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
+NAME="cta-clean-batch2-http-20261030"
 
-p = Path("/tmp/cta_clean_http_retry.log")
-assert p.is_file(), "STOP: Log unavailable"
+STATUS=$($PODMAN inspect "$NAME" --format '{{.State.Status}}') || exit 1
+echo "CONTAINER: $STATUS"
 
-lines = p.read_text(errors="replace").splitlines()
+if [ "$STATUS" = "running" ]; then
+  $PODMAN exec "$NAME" /bin/sh -c '
+    echo "=== WORKER STATUS / ERRORS ==="
+    grep -Ei "error|failed|timeout|worker died|worker loop|ready|listening|exitcode|shutting down" \
+      /tmp/cta_clean_http_retry.log | tail -n 22
 
-print("=== WORKER FAILURE SUMMARY ===")
-pattern = re.compile(
-    r"(ModuleNotFoundError|ImportError|AttributeError|"
-    r"RuntimeError|ValueError|TypeError|AssertionError|"
-    r"FileNotFoundError|NameError|Error):"
-)
-
-matches = [(i, line) for i, line in enumerate(lines)
-           if pattern.search(line)]
-
-for i, line in matches[-8:]:
-    print(f"LINE {i+1}: {line[:500]}")
-
-print("=== LAST TRACEBACK END ===")
-starts = [i for i, line in enumerate(lines)
-          if line.startswith("Traceback (most recent call last):")]
-if starts:
-    for line in lines[starts[-1]:][-12:]:
-        print(line[:350])
-else:
-    print("No Python traceback header found")
-
-print("READ-ONLY CHECK COMPLETE")
-PY
+    echo "=== FINAL LOG ==="
+    tail -n 12 /tmp/cta_clean_http_retry.log
+  '
+else
+  echo "Clean test container stopped; no restart performed."
+fi

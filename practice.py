@@ -1,25 +1,28 @@
-set -euo pipefail
-
+REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
 STAGE=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
-OUT=/application1/CTA_MAX_TEAM_HANDOFF_CLEAN_20261031.tar.gz
 
-test -d "$STAGE"
-test ! -e "$OUT"
+echo "=== GIT BRANCH ==="
+git -C "$REPO" branch --show-current
 
-bash "$STAGE/run_cta_native.sh" check
+echo "=== ESSENTIAL FILES FOR GIT ==="
 
-if find "$STAGE" -type l -print -quit | grep -q .; then
-  echo "STOP: Symlinks require verification"
-  exit 1
-fi
+for REL in \
+  run_cta_native.sh \
+  artifacts/v1.168-max/real_max_batch2_backend.py \
+  artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_native_launcher.py \
+  artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py
+do
+  if [ -f "$STAGE/$REL" ]; then
+    echo "HANDOFF: PASS $REL"
+  else
+    echo "HANDOFF: MISSING $REL"
+  fi
 
-echo "=== CREATING CLEAN ARCHIVE ==="
-tar -czf "$OUT" -C /application1 \
-  CTA_MAX_TEAM_HANDOFF_STAGE_20261031
+  if git -C "$REPO" ls-files --error-unmatch "$REL" >/dev/null 2>&1; then
+    echo "GIT: TRACKED"
+  else
+    echo "GIT: NOT TRACKED"
+  fi
+done
 
-echo "=== VERIFY ARCHIVE ==="
-tar -tzf "$OUT" >/dev/null
-sha256sum "$OUT"
-du -h "$OUT"
-
-echo "CLEAN HANDOFF ARCHIVE: PASS"
+echo "GIT HANDOFF READINESS CHECK COMPLETE"

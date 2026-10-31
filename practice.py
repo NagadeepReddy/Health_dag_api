@@ -1,1 +1,22 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage run --rm --pull=never --network=none --read-only --memory=14g --cpus=4 --pids-limit=128 --tmpfs /tmp:rw,size=512m --tmpfs /root:rw,size=64m -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/clean/artifacts/v1.168-max/cta_native_batch2_release_candidate:/clean/artifacts/v1.168/core-artifact:/clean/batch2:/clean/artifacts/v1.168-max -v /application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030:/clean:ro --entrypoint /opt/venv/bin/python localhost/cta-max-faiss:local -B -c 'from pathlib import Path; import cta_max; import maxserve_cta_extension.cta_queue_compat; import maxserve_cta_extension.cta_native_launcher; p=Path("/clean/batch2/real_max_batch2_backend.py"); assert p.is_file(),p; print("CLEAN MAX IMPORTS: PASS"); print("BATCH-2 BACKEND: PASS"); print("CLEAN FOLDER MOUNT: PASS")'
+python3 -B - <<'PY'
+from pathlib import Path
+
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+files = [
+    "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py",
+    "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_native_launcher.py",
+    "batch2/real_max_batch2_backend.py",
+]
+
+for name in files:
+    p = root / name
+    print("\nFILE:", name)
+    if not p.is_file():
+        print("MISSING")
+        continue
+    for number, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
+        if any(x in line for x in ("/workspace", "/batch2", "/application1", "backend_file", "model_path")):
+            print(f"{number}: {line.strip()[:180]}")
+
+print("\nREAD-ONLY CHECK COMPLETE")
+PY

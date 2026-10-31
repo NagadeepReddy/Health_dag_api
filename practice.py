@@ -1,30 +1,30 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec -i cta-clean-batch2-http-20261030 \
-  /opt/venv/bin/python -B - <<'PY'
-import os
-import socket
-from pathlib import Path
+PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
+NAME="cta-clean-batch2-http-20261030"
 
-s = socket.socket()
-s.settimeout(2)
-active = s.connect_ex(("127.0.0.1", 18767)) == 0
-s.close()
+test "$($PODMAN inspect "$NAME" --format '{{.State.Status}}')" = "running" || {
+  echo "STOP: Clean container is not running"
+  exit 1
+}
 
-print("HTTP PORT 18767:", "LISTENING" if active else "NOT LISTENING")
+AVAILABLE=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+test "$AVAILABLE" -ge 18874368 || {
+  echo "STOP: Insufficient host RAM"
+  exit 1
+}
 
-found = []
-for p in Path("/proc").iterdir():
-    if not p.name.isdigit() or int(p.name) == os.getpid():
-        continue
-    try:
-        args = (p / "cmdline").read_bytes().split(b"\0")
-        if any(b"cta_native_launcher" in a for a in args) and \
-           any(b"main()" in a for a in args):
-            found.append(p.name)
-    except OSError:
-        continue
-
-print("NATIVE LAUNCHER PIDS:", found or "NONE")
-print("READ-ONLY CHECK COMPLETE")
-PY
+$PODMAN exec -d \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max/cta_native_batch2_release_candidate:/workspace/artifacts/v1.168/core-artifact:/batch2:/workspace/artifacts/v1.168-max \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONUNBUFFERED=1 \
+  -e CUDA_VISIBLE_DEVICES= \
+  -e HOME=/tmp \
+  -e TMPDIR=/tmp \
+  -e XDG_CACHE_HOME=/tmp/cta_batch2_cache \
+  -e HF_HOME=/tmp/cta_batch2_cache \
+  -e TORCH_HOME=/tmp/cta_batch2_cache \
+  -e OTEL_SDK_DISABLED=true \
+  -e OTEL_METRICS_EXPORTER=none \
+  -e OTEL_TRACES_EXPORTER=none \
+  -e OTEL_LOGS_EXPORTER=none \
+  "$NAME" /bin/sh -c \
+  'timeout -s TERM -k 10s 360s /opt/venv/bin/python -B -u -c "from maxserve_cta_extension.cta_queue_compat import install; assert install(); from maxserve_cta_extension.cta_native_launcher import main; main()" --port 18767 --model-path /workspace/artifacts/v1.168-max/cta_native_model --devices cpu --max-batch-size 2 > /tmp/cta_clean_http_retry.log 2>&1'

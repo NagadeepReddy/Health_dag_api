@@ -1,39 +1,21 @@
 PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
 NAME="cta-postman-shm1g-test"
 
-test "$($PODMAN inspect "$NAME" --format '{{.State.Status}}')" = "running" || {
-  echo "STOP: Test container not running"
-  exit 1
-}
+echo "=== CONTAINER STATUS ==="
+$PODMAN inspect "$NAME" \
+  --format 'STATUS={{.State.Status}} OOM={{.State.OOMKilled}}'
 
-test "$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)" -ge 18874368 || {
-  echo "STOP: Insufficient host RAM"
-  exit 1
-}
+echo "=== NATIVE WORKER STARTUP ==="
+$PODMAN exec "$NAME" /bin/sh -c '
+echo "=== LATEST STARTUP EVENTS ==="
+grep -Ei "factory entered|worker|ready|traceback|error|exception|timeout|listening|shutting down" /tmp/cta_postman_native.log | tail -n 25
 
-$PODMAN exec "$NAME" /opt/venv/bin/python -B -c '
+echo "=== HTTP PORT ==="
+/opt/venv/bin/python -B -c "
 import socket
 s=socket.socket()
 s.settimeout(2)
-busy=s.connect_ex(("127.0.0.1",18767)) == 0
+print(\"PORT 18767:\", \"LISTENING\" if s.connect_ex((\"127.0.0.1\",18767)) == 0 else \"NOT LISTENING\")
 s.close()
-raise SystemExit("STOP: Port already listening" if busy else 0)
-' || exit 1
-
-$PODMAN exec -d \
-  -e PYTHONPATH=/workspace/artifacts/v1.168-max/cta_native_batch2_release_candidate:/workspace/artifacts/v1.168/core-artifact:/batch2:/workspace/artifacts/v1.168-max \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -e PYTHONUNBUFFERED=1 \
-  -e CUDA_VISIBLE_DEVICES= \
-  -e HOME=/tmp \
-  -e TMPDIR=/tmp \
-  -e XDG_CACHE_HOME=/tmp/cta_batch2_cache \
-  -e HF_HOME=/tmp/cta_batch2_cache \
-  -e TORCH_HOME=/tmp/cta_batch2_cache \
-  -e OTEL_SDK_DISABLED=true \
-  -e OTEL_METRICS_EXPORTER=none \
-  -e OTEL_TRACES_EXPORTER=none \
-  "$NAME" /bin/sh -c \
-  'timeout -s TERM -k 10s 360s /opt/venv/bin/python -B -u -c "from maxserve_cta_extension.cta_queue_compat import install; assert install(); from maxserve_cta_extension.cta_native_launcher import main; main()" --port 18767 --model-path /workspace/artifacts/v1.168-max/cta_native_model --devices cpu --max-batch-size 2 > /tmp/cta_postman_native.log 2>&1'
-
-echo "NATIVE STARTUP SUBMITTED"
+"
+'

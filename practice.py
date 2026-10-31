@@ -1,67 +1,58 @@
+PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
+NAME="cta-clean-batch2-http-20261030"
 
-python3 -B - <<'PY'
+test "$($PODMAN inspect "$NAME" --format '{{.State.Status}}')" = "running" || {
+  echo "STOP: Clean container not running"
+  exit 1
+}
+
+AVAILABLE=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+test "$AVAILABLE" -ge 18874368 || {
+  echo "STOP: Insufficient host RAM"
+  exit 1
+}
+
+$PODMAN exec "$NAME" /opt/venv/bin/python -B - <<'PY'
 from pathlib import Path
-import ast
-import hashlib
+import os, socket
 
-dev = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
-clean = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_max")
+base = Path("/workspace/artifacts/v1.168-max/cta_max")
+for name in ("nlp_bert_max.py", "sequence_pooling_max.py"):
+    assert (base / name).is_file(), f"STOP: Missing {name}"
 
-assert dev.is_dir() and clean.is_dir(), "STOP: Package missing"
+s = socket.socket()
+s.settimeout(2)
+assert s.connect_ex(("127.0.0.1", 18767)) != 0, "STOP: Server already listening"
+s.close()
 
-pending = list(clean.glob("*.py"))
-seen = set()
-needed = {}
-
-while pending:
-    p = pending.pop()
-    if p in seen:
+for proc in Path("/proc").iterdir():
+    if not proc.name.isdigit() or int(proc.name) == os.getpid():
         continue
-    seen.add(p)
+    try:
+        cmd = (proc / "cmdline").read_bytes().replace(b"\0", b" ")
+        if b"cta_native_launcher" in cmd and b"main()" in cmd:
+            raise SystemExit("STOP: Native server process already exists")
+    except (OSError, PermissionError):
+        continue
 
-    tree = ast.parse(p.read_bytes(), filename=str(p))
-    imports = set()
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for a in node.names:
-                if a.name.startswith("cta_max."):
-                    imports.add(a.name.split(".")[1])
-
-        elif isinstance(node, ast.ImportFrom):
-            if node.module == "cta_max" or (node.level and not node.module):
-                imports.update(a.name.split(".")[0] for a in node.names)
-            elif node.module and node.module.startswith("cta_max."):
-                imports.add(node.module.split(".")[1])
-            elif node.level and node.module:
-                imports.add(node.module.split(".")[0])
-
-    for name in imports:
-        target = clean / (name + ".py")
-        source = dev / (name + ".py")
-
-        if not target.exists() and source.is_file() and name not in needed:
-            needed[name] = source
-            pending.append(source)
-
-print("=== REQUIRED IMPORT CLOSURE ===")
-for name in sorted(needed):
-    print("REQUIRED:", name)
-
-assert len(needed) <= 25, "STOP: Too many dependencies; review before copying"
-
-for name, source in sorted(needed.items()):
-    target = clean / (name + ".py")
-    data = source.read_bytes()
-    ast.parse(data, filename=str(source))
-
-    with target.open("xb") as f:
-        f.write(data)
-
-    assert hashlib.sha256(target.read_bytes()).digest() == hashlib.sha256(data).digest()
-    print("COPIED AND VERIFIED:", name)
-
-print("REQUIRED MODULES COPIED:", len(needed))
-print("ORIGINAL CTA: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
+print("SAFE TO START: PASS")
 PY
+
+test "$?" -eq 0 || exit 1
+
+$PODMAN exec -d \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max/cta_native_batch2_release_candidate:/workspace/artifacts/v1.168/core-artifact:/batch2:/workspace/artifacts/v1.168-max \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONUNBUFFERED=1 \
+  -e CUDA_VISIBLE_DEVICES= \
+  -e HOME=/tmp \
+  -e TMPDIR=/tmp \
+  -e XDG_CACHE_HOME=/tmp/cta_batch2_cache \
+  -e HF_HOME=/tmp/cta_batch2_cache \
+  -e TORCH_HOME=/tmp/cta_batch2_cache \
+  -e OTEL_SDK_DISABLED=true \
+  -e OTEL_METRICS_EXPORTER=none \
+  -e OTEL_TRACES_EXPORTER=none \
+  -e OTEL_LOGS_EXPORTER=none \
+  "$NAME" \
+  /bin/sh -c 'timeout -s TERM -k 10s 360s /opt/venv/bin/python -B -u -c "from maxserve_cta_extension.cta_queue_compat import install; assert install(); from maxserve_cta_extension.cta_native_launcher import main; main()" --port 18767 --model-path /workspace/artifacts/v1.168-max/cta_native_model --devices cpu --max-batch-size 2 > /tmp/cta_clean_http.log 2>&1'

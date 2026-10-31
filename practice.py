@@ -1,19 +1,34 @@
-PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
-NAME=cta-clean-native-batch2
+CLEAN=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
+export PODMAN_ROOT=/application1/podman/storage
+export PODMAN_RUNROOT=/run/containers/storage
+export CTA_IMAGE=localhost/cta-max-faiss:local
 
-echo "=== CLEAN CONTAINER STATUS ==="
-$PODMAN inspect "$NAME" \
-  --format 'STATUS={{.State.Status}} OOM={{.State.OOMKilled}}'
-
-echo "=== CLEAN NATIVE WORKER LOG ==="
-$PODMAN logs --tail 65 "$NAME" 2>&1 | \
-  grep -Ei 'worker|factory|ready|listening|error|exception|traceback|missing|failed|timeout|mojo|cache|permission|shutting down' | tail -35
-
-echo "=== HOST HTTP PORT ==="
 python3 -B - <<'PY'
-import socket
-s = socket.socket()
-s.settimeout(2)
-print("PORT 18767:", "LISTENING" if s.connect_ex(("127.0.0.1", 18767)) == 0 else "NOT LISTENING")
-s.close()
+from pathlib import Path
+
+p = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/run_cta_native.sh")
+s = p.read_text()
+
+old = "  --tmpfs /tmp:rw,size=2g,mode=1777 \\\n"
+extra = "  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=1g,mode=1777 \\\n"
+
+if extra in s:
+    print("MOJO CACHE FIX: ALREADY PRESENT")
+elif s.count(old) == 1:
+    p.write_text(s.replace(old, old + extra))
+    print("MOJO CACHE FIX: APPLIED")
+else:
+    raise SystemExit("STOP: Unexpected launcher format")
 PY
+
+bash -n "$CLEAN/run_cta_native.sh" || exit 1
+bash "$CLEAN/run_cta_native.sh" check || exit 1
+
+PODMAN=(podman --root "$PODMAN_ROOT" --runroot "$PODMAN_RUNROOT")
+
+if "${PODMAN[@]}" container exists cta-clean-native-batch2; then
+  "${PODMAN[@]}" rm -f cta-clean-native-batch2 || exit 1
+fi
+
+echo "=== START CORRECTED CLEAN CONTAINER ==="
+bash "$CLEAN/run_cta_native.sh" start

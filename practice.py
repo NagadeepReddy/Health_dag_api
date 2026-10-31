@@ -1,38 +1,24 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import shutil, hashlib
 
-repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
-clean = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+files = list((root / "artifacts/v1.168-max/cta_native_batch2_release_candidate").rglob("*.py"))
+files.append(root / "batch2/real_max_batch2_backend.py")
 
-files = [
-    (
-        Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py"),
-        clean / "batch2/real_max_batch2_backend.py"
-    ),
-    (
-        repo / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json",
-        clean / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
-    ),
-]
+terms = ("/workspace", "/batch2", "/application1")
 
-for src, dst in files:
-    if not src.is_file():
-        raise SystemExit(f"STOP: source missing: {src}")
-    if dst.exists():
-        raise SystemExit(f"STOP: destination already exists: {dst}")
+print("=== RUNTIME PATH REFERENCE AUDIT ===")
+count = 0
+for p in sorted(files):
+    if not p.is_file():
+        print("MISSING:", p)
+        continue
+    for number, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
+        if any(term in line for term in terms):
+            print(f"{p.relative_to(root)}:{number}: {line.strip()[:180]}")
+            count += 1
 
-for src, dst in files:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-
-    original = hashlib.sha256(src.read_bytes()).hexdigest()
-    copied = hashlib.sha256(dst.read_bytes()).hexdigest()
-    if original != copied:
-        raise SystemExit(f"FAIL: checksum mismatch: {dst}")
-
-    print("PASS:", dst)
-
-print("ORIGINAL FILES: UNCHANGED")
-print("BACKEND AND TEST INPUT: COPIED AND VERIFIED")
+print("FILES SCANNED:", len(files))
+print("PATH REFERENCES:", count)
+print("READ-ONLY CHECK COMPLETE")
 PY

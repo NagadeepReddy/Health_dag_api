@@ -1,11 +1,12 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec cta-clean-native-batch2 /bin/sh -c '
-echo "=== RUNNING WORKERS ==="
-ps -o pid,lstart,args -p 1,69,70
+ORIG=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
+CLEAN=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
 
-echo "=== CURRENT WEIGHT DIRECTORY ==="
-stat -c "%F | %y | %n" \
-  /batch2/cta_max/grecbase_integration_weights \
-  /batch2/cta_max/grecbase_integration_weights/seq_dense_weight.npy
-'
+for DIR in "$ORIG" "$CLEAN"; do
+  echo "=== $DIR ==="
+  find "$DIR" -type f \( \
+    -name 'grecbase_fusion_full_head_72_max.py' -o \
+    -name 'cta_worker_adapter.py' -o \
+    -name 'cta_native_batch2_backend.py' -o \
+    -name 'seq_dense_weight.npy' \
+  \) -print 2>/dev/null
+done

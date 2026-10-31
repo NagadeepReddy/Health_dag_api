@@ -2,20 +2,12 @@ podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   exec cta-clean-batch2-http-20261030 \
   /bin/sh -c '
-echo "=== NATIVE MAX STARTUP LOG ==="
-if test -f /tmp/cta_clean_http.log; then
-  tail -n 45 /tmp/cta_clean_http.log
-else
-  echo "LOG NOT CREATED"
-fi
+echo "=== MOJO CACHE IMPLEMENTATION ==="
+sed -n "115,180p" /opt/venv/lib/python3.12/site-packages/mojo/importer.py
 
-echo "=== HTTP PORT 18767 ==="
-/opt/venv/bin/python -B -c "
-import socket
-s = socket.socket()
-s.settimeout(2)
-result = s.connect_ex((\"127.0.0.1\", 18767))
-print(\"LISTENING\" if result == 0 else \"NOT LISTENING\")
-s.close()
-"
+echo "=== EXISTING CACHE LOCATION ==="
+ls -ld /opt/venv/lib/python3.12/site-packages/max/_core_mojo \
+  /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__ 2>&1
+
+echo "READ-ONLY CHECK COMPLETE"
 '

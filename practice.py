@@ -1,21 +1,11 @@
-echo "=== TRITON PROJECT FILES ==="
+REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
 
-find /application1 /application /home -maxdepth 7 \
-  \( -type d \( \
-    -name site-packages -o \
-    -name .cache -o \
-    -name podman -o \
-    -name __pycache__ -o \
-    -name 'CTA_MAX_*' \
-  \) \) -prune -o \
-  \( -iname '*triton*' -o \
-     -name config.pbtxt -o \
-     -iname '*model_repository*' \) \
-  -print 2>/dev/null | head -60
+echo "=== TRITON BRANCH ==="
+git -C "$REPO" branch -a | grep -i triton || true
 
-echo "=== TRITON CONTAINERS ==="
+echo "=== TRITON IMPLEMENTATION FILES ==="
+git -C "$REPO" ls-tree -r --name-only triton 2>/dev/null |
+grep -Ei 'triton|config.pbtxt|model_repository|backend|server|docker' |
+head -60
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  ps -a --format '{{.Names}} {{.Image}}' |
-  grep -Ei 'triton|sriram' || true
+echo "TRITON INSPECTION COMPLETE"

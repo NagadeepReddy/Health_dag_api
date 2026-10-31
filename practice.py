@@ -1,45 +1,45 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import hashlib
-import shutil
+import ast
 
-src = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
-parent = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max")
-dst = parent / "cta_max"
+repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
+clean = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_max")
 
-names = [
-    "__init__.py",
-    "live_cta_pipeline_bridge.py",
-    "run_live_max_inference.py",
-]
+pending = ["live_cta_pipeline_bridge", "run_live_max_inference"]
+seen = set()
+missing = set()
 
-assert src.is_dir() and not src.is_symlink(), "STOP: Original package invalid"
-assert parent.is_dir() and not parent.is_symlink(), "STOP: Clean parent missing"
-assert not dst.is_symlink(), "STOP: Clean package is a symlink"
+while pending:
+    name = pending.pop()
+    if name in seen:
+        continue
+    seen.add(name)
 
-for name in names:
-    assert (src / name).is_file(), f"STOP: Original missing: {name}"
+    source = repo / (name.replace(".", "/") + ".py")
+    target = clean / (name.replace(".", "/") + ".py")
 
-dst.mkdir(exist_ok=True)
+    if not target.is_file():
+        missing.add(name)
 
-for name in names:
-    source = src / name
-    target = dst / name
+    if not source.is_file():
+        print("SOURCE NOT FOUND:", name)
+        continue
 
-    if target.exists():
-        assert target.is_file(), f"STOP: Invalid destination: {name}"
-        assert source.read_bytes() == target.read_bytes(), \
-            f"STOP: Existing file differs: {name}"
-        print("ALREADY IDENTICAL:", name)
-    else:
-        with target.open("xb") as f:
-            f.write(source.read_bytes())
+    tree = ast.parse(source.read_text())
+    for node in ast.walk(tree):
+        modules = []
+        if isinstance(node, ast.Import):
+            modules = [x.name for x in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            modules = [node.module or ""]
 
-        assert hashlib.sha256(source.read_bytes()).digest() == \
-               hashlib.sha256(target.read_bytes()).digest()
-        print("COPIED AND VERIFIED:", name)
+        for module in modules:
+            if module.startswith("cta_max."):
+                pending.append(module[len("cta_max."):])
 
-print("CLEAN PACKAGE DIRECTORY: PASS")
-print("ORIGINAL FILES: UNCHANGED")
-print("NEXT: VERIFY DEPENDENCIES BEFORE HTTP TEST")
+print("LOCAL MODULES CHECKED:", len(seen))
+print("MISSING FROM CLEAN PACKAGE:")
+for name in sorted(missing):
+    print(" ", name)
+print("READ-ONLY CHECK COMPLETE")
 PY

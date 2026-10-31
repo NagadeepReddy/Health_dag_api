@@ -1,30 +1,20 @@
-python3 -B - <<'PY'
-from pathlib import Path
-import ast
-import struct
+ROOT=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
 
-roots = [
-    Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029"),
-    Path("/application1/sajjna8/rt-pzaas-cta-offers-v1"),
-    Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030"),
-]
+SRC="$ROOT/batch2/cta_max/grecbase_integration_weights/seq_dense.weight.npy"
+DST="$ROOT/artifacts/v1.168-max/cta_max/grecbase_integration_weights/seq_dense.weight.npy"
 
-for root in roots:
-    print("\n===", root, "===")
-    if not root.is_dir():
-        continue
-    for name in ("seq_dense.weight.npy", "seq_dense_weight.npy"):
-        for p in root.rglob(name):
-            try:
-                with p.open("rb") as f:
-                    assert f.read(6) == b"\x93NUMPY"
-                    major, minor = f.read(2)
-                    length = struct.unpack(
-                        "<H" if major == 1 else "<I",
-                        f.read(2 if major == 1 else 4)
-                    )[0]
-                    header = ast.literal_eval(f.read(length).decode("latin1"))
-                print("SHAPE:", header["shape"], "|", p)
-            except Exception as e:
-                print("ERROR:", p, str(e))
-PY
+if test -f "$SRC" &&
+   test -f "$DST" &&
+   test ! -e "$DST.before_fix.bak" &&
+   test ! -e "$DST.tmp"; then
+
+  cp -p "$DST" "$DST.before_fix.bak" &&
+  cp -p "$SRC" "$DST.tmp" &&
+  cmp -s "$SRC" "$DST.tmp" &&
+  mv -f "$DST.tmp" "$DST" &&
+  cmp -s "$SRC" "$DST" &&
+  echo "CLEAN CORRECT DENSE WEIGHT: PASS"
+
+else
+  echo "STOP: Precheck failed"
+fi

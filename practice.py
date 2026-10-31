@@ -1,38 +1,43 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import shutil
+import hashlib
 
-repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
-dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts")
+repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts")
+clean = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts")
 
-items = [
-    (repo / "artifacts/v1.168", dst / "v1.168"),
-    (repo / "artifacts/v1.168-max/cta_native_model",
-     dst / "v1.168-max/cta_native_model"),
+pairs = [
+    ("Original CTA", repo / "v1.168", clean / "v1.168"),
+    ("Native MAX model", repo / "v1.168-max/cta_native_model",
+     clean / "v1.168-max/cta_native_model"),
 ]
 
-if not (dst / "v1.168-max/cta_native_batch2_release_candidate/CTA_NATIVE_BATCH2_CPU_ACCEPTANCE_20261030.json").is_file():
-    raise SystemExit("STOP: validated release missing")
+def inventory(root):
+    result = {}
+    for p in root.rglob("*"):
+        if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":
+            h = hashlib.sha256()
+            with p.open("rb") as f:
+                for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
+                    h.update(chunk)
+            result[p.relative_to(root).as_posix()] = h.hexdigest()
+    return result
 
-for src, target in items:
-    if not src.is_dir() or target.exists():
-        raise SystemExit(f"STOP: missing source or existing destination: {target}")
+all_pass = True
+for label, source, target in pairs:
+    if not source.is_dir() or not target.is_dir():
+        print("FAIL:", label, "missing directory")
+        all_pass = False
+        continue
+    original = inventory(source)
+    copied = inventory(target)
+    ok = original == copied
+    print(f"{label}: {'PASS' if ok else 'FAIL'} | Files: {len(original)}")
+    if not ok:
+        for name in sorted(set(original) | set(copied)):
+            if original.get(name) != copied.get(name):
+                print("MISMATCH:", name)
+        all_pass = False
 
-required = sum(
-    p.stat().st_size
-    for src, _ in items
-    for p in src.rglob("*")
-    if p.is_file() and "__pycache__" not in p.parts
-)
-
-available = shutil.disk_usage(dst).free
-if available < required * 2:
-    raise SystemExit("STOP: insufficient free space")
-
-for src, target in items:
-    shutil.copytree(src, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    print("COPIED:", target)
-
+print("ALL COPIED DEPENDENCIES MATCH:", all_pass)
 print("ORIGINAL FILES: UNCHANGED")
-print("NEXT: VERIFY COPIED DEPENDENCIES")
 PY

@@ -1,29 +1,47 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import ast, hashlib
+import ast
 
-roots = {
-    "OCT28": Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"),
-    "OCT29": Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/cta_max"),
-}
+root = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
+entries = ["run_real_sanity_input_adapter", "grecbase_fusion_full_head_72_max"]
+required = set()
+missing = set()
 
-for name in ("run_real_sanity_input_adapter.py", "grecbase_fusion_full_head_72_max.py"):
-    print("\n=== MODULE:", name, "===")
-    for label, root in roots.items():
-        p = root / name
-        if not p.is_file():
-            print(label, "MISSING")
-            continue
-        source = p.read_bytes()
-        print(label, "SHA256:", hashlib.sha256(source).hexdigest())
-        tree = ast.parse(source, filename=str(p))
-        imports = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                imports.add("." * node.level + (node.module or ""))
-        print("IMPORTS:", ", ".join(sorted(imports)))
+def scan(name):
+    if name in required:
+        return
+    path = root / (name.replace(".", "/") + ".py")
+    if not path.is_file():
+        missing.add(name)
+        return
+    required.add(name)
+    tree = ast.parse(path.read_text(), filename=str(path))
+    for node in ast.walk(tree):
+        candidates = []
+        if isinstance(node, ast.Import):
+            candidates = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            prefix = node.module or ""
+            if prefix.startswith("cta_max."):
+                candidates = [prefix]
+            elif prefix == "cta_max":
+                candidates = ["cta_max." + a.name for a in node.names]
+            elif node.level:
+                candidates = ["cta_max." + prefix] if prefix else []
+        for module in candidates:
+            if module.startswith("cta_max."):
+                local = module.removeprefix("cta_max.")
+                if (root / (local.replace(".", "/") + ".py")).is_file():
+                    scan(local)
 
-print("\nREAD-ONLY CHECK COMPLETE")
+for entry in entries:
+    scan(entry)
+
+print("=== REQUIRED CTA_MAX MODULES (STATIC IMPORTS) ===")
+for name in sorted(required):
+    print(name + ".py")
+print("MODULE COUNT:", len(required))
+print("UNRESOLVED ENTRY MODULES:", sorted(missing))
+print("DYNAMIC IMPORTS STILL REQUIRE REVIEW")
+print("READ-ONLY CHECK COMPLETE")
 PY

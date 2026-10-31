@@ -1,53 +1,31 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import hashlib
 import ast
 
 base = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max")
-source = Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py")
-target = base / "real_max_batch2_backend.py"
+backend = base / "real_max_batch2_backend.py"
 adapter = base / "cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py"
+package = base / "cta_max"
 
-assert source.is_file() and not source.is_symlink()
-assert base.is_dir() and not base.is_symlink()
-assert adapter.is_file() and not adapter.is_symlink()
-assert (base / "cta_max/__init__.py").is_file()
-assert not target.is_symlink()
+assert backend.is_file() and adapter.is_file()
+assert (package / "__init__.py").is_file()
 
-data = source.read_bytes()
-if target.exists():
-    assert target.is_file() and target.read_bytes() == data, "STOP: Backend differs"
-    print("BACKEND ALREADY IDENTICAL")
-else:
-    with target.open("xb") as f:
-        f.write(data)
-    print("BACKEND COPIED")
+for label, path in [("BACKEND", backend), ("ADAPTER", adapter)]:
+    source = path.read_text()
+    tree = ast.parse(source, filename=str(path))
+    print(f"\n=== {label} ===")
+    print("SYNTAX: PASS")
 
-assert target.read_bytes() == data
-print("BACKEND SHA256:", hashlib.sha256(data).hexdigest())
+    for n, line in enumerate(source.splitlines(), 1):
+        if any(term in line for term in (
+            "/workspace", "/batch2", "/application1",
+            "sys.path", "model_path", "weights",
+            "cta_max", "real_max_batch2_backend"
+        )):
+            print(f"{n}: {line[:180]}")
 
-text = adapter.read_text()
-replacements = {
-    'Path("/batch2/real_max_batch2_backend.py")':
-        'Path(__file__).resolve().parents[2] / "real_max_batch2_backend.py"',
-    'Path("/batch2/cta_max")':
-        'Path(__file__).resolve().parents[2] / "cta_max"',
-}
-
-updated = text
-for old, new in replacements.items():
-    assert updated.count(old) == 1 or new in updated, f"STOP: Unexpected adapter: {old}"
-    updated = updated.replace(old, new)
-
-ast.parse(updated)
-if updated != text:
-    adapter.write_text(updated)
-    print("CLEAN ADAPTER PATHS UPDATED: 2")
-else:
-    print("CLEAN ADAPTER PATHS ALREADY UPDATED")
-
-assert adapter.read_text() == updated
-print("CLEAN BACKEND AND ADAPTER: VERIFIED")
+print("\nCLEAN BACKEND EXISTS: PASS")
+print("CLEAN CTA_MAX PACKAGE EXISTS: PASS")
 print("ORIGINAL FILES: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
+print("READ-ONLY CHECK COMPLETE")
 PY

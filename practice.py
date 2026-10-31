@@ -1,22 +1,16 @@
 ROOT=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
-ORIG=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
-REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
+SRC="$ROOT/batch2/cta_max/nlp_weights"
+DST="$ROOT/artifacts/v1.168-max/cta_max/nlp_weights"
 
-echo "=== NLP WEIGHT LOADING CODE ==="
-grep -Rsn --include='*.py' \
-  -E 'Missing NLP weight|nlp_encoder.embeddings.word_embeddings.weight' \
-  "$ROOT/batch2/cta_max" \
-  "$ROOT/artifacts/v1.168-max/cta_max" \
-  "$ORIG" 2>/dev/null | head -25
+if [ -f "$SRC/nlp_encoder.embeddings.word_embeddings.weight.npy" ] &&
+   [ -d "$SRC" ] &&
+   [ ! -e "$DST" ] &&
+   [ ! -L "$DST" ] &&
+   [ "$(df -Pk "$(dirname "$DST")" | awk 'NR==2 {print $4}')" -gt "$(du -sk "$SRC" | awk '{print $1}')" ]; then
 
-echo "=== NLP WEIGHTS AND CHECKPOINTS ==="
-find "$ROOT/batch2/cta_max" \
-     "$ROOT/artifacts/v1.168-max/cta_max" \
-     "$ORIG" \
-     "$REPO/artifacts/v1.168-max" \
-  -type f \( \
-    -iname '*nlp*' -o \
-    -iname '*word*embed*' -o \
-    -name '*.safetensors' -o \
-    -name 'model_0_base.pt' \
-  \) -print 2>/dev/null | head -65
+  cp -a "$SRC" "$DST" &&
+  diff -qr "$SRC" "$DST" &&
+  echo "CLEAN NLP WEIGHTS: PASS"
+else
+  echo "STOP: Source, destination, or disk precheck failed"
+fi

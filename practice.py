@@ -1,49 +1,25 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import shutil, hashlib
 
-src = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
-dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/batch2/cta_max")
-
-folders = [
-    "context_head_weights",
-    "get_path_weights",
-    "grecbase_aux_weights",
-    "grecbase_integration_weights",
-    "main_context_weights",
-    "nlp_weights",
-    "sequence_weights",
-    "sibling_context_weights",
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+files = [
+    root / "batch2/real_max_batch2_backend.py",
+    root / "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py",
+    root / "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_native_launcher.py",
 ]
 
-def sha256(p):
-    h = hashlib.sha256()
-    with p.open("rb") as f:
-        for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+for p in files:
+    print("\n===", p.name, "===")
+    if not p.is_file():
+        print("MISSING")
+        continue
+    for n, line in enumerate(p.read_text().splitlines(), 1):
+        if any(x in line for x in (
+            "/application1/", "/workspace/", "/batch2/",
+            "sys.path", "PYTHONPATH"
+        )):
+            print(f"{n}: {line.strip()[:160]}")
 
-if not dst.is_dir():
-    raise SystemExit("STOP: clean CTA_MAX module folder missing")
-
-for name in folders:
-    if not (src / name).is_dir() or (dst / name).exists():
-        raise SystemExit("STOP: missing source or existing target: " + name)
-
-required = sum(p.stat().st_size for name in folders for p in (src / name).rglob("*") if p.is_file())
-if shutil.disk_usage(dst).free < required * 2:
-    raise SystemExit("STOP: insufficient disk space")
-
-for name in folders:
-    source = src / name
-    target = dst / name
-    shutil.copytree(source, target)
-    a = {p.relative_to(source).as_posix(): sha256(p) for p in source.rglob("*") if p.is_file()}
-    b = {p.relative_to(target).as_posix(): sha256(p) for p in target.rglob("*") if p.is_file()}
-    if a != b:
-        raise SystemExit("FAIL: weight checksum mismatch: " + name)
-    print("PASS:", name, "| Files:", len(a))
-
-print("WEIGHT FOLDERS COPIED:", len(folders))
-print("ORIGINALS UNCHANGED")
+print("\nCLEAN WEIGHTS:", (root / "batch2/cta_max/grecbase_integration_weights/seq_dense.weight.npy").is_file())
+print("READ-ONLY CHECK COMPLETE")
 PY

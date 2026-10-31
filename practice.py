@@ -1,6 +1,8 @@
-BASE=/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
+set -o pipefail
 
-grep -nEi 'spawn|register|worker|factory|bootstrap|scheduler' \
-  "$BASE/cta_native_launcher.py" \
-  "$BASE/cta_spawn_worker.py" \
-  "$BASE/cta_scheduler_factory.py" | head -65
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  cp cta-postman-validated-20261030:/tmp/cta_postman_native.log - \
+  | tar -xOf - \
+  | grep -nEi 'traceback|exception|error|worker|spawn|failed|timeout|model load|ready|shutdown' \
+  | head -80

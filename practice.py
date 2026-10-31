@@ -1,16 +1,5 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec cta-clean-batch2-http-20261030 \
-  /bin/sh -c '
-echo "=== NATIVE MAX STARTUP ==="
-tail -n 35 /tmp/cta_clean_http.log 2>&1
-
-echo "=== HTTP LISTENER ==="
-/opt/venv/bin/python -B -c "
-import socket
-s = socket.socket()
-s.settimeout(2)
-print(\"HTTP PORT 18767:\", \"LISTENING\" if s.connect_ex((\"127.0.0.1\",18767)) == 0 else \"NOT LISTENING\")
-s.close()
-"
-'
+from PIL import Image
+for f in ['/mnt/data/IMG_DE22E288-B4DC-413A-9683-BA696A7F577C.jpeg','/mnt/data/IMG_AE5D228D-CEEF-4ED4-8F9D-43C88D836B0E.jpeg']:
+ im=Image.open(f)
+ print(f, im.size)
+ display(im.rotate(90,expand=True).resize((1850,1200)))

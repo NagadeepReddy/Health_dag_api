@@ -1,49 +1,57 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import hashlib
+import ast
 
-src = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
-dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_max")
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max")
+packages = ["cta_max", "cta_native_batch2_release_candidate/maxserve_cta_extension"]
+missing = set()
+old_paths = []
+checked = 0
 
-names = [
-    "att_pooling_max",
-    "grecbase_aux_branches_max",
-    "grecbase_fusion_full_head_72_max",
-    "grecbase_get_path_max",
-    "main_context_max",
-    "nlp_bert_in_graph",
-    "parallel_transformer_block_2layers",
-    "run_real_sanity_input_adapter",
-    "sequence_postprocess_max",
-    "sequence_transformer_max",
-    "sibling_context_max",
-]
+for folder in packages:
+    base = root / folder
+    assert base.is_dir(), f"STOP: missing {base}"
 
-assert src.is_dir() and dst.is_dir(), "STOP: package directory missing"
-assert not src.is_symlink() and not dst.is_symlink(), "STOP: symlink directory"
+    for p in sorted(base.rglob("*.py")):
+        if "__pycache__" in p.parts:
+            continue
+        checked += 1
+        tree = ast.parse(p.read_text(), filename=str(p))
 
-# Verify everything before copying.
-for name in names:
-    a, b = src / f"{name}.py", dst / f"{name}.py"
-    assert a.is_file() and not a.is_symlink(), f"STOP: invalid source {name}"
-    assert not b.is_symlink(), f"STOP: destination symlink {name}"
-    if b.exists():
-        assert b.is_file() and a.read_bytes() == b.read_bytes(), \
-            f"STOP: existing destination differs {name}"
+        for node in ast.walk(tree):
+            modules = []
+            if isinstance(node, ast.Import):
+                modules = [x.name for x in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                modules = [node.module or ""]
 
-for name in names:
-    a, b = src / f"{name}.py", dst / f"{name}.py"
-    if not b.exists():
-        with b.open("xb") as f:
-            f.write(a.read_bytes())
-        print("COPIED:", name)
-    else:
-        print("ALREADY IDENTICAL:", name)
+            for module in modules:
+                if module.startswith("cta_max.") or module.startswith("maxserve_cta_extension."):
+                    pkg, relative = module.split(".", 1)
+                    pkgdir = root / ("cta_max" if pkg == "cta_max" else packages[1])
+                    q = pkgdir / relative.replace(".", "/")
+                    if not q.with_suffix(".py").is_file() and not (q / "__init__.py").is_file():
+                        missing.add(module)
 
-    assert hashlib.sha256(a.read_bytes()).digest() == \
-           hashlib.sha256(b.read_bytes()).digest(), f"FAIL: {name}"
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                s = node.value
+                if any(x in s for x in (
+                    "/application1/CTA_MAX_TRUE_BATCH2_DEV_",
+                    "/application1/cta_max_true_batch_dev_",
+                    "/application1/CTA_MAX_TRUE_BATCH2_",
+                    "/batch2/"
+                )):
+                    old_paths.append((p.name, node.lineno, s[:140]))
 
-print("MAX MODULE COPIES VERIFIED: PASS")
+print("PYTHON FILES CHECKED:", checked)
+print("MISSING LOCAL IMPORTS:", len(missing))
+for x in sorted(missing):
+    print("MISSING:", x)
+
+print("DEVELOPMENT PATH REFERENCES:", len(old_paths))
+for name, line, value in old_paths[:25]:
+    print(f"{name}:{line}: {value}")
+
 print("ORIGINAL FILES: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
+print("READ-ONLY CHECK COMPLETE")
 PY

@@ -1,24 +1,51 @@
-ROOT=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
-PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
+python3 -B - <<'PY'
+from pathlib import Path
+import shutil
+import filecmp
 
-echo "=== CLEAN NATIVE HTTP ==="
-START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+src = root / "batch2/cta_max"
+dst = root / "artifacts/v1.168-max/cta_max"
 
-curl --max-time 180 -sS \
-  -o "$ROOT/clean_http_final.json" \
-  -w 'HTTP_STATUS:%{http_code}\n' \
-  -X POST http://127.0.0.1:18767/v2/cta/predict \
-  -H 'Content-Type: application/json' \
-  --data-binary @"$ROOT/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
+required = src / "grecbase_aux_weights/task_embedding.0.weight.npy"
 
-echo "=== CTA RESPONSE ==="
-if test -s "$ROOT/clean_http_final.json"; then
-  head -c 500 "$ROOT/clean_http_final.json"
-  echo
-fi
+if not required.is_file() or not dst.is_dir():
+    raise SystemExit("STOP: Reference weight or destination missing")
 
-echo "=== FRESH WORKER ERRORS ==="
-$PODMAN logs --since "$START" --tail 150 \
-  cta-clean-native-batch2 2>&1 |
-  grep -E 'FileNotFoundError|AssertionError|CTA PREDICT EXCEPTION|CTA RESPONSE' |
-  tail -15
+missing = []
+
+for folder in sorted(src.iterdir()):
+    if not folder.name.endswith("_weights") or not folder.is_dir():
+        continue
+    if folder.is_symlink():
+        raise SystemExit(f"STOP: Source symlink: {folder}")
+    target_dir = dst / folder.name
+    if target_dir.is_symlink():
+        raise SystemExit(f"STOP: Destination symlink: {target_dir}")
+    for f in folder.rglob("*"):
+        if f.is_symlink():
+            raise SystemExit(f"STOP: Weight symlink: {f}")
+        if f.is_file():
+            target = target_dir / f.relative_to(folder)
+            if not target.exists():
+                missing.append((f, target))
+
+needed = sum(f.stat().st_size for f, _ in missing)
+free = shutil.disk_usage(dst).free
+
+print("MISSING FILES:", len(missing))
+print("REQUIRED SPACE MB:", round(needed / 1048576, 1))
+
+if free < needed + 100 * 1048576:
+    raise SystemExit("STOP: Insufficient disk space")
+
+for f, target in missing:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(f, target)
+    if not filecmp.cmp(f, target, shallow=False):
+        raise SystemExit(f"STOP: Copy mismatch: {target}")
+    print("RESTORED:", target.relative_to(dst))
+
+assert (dst / "grecbase_aux_weights/task_embedding.0.weight.npy").is_file()
+print("CLEAN REMAINING WEIGHT PACKAGING: PASS")
+PY

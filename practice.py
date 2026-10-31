@@ -1,17 +1,16 @@
-REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
 STAGE=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
 
-echo "=== GIT STAGED MAX FILES ==="
-git -C "$REPO" diff --cached --name-status -- artifacts/v1.168-max
+echo "=== POSSIBLE DUPLICATE BACKEND ==="
+sha256sum \
+ "$STAGE/batch2/real_max_batch2_backend.py" \
+ "$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py"
 
-echo "=== HANDOFF PYTHON AND LAUNCHER FILES ==="
-find "$STAGE" -type f \
-  \( -name '*.py' -o -name '*.sh' \) \
-  -printf '%P\n' | sort
+echo "=== CHECK FILE DEPENDENCIES ==="
+grep -RInE \
+ --include='*.py' \
+ --include='*.sh' \
+ --include='*.txt' \
+ 'cta_native_e2e_test|cta_native_startup_test|run_real_sanity_input_adapter|run_live_max_inference|run_batch2_contract|before_fix.bak|real_max_batch2_backend' \
+ "$STAGE" 2>/dev/null | head -80
 
-echo "=== POSSIBLE INVESTIGATION FILES ==="
-find "$STAGE" -type f \
-  \( -iname '*test*' -o -iname '*debug*' \
-  -o -iname '*backup*' -o -iname '*.bak' \
-  -o -iname '*sanity*' \) \
-  -printf '%P\n' | head -60
+echo "CLEANUP DEPENDENCY AUDIT COMPLETE"

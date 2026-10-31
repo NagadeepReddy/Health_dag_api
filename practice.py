@@ -1,43 +1,38 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import hashlib, json, shutil
+import shutil
 
 repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
-src = repo / "artifacts/v1.168-max/cta_native_batch2_release_candidate"
-dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
-report_file = src / "CTA_NATIVE_BATCH2_CPU_ACCEPTANCE_20261030.json"
+dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts")
 
-report = json.loads(report_file.read_text())
-expected = report["staged_source_sha256"]
-actual = {
-    p.relative_to(src).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-    for p in src.rglob("*.py")
-}
+items = [
+    (repo / "artifacts/v1.168", dst / "v1.168"),
+    (repo / "artifacts/v1.168-max/cta_native_model",
+     dst / "v1.168-max/cta_native_model"),
+]
 
-if expected != actual or len(actual) != 20:
-    raise SystemExit("STOP: validated source checksums do not match")
+if not (dst / "v1.168-max/cta_native_batch2_release_candidate/CTA_NATIVE_BATCH2_CPU_ACCEPTANCE_20261030.json").is_file():
+    raise SystemExit("STOP: validated release missing")
 
-if dst.exists():
-    raise SystemExit("STOP: clean folder already exists; no overwrite")
+for src, target in items:
+    if not src.is_dir() or target.exists():
+        raise SystemExit(f"STOP: missing source or existing destination: {target}")
 
-target = dst / "artifacts/v1.168-max/cta_native_batch2_release_candidate"
+required = sum(
+    p.stat().st_size
+    for src, _ in items
+    for p in src.rglob("*")
+    if p.is_file() and "__pycache__" not in p.parts
+)
 
-for relative in sorted(expected):
-    source = src / relative
-    output = target / relative
-    output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, output)
+available = shutil.disk_usage(dst).free
+if available < required * 2:
+    raise SystemExit("STOP: insufficient free space")
 
-shutil.copy2(report_file, target / report_file.name)
+for src, target in items:
+    shutil.copytree(src, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    print("COPIED:", target)
 
-for relative, checksum in expected.items():
-    copied = target / relative
-    if hashlib.sha256(copied.read_bytes()).hexdigest() != checksum:
-        raise SystemExit("STOP: copied checksum mismatch: " + relative)
-
-print("CLEAN VM FOLDER:", dst)
-print("VERIFIED PYTHON FILES COPIED:", len(expected))
-print("ACCEPTANCE REPORT: COPIED")
-print("COPIED CHECKSUMS: PASS")
 print("ORIGINAL FILES: UNCHANGED")
+print("NEXT: VERIFY COPIED DEPENDENCIES")
 PY

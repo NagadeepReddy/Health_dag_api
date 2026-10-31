@@ -1,11 +1,4 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec cta-clean-native-batch2 /bin/sh -c '
-for f in \
-/batch2/cta_max/grecbase_integration_weights/att_pooling.rotary_emb_inv_freq.npy \
-/batch2/cta_max/artifacts/v1.168/core-artifact/model_0_base.pt \
-/workspace/artifacts/v1.168/core-artifact/model_0_base.pt
-do
-  if test -f "$f"; then echo "FOUND: $f"
-  else echo "MISSING: $f"; fi
-done'
+find /application1/sajjna8/rt-pzaas-cta-offers-v1 \
+/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030 \
+-type f \( -iname '*rotary*' -o -name 'model_0_base.pt' \) \
+-print 2>/dev/null

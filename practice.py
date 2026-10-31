@@ -1,22 +1,31 @@
+bash <<'SH'
+set -euo pipefail
+
 ROOT=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
+LINK="$ROOT/artifacts/v1.168-max/cta_max/grecbase_integration_weights/seq_dense.weight.npy.before_fix.bak"
+BACKUP=/application1/CTA_MAX_HANDOFF_BACKUP_LINK_20261031
 
-echo "=== PACKAGE SIZE ==="
-du -sh "$ROOT"
+if [ ! -L "$LINK" ] || [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then
+  echo "STOP: Backup symlink missing or destination occupied"
+  exit 1
+fi
 
-echo "=== CLEANUP CANDIDATES ==="
-find "$ROOT" -type f \( \
-  -name '*.bak' -o \
-  -name '*.log' -o \
-  -name '*.pyc' -o \
-  -name '*.tmp' -o \
-  -iname '*debug*' -o \
-  -iname '*investigation*' \
-\) -printf '%P\n' | head -80
+if grep -RIlF \
+  --include='*.py' --include='*.sh' \
+  'seq_dense.weight.npy.before_fix.bak' \
+  "$ROOT" | grep -q .; then
+  echo "STOP: Backup referenced by code"
+  exit 1
+fi
 
-echo "=== SYMLINKS ==="
-find "$ROOT" -type l -printf '%P -> %l\n'
+mv "$LINK" "$BACKUP"
 
-echo "=== TOP-LEVEL CONTENTS ==="
-du -h --max-depth=2 "$ROOT" | sort -hr | head -30
-
-echo "CLEANUP INVENTORY: COMPLETE"
+if bash "$ROOT/run_cta_native.sh" check; then
+  echo "BACKUP SYMLINK ISOLATED: PASS"
+  echo "ORIGINAL RUNNING CODE: UNCHANGED"
+else
+  mv "$BACKUP" "$LINK"
+  echo "ROLLBACK: Backup restored"
+  exit 1
+fi
+SH

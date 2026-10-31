@@ -1,25 +1,37 @@
-python3 -B - <<'PY'
+PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
+NAME="cta-clean-batch2-http-20261030"
+
+AVAILABLE=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+test "$AVAILABLE" -ge 18874368 || {
+  echo "STOP: Insufficient host memory"
+  exit 1
+}
+
+test "$($PODMAN inspect "$NAME" --format '{{.State.Status}}')" = "running" || {
+  echo "STOP: Clean container not running"
+  exit 1
+}
+
+$PODMAN exec "$NAME" /opt/venv/bin/python -B -c '
 from pathlib import Path
-import shutil, ast, hashlib
+p=Path("/workspace/artifacts/v1.168-max/cta_max/nlp_bert_max.py")
+assert p.is_file(), "STOP: Module not visible in container"
+print("CLEAN MODULE VISIBLE: PASS")
+' || exit 1
 
-src = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max/nlp_bert_max.py")
-dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_max/nlp_bert_max.py")
-
-assert src.is_file(), "STOP: Development module missing"
-assert dst.parent.is_dir(), "STOP: Clean package missing"
-
-ast.parse(src.read_bytes(), filename=str(src))
-
-if dst.exists():
-    assert dst.read_bytes() == src.read_bytes(), "STOP: Existing clean file differs"
-    print("CLEAN MODULE: ALREADY PRESENT AND MATCHING")
-else:
-    shutil.copy2(src, dst)
-    print("CLEAN MODULE: COPIED")
-
-assert hashlib.sha256(src.read_bytes()).digest() == hashlib.sha256(dst.read_bytes()).digest()
-
-print("MODULE CHECKSUM: PASS")
-print("ORIGINAL CTA: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
-PY
+$PODMAN exec -d \
+  -e PYTHONPATH=/workspace/artifacts/v1.168-max/cta_native_batch2_release_candidate:/workspace/artifacts/v1.168/core-artifact:/batch2:/workspace/artifacts/v1.168-max \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONUNBUFFERED=1 \
+  -e CUDA_VISIBLE_DEVICES= \
+  -e HOME=/tmp \
+  -e TMPDIR=/tmp \
+  -e XDG_CACHE_HOME=/tmp/cta_batch2_cache \
+  -e HF_HOME=/tmp/cta_batch2_cache \
+  -e TORCH_HOME=/tmp/cta_batch2_cache \
+  -e OTEL_SDK_DISABLED=true \
+  -e OTEL_METRICS_EXPORTER=none \
+  -e OTEL_TRACES_EXPORTER=none \
+  -e OTEL_LOGS_EXPORTER=none \
+  "$NAME" \
+  /bin/sh -c 'timeout -s TERM -k 10s 360s /opt/venv/bin/python -B -u -c "from maxserve_cta_extension.cta_queue_compat import install; assert install(); from maxserve_cta_extension.cta_native_launcher import main; main()" --port 18767 --model-path /workspace/artifacts/v1.168-max/cta_native_model --devices cpu --max-batch-size 2 > /tmp/cta_clean_http.log 2>&1'

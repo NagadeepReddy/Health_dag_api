@@ -1,11 +1,26 @@
 REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
 
-echo "=== TRITON TEST CLIENT ==="
-git -C "$REPO" show \
-  triton:artifacts/v1.168-triton/test_triton_client.py |
-  head -180
+echo "=== LOCAL TRITON COMMIT ==="
+git -C "$REPO" log -1 \
+  --format='%h | %an | %ad | %s' \
+  --date=short triton
 
-echo "=== TRITON DEPLOYMENT FILES ==="
+echo "=== TRACKED REMOTE COMMIT ==="
+git -C "$REPO" log -1 \
+  --format='%h | %an | %ad | %s' \
+  --date=short origin/triton
+
+echo "=== ACTUAL REMOTE BRANCH ==="
+timeout 15 git -C "$REPO" \
+  ls-remote --heads origin triton || true
+
+echo "=== RECENT TRITON HISTORY ==="
+git -C "$REPO" log -5 \
+  --format='%h | %an | %ad | %s' \
+  --date=short triton
+
+echo "=== TRITON FILE SUMMARY ==="
 git -C "$REPO" ls-tree -r --name-only triton |
-grep -Ei 'triton.*(readme|deploy|test|client)|helm|kserve|values.yaml' |
-head -60
+grep -E 'Dockerfile.triton|config.pbtxt|/model.py$|test_triton_client.py|deployment-params.json'
+
+echo "READ-ONLY INSPECTION: COMPLETE"

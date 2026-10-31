@@ -1,20 +1,21 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import json, hashlib
 
-root = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_batch2_release_candidate")
-report = json.loads((root / "CTA_NATIVE_BATCH2_CPU_ACCEPTANCE_20261030.json").read_text())
-expected = report["staged_source_sha256"]
-actual = {
-    p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-    for p in root.rglob("*.py")
+repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
+base = repo / "artifacts/v1.168-max"
+
+checks = {
+    "Original DS pipeline": repo / "artifacts/v1.168/core-artifact/pipeline.py",
+    "Original DS model": repo / "artifacts/v1.168/core-artifact/model.py",
+    "Native MAX model": base / "cta_native_model",
+    "CTA JSON test input": base / "cta_native_adjusted_sanity_input.json",
+    "Batch-2 backend": Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/real_max_batch2_backend.py"),
+    "Validated release": base / "cta_native_batch2_release_candidate",
 }
 
-for name in sorted(set(expected) | set(actual)):
-    status = "PASS" if name in expected and name in actual and expected[name] == actual[name] else "FAIL"
-    print(status, name)
+print("=== EXTERNAL DEPENDENCY CHECK ===")
+for name, path in checks.items():
+    print(f'{"FOUND" if path.exists() else "MISSING"} | {name} | {path}')
 
-print("REPORT FILES:", len(expected))
-print("ACTUAL FILES:", len(actual))
-print("ALL CHECKSUMS MATCH:", expected == actual)
+print("READ-ONLY CHECK COMPLETE")
 PY

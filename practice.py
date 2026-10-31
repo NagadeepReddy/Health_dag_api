@@ -1,27 +1,15 @@
 STAGE=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
-SAFE=/application1/CTA_MAX_CLEANUP_QUARANTINE_20261031
 
-echo "=== CLEANUP DIAGNOSIS ==="
-
-for f in \
+echo "=== BACKEND CODE DIFFERENCES ==="
+diff -u \
  "$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py" \
- "$STAGE/batch2/real_max_batch2_backend.py" \
- "$SAFE/real_max_batch2_backend.py" \
- "$STAGE/run_cta_native.sh"; do
-  if [ -f "$f" ]; then
-    echo "FOUND: $f"
-  else
-    echo "MISSING: $f"
-  fi
-done
+ "$STAGE/batch2/real_max_batch2_backend.py" |
+ head -100
 
-echo "=== BACKEND COMPARISON ==="
-sha256sum \
- "$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py" \
- "$STAGE/batch2/real_max_batch2_backend.py" 2>&1
+echo "=== BACKEND DEPENDENCIES ==="
+grep -RIn \
+ --include='*.py' --include='*.sh' \
+ 'real_max_batch2_backend' "$STAGE" |
+ head -50
 
-echo "=== LAUNCHER REFERENCE ==="
-grep -n 'real_max_batch2_backend' \
- "$STAGE/run_cta_native.sh" || true
-
-echo "DIAGNOSIS COMPLETE"
+echo "BACKEND AUDIT COMPLETE"

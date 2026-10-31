@@ -1,12 +1,9 @@
-ORIG=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029
-CLEAN=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
+ORIG=/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029/grecbase_fusion_full_head_72_max.py
+CLEAN=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_max/grecbase_fusion_full_head_72_max.py
 
-for DIR in "$ORIG" "$CLEAN"; do
-  echo "=== $DIR ==="
-  find "$DIR" -type f \( \
-    -name 'grecbase_fusion_full_head_72_max.py' -o \
-    -name 'cta_worker_adapter.py' -o \
-    -name 'cta_native_batch2_backend.py' -o \
-    -name 'seq_dense_weight.npy' \
-  \) -print 2>/dev/null
-done
+if [ -f "$ORIG" ] && [ -f "$CLEAN" ]; then
+  sha256sum "$ORIG" "$CLEAN"
+  diff -u "$ORIG" "$CLEAN" | head -80
+else
+  echo "STOP: Source or clean file missing"
+fi

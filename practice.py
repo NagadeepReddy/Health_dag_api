@@ -1,47 +1,46 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import shutil, hashlib
+import ast
 
-src = Path("/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max")
-dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/batch2/cta_max")
-
-names = [
-    "att_pooling_max",
-    "grecbase_aux_branches_batch2_verified",
-    "grecbase_fusion_full_head_72_max",
-    "grecbase_get_path_max",
-    "main_context_max_batch2_verified",
-    "nlp_bert_in_graph",
-    "nlp_bert_max",
-    "parallel_transformer_block_2layers",
-    "run_real_sanity_input_adapter",
-    "sequence_pooling_max",
-    "sequence_postprocess_max",
-    "sequence_transformer_max",
-    "sibling_context_max_batch2_fix",
-]
-
-if not src.is_dir() or dst.exists():
-    raise SystemExit("STOP: source missing or destination already exists")
-
-files = [src / (name + ".py") for name in names]
-if any(not p.is_file() for p in files):
-    raise SystemExit("STOP: required module missing")
-
-if shutil.disk_usage(dst.parent).free < 2 * sum(p.stat().st_size for p in files):
-    raise SystemExit("STOP: insufficient disk space")
-
-dst.mkdir(parents=True)
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+pkg = root / "batch2/cta_max"
+files = sorted(pkg.glob("*.py"))
+missing = set()
+dynamic = []
+paths = []
 
 for p in files:
-    target = dst / p.name
-    shutil.copy2(p, target)
-    a = hashlib.sha256(p.read_bytes()).hexdigest()
-    b = hashlib.sha256(target.read_bytes()).hexdigest()
-    if a != b:
-        raise SystemExit("FAIL: checksum mismatch: " + p.name)
-    print("PASS:", p.name)
+    source = p.read_text(errors="replace")
+    tree = ast.parse(source, filename=str(p))
 
-print("MODULES COPIED:", len(files))
-print("ORIGINALS UNCHANGED")
+    for node in ast.walk(tree):
+        modules = []
+        if isinstance(node, ast.Import):
+            modules = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                modules = [node.module]
+        elif isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else ""
+            if name in ("import_module", "__import__", "exec", "eval"):
+                dynamic.append(f"{p.name}:{node.lineno}:{name}")
+
+        for module in modules:
+            if module.startswith("cta_max."):
+                rel = module.removeprefix("cta_max.").replace(".", "/")
+                if not (pkg / (rel + ".py")).is_file() and not (pkg / rel / "__init__.py").is_file():
+                    missing.add(f"{p.name} -> {module}")
+
+    for n, line in enumerate(source.splitlines(), 1):
+        if "/application1/" in line or "/workspace/" in line or "/batch2/" in line:
+            paths.append(f"{p.name}:{n}: {line.strip()[:130]}")
+
+print("COPIED MODULES:", len(files))
+print("MISSING LOCAL IMPORTS:", sorted(missing))
+print("DYNAMIC CALLS:", dynamic)
+print("HARDCODED PATHS:")
+for item in paths:
+    print(item)
+print("READ-ONLY CHECK COMPLETE")
 PY

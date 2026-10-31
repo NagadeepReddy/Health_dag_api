@@ -1,67 +1,66 @@
 python3 -B - <<'PY'
 from pathlib import Path
 import ast
-import hashlib
-import re
 
 base = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max")
-backend = base / "real_max_batch2_backend.py"
 pkg = base / "cta_max"
+ext = base / "cta_native_batch2_release_candidate/maxserve_cta_extension"
 
-old = "/application1/cta_max_true_batch_dev_20261028/batch2_candidate/cta_max"
-helper_src = Path(old) / "run_batch2_contract.py"
-helper_dst = pkg / "run_batch2_contract.py"
+required = [
+    base / "real_max_batch2_backend.py",
+    pkg / "run_batch2_contract.py",
+    pkg / "run_real_sanity_input_adapter.py",
+    pkg / "grecbase_fusion_full_head_72_max.py",
+    ext / "cta_worker_adapter.py",
+    ext / "cta_native_launcher.py",
+]
 
-assert backend.is_file() and not backend.is_symlink()
-assert pkg.is_dir() and not pkg.is_symlink()
-assert helper_src.is_file() and not helper_src.is_symlink()
-assert not helper_dst.is_symlink()
+bad_paths = [
+    "/application1/cta_max_true_batch_dev_20261028",
+    "/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029",
+    "/batch2/cta_max",
+    "/batch2/real_max_batch2_backend.py",
+]
 
-original = backend.read_text()
-helper = helper_src.read_bytes()
-ast.parse(helper.decode(), filename=str(helper_src))
+print("=== REQUIRED RUNTIME FILES ===")
+missing = []
+for p in required:
+    ok = p.is_file()
+    print("PASS" if ok else "MISSING", p.relative_to(base))
+    if not ok:
+        missing.append(str(p))
 
-replacement = 'str(Path(__file__).resolve().parent / "cta_max")'
+print("\n=== CLEAN PYTHON SOURCE AUDIT ===")
+files = sorted(base.rglob("*.py"))
+syntax_errors = []
+stale = []
 
-def replace_literal(text, value, expected):
-    pattern = re.compile(
-        r"""(["'])""" + re.escape(value) + r"""\1"""
-    )
-    updated, count = pattern.subn(lambda m: replacement, text)
-    assert count == expected, (
-        f"STOP: expected {expected} references to {value}, found {count}"
-    )
-    return updated
+for p in files:
+    if "__pycache__" in p.parts:
+        continue
+    text = p.read_text()
+    try:
+        ast.parse(text, filename=str(p))
+    except SyntaxError as e:
+        syntax_errors.append((str(p.relative_to(base)), str(e)))
+    for n, line in enumerate(text.splitlines(), 1):
+        if any(old in line for old in bad_paths):
+            stale.append((str(p.relative_to(base)), n, line.strip()[:160]))
 
-updated = replace_literal(original, old, 4)
-updated = replace_literal(updated, "/batch2/cta_max", 2)
+print("PYTHON FILES CHECKED:", len(files))
+print("SYNTAX ERRORS:", len(syntax_errors))
+print("OLD DEVELOPMENT REFERENCES:", len(stale))
+print("MISSING REQUIRED FILES:", len(missing))
 
-# Make Path available before its first use.
-assert "from __future__ import" not in original
-updated = "from pathlib import Path\n" + updated
+for item in syntax_errors:
+    print("SYNTAX ERROR:", item)
+for item in stale:
+    print("OLD REFERENCE:", item)
+for item in missing:
+    print("MISSING:", item)
 
-ast.parse(updated, filename=str(backend))
-assert old not in updated
-assert "/batch2/cta_max" not in updated
-
-if helper_dst.exists():
-    assert helper_dst.is_file()
-    assert helper_dst.read_bytes() == helper, "STOP: helper differs"
-    print("HELPER ALREADY IDENTICAL")
-else:
-    helper_dst.write_bytes(helper)
-    print("REQUIRED HELPER COPIED")
-
-assert helper_dst.read_bytes() == helper
-
-backend.write_text(updated)
-assert backend.read_text() == updated
-
-print("OLD DEVELOPMENT REFERENCES FIXED: 4")
-print("OLD BATCH2 REFERENCES FIXED: 2")
-print("BACKEND SYNTAX: PASS")
-print("HELPER SHA256:", hashlib.sha256(helper).hexdigest())
+print("\nSTATIC AUDIT:", "PASS" if not (missing or syntax_errors or stale) else "REVIEW REQUIRED")
 print("ORIGINAL FILES: UNCHANGED")
 print("CONTAINERS RESTARTED: NONE")
-print("CLEAN PATH CORRECTION: PASS")
+print("READ-ONLY CHECK COMPLETE")
 PY

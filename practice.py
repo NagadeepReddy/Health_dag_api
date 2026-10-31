@@ -1,16 +1,17 @@
-echo "=== APPLICATION1 DISK UUID ==="
-blkid /dev/nvme2n1
+echo "=== FIND TRITON IMPLEMENTATION ==="
 
-echo "=== CURRENT MOUNT ==="
-findmnt /application1
+ROOTS=(/application1)
+[ -d /application ] && ROOTS+=(/application)
 
-echo "=== AUTOMOUNT CONFIGURATION ==="
-grep -nE '^[^#].*[[:space:]]/application1[[:space:]]' /etc/fstab ||
-echo "FSTAB: NOT CONFIGURED"
+find "${ROOTS[@]}" -maxdepth 8 \
+  \( -name podman -o -name .git -o -name __pycache__ \
+     -name node_modules -o -name venv -o \
+     -name '.venv' -o -name 'CTA_MAX_*' \
+     -name rt-pzaas-cta-offers-v1 \) -prune -o \
+  \( -iname '*triton*' \
+     -o -iname '*model_repository*' \
+     -o -name config.pbtxt \
+     -o -iname '*tritonserver*' \) \
+  -print 2>/dev/null | head -80
 
-echo "=== SYSTEMD MOUNT ==="
-systemctl is-enabled application1.mount 2>/dev/null || true
-
-echo "=== HANDOFF ARCHIVE ==="
-cd /application1 &&
-sha256sum -c CTA_MAX_TEAM_HANDOFF_20261031.tar.gz.sha256
+echo "TRITON SEARCH COMPLETE"

@@ -1,2 +1,8 @@
-BASE=/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
-nl -ba "$BASE/cta_spawn_worker.py" | tail -n 30
+echo "=== HOST MEMORY ==="
+free -h
+
+echo "=== CONTAINER MEMORY USAGE ==="
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  stats --no-stream \
+  --format 'NAME={{.Name}} MEMORY={{.MemUsage}} CPU={{.CPU}}'

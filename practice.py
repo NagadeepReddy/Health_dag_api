@@ -1,1 +1,1 @@
-cat /application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json
+podman --root /application1/podman/storage --runroot /run/containers/storage exec 0c95d4a8f887 sh -c 'grep -Ei "predict|timeout|model.load|worker|batch|error|exception" /tmp/cta_postman_native_18767.log | tail -n 45'

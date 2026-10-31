@@ -1,39 +1,28 @@
 python3 -B - <<'PY'
 from pathlib import Path
 
-base = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max")
-ext = base / "cta_native_batch2_release_candidate/maxserve_cta_extension"
+repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1")
+clean = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+terms = ("live_cta_pipeline_bridge", "cta_max_live_cta_pipeline_bridge")
 
-print("=== NATIVE SERVER STARTUP DEPENDENCIES ===")
+print("=== BRIDGE FILE LOCATIONS ===")
+for root in [repo / "artifacts/v1.168-max", clean / "artifacts/v1.168-max"]:
+    for p in root.rglob("*live*bridge*.py"):
+        if p.is_file():
+            print("FOUND:", p)
 
-names = [
-    "cta_native_launcher.py",
-    "cta_worker_adapter.py",
-    "cta_http_pipeline.py",
-    "cta_queue_compat.py",
-    "cta_max_live_cta_pipeline_bridge.py",
-]
-
-for name in names:
-    matches = list(base.rglob(name))
-    print(f"{name}: {'FOUND' if matches else 'MISSING'}")
-    for p in matches:
-        print("  ", p.relative_to(base))
-
-print("\n=== DYNAMIC IMPORT REFERENCES ===")
-terms = [
-    "cta_max_live_cta_pipeline_bridge",
-    "importlib.import_module",
-    "spec_from_file_location",
-    "sitecustomize",
-]
-
-for p in sorted(ext.rglob("*.py")):
-    for n, line in enumerate(p.read_text().splitlines(), 1):
-        if any(term in line for term in terms):
-            print(f"{p.name}:{n}: {line.strip()[:160]}")
+print("\n=== STARTUP BRIDGE REFERENCES ===")
+for root in [repo / "artifacts/v1.168-max/cta_native_batch2_release_candidate",
+             clean / "artifacts/v1.168-max/cta_native_batch2_release_candidate"]:
+    if not root.is_dir():
+        continue
+    for p in root.rglob("*.py"):
+        if "__pycache__" in p.parts:
+            continue
+        for n, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
+            if any(t in line for t in terms):
+                print(f"{p}:{n}: {line.strip()[:180]}")
 
 print("\nORIGINAL FILES: UNCHANGED")
-print("CONTAINERS RESTARTED: NONE")
 print("READ-ONLY CHECK COMPLETE")
 PY

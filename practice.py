@@ -1,15 +1,4 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec cta-clean-native-batch2 /bin/sh -c '
-for f in \
-  /batch2/cta_max/sequence_weights/seq_dense_weight.npy \
-  /batch2/cta_max/grecbase_integration_weights/seq_dense_weight.npy
-do
-  if test -f "$f"; then
-    echo "FOUND: $f"
-  else
-    echo "MISSING: $f"
-  fi
-done
-ls -ld /batch2/cta_max/*weights* 2>&1
-'
+curl --max-time 120 -sS -w '\nHTTP_STATUS:%{http_code}\n' \
+  -X POST http://127.0.0.1:18767/v2/cta/predict \
+  -H 'Content-Type: application/json' \
+  --data-binary @/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json

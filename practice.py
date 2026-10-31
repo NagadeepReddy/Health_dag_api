@@ -1,16 +1,28 @@
+set -euo pipefail
+
 STAGE=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
+SAFE=/application1/CTA_MAX_CLEANUP_QUARANTINE_20261031
 
-echo "=== POSSIBLE DUPLICATE BACKEND ==="
-sha256sum \
- "$STAGE/batch2/real_max_batch2_backend.py" \
- "$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py"
+KEEP="$STAGE/artifacts/v1.168-max/real_max_batch2_backend.py"
+DUP="$STAGE/batch2/real_max_batch2_backend.py"
 
-echo "=== CHECK FILE DEPENDENCIES ==="
-grep -RInE \
- --include='*.py' \
- --include='*.sh' \
- --include='*.txt' \
- 'cta_native_e2e_test|cta_native_startup_test|run_real_sanity_input_adapter|run_live_max_inference|run_batch2_contract|before_fix.bak|real_max_batch2_backend' \
- "$STAGE" 2>/dev/null | head -80
+test -f "$KEEP" && test -f "$DUP"
+cmp -s "$KEEP" "$DUP"
 
-echo "CLEANUP DEPENDENCY AUDIT COMPLETE"
+grep -qF '$ART/real_max_batch2_backend.py' \
+  "$STAGE/run_cta_native.sh"
+
+test ! -e "$SAFE/real_max_batch2_backend.py"
+
+mkdir -p "$SAFE"
+
+mv "$DUP" "$SAFE/real_max_batch2_backend.py"
+
+echo "=== CHECK CLEAN PACKAGE ==="
+if bash "$STAGE/run_cta_native.sh" check; then
+    echo "DUPLICATE BACKEND QUARANTINED: PASS"
+    echo "ORIGINAL WORKING CODE: UNCHANGED"
+else
+    mv "$SAFE/real_max_batch2_backend.py" "$DUP"
+    echo "CLEANUP ROLLED BACK"
+fi

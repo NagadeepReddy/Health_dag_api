@@ -1,31 +1,25 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import ast
 
 base = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max")
-backend = base / "real_max_batch2_backend.py"
-adapter = base / "cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py"
-package = base / "cta_max"
+p = base / "real_max_batch2_backend.py"
 
-assert backend.is_file() and adapter.is_file()
-assert (package / "__init__.py").is_file()
+assert p.is_file(), "STOP: clean backend missing"
+lines = p.read_text().splitlines()
 
-for label, path in [("BACKEND", backend), ("ADAPTER", adapter)]:
-    source = path.read_text()
-    tree = ast.parse(source, filename=str(path))
-    print(f"\n=== {label} ===")
-    print("SYNTAX: PASS")
+print("=== BACKEND PATH AND IMPORT LOGIC ===")
+for n in range(1, min(125, len(lines)) + 1):
+    print(f"{n}: {lines[n-1]}")
 
-    for n, line in enumerate(source.splitlines(), 1):
-        if any(term in line for term in (
-            "/workspace", "/batch2", "/application1",
-            "sys.path", "model_path", "weights",
-            "cta_max", "real_max_batch2_backend"
-        )):
-            print(f"{n}: {line[:180]}")
+print("\n=== REQUIRED MODULE AVAILABILITY ===")
+for name in [
+    "run_batch2_contract.py",
+    "run_real_sanity_input_adapter.py",
+    "grecbase_fusion_full_head_72_max.py",
+]:
+    q = base / "cta_max" / name
+    print("FOUND" if q.is_file() else "MISSING", name)
 
-print("\nCLEAN BACKEND EXISTS: PASS")
-print("CLEAN CTA_MAX PACKAGE EXISTS: PASS")
-print("ORIGINAL FILES: UNCHANGED")
+print("\nORIGINAL FILES: UNCHANGED")
 print("READ-ONLY CHECK COMPLETE")
 PY

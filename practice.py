@@ -1,20 +1,31 @@
-ROOT=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
-PODMAN="podman --root /application1/podman/storage --runroot /run/containers/storage"
+python3 -B - <<'PY'
+from pathlib import Path
+import shutil
 
-echo "=== ACTIVE CONTAINER MOUNTS ==="
-$PODMAN inspect cta-clean-native-batch2 \
-  --format '{{range .Mounts}}{{println .Source "=>" .Destination}}{{end}}'
+src = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+dst = Path("/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031")
 
-echo "=== EXTERNAL PATH REFERENCES ==="
-grep -RInE \
-  --include='*.py' --include='*.sh' \
-  '(/workspace/batch2|/application1/|CTA_MAX_TRUE_BATCH2_DEV|batch2/cta_max)' \
-  "$ROOT/run_cta_native.sh" \
-  "$ROOT/artifacts/v1.168-max" \
-  2>/dev/null | head -35
+if not src.is_dir() or dst.exists() or dst.is_symlink():
+    raise SystemExit("STOP: Source missing or stage already exists")
 
-echo "=== ACTIVE PACKAGE SYMLINKS ==="
-find "$ROOT/artifacts/v1.168-max" -type l -ls
+if shutil.disk_usage(dst.parent).free < 4 * 1024**3:
+    raise SystemExit("STOP: Insufficient free disk space")
 
-echo "=== REFERENCE FOLDER ==="
-test -d "$ROOT/batch2/cta_max" && echo "REFERENCE: PRESENT"
+def exclude(directory, names):
+    if Path(directory) == src / "batch2":
+        return {"cta_max"} if "cta_max" in names else set()
+    return set()
+
+shutil.copytree(src, dst, symlinks=True, ignore=exclude)
+
+assert (dst / "run_cta_native.sh").is_file()
+assert (dst / "artifacts/v1.168-max/cta_max").is_dir()
+assert not (dst / "batch2/cta_max").exists()
+
+print("HANDOFF STAGE CREATED: PASS")
+print("DUPLICATE REFERENCE EXCLUDED: PASS")
+print("ORIGINAL CLEAN VM UNCHANGED: PASS")
+print("STAGE:", dst)
+PY
+
+bash /application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/run_cta_native.sh check

@@ -1,31 +1,91 @@
-python3 -B - <<'PY'
+bash <<'SH'
+set -euo pipefail
+
+ROOT=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
+NAME=cta-stage-proof
+PORT=18768
+
+PODMAN=(podman
+  --root /application1/podman/storage
+  --runroot /run/containers/storage)
+
+available=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
+
+if [ "$available" -lt 16777216 ]; then
+  echo "STOP: Insufficient free RAM for parallel test"
+  exit 0
+fi
+
+if "${PODMAN[@]}" container exists "$NAME"; then
+  echo "STOP: Test container name already exists"
+  exit 1
+fi
+
+created=0
+passed=0
+
+cleanup() {
+  if [ "$created" = 1 ]; then
+    if [ "$passed" != 1 ]; then
+      "${PODMAN[@]}" logs --tail 35 "$NAME" 2>&1 || true
+    fi
+    "${PODMAN[@]}" rm -f "$NAME" >/dev/null 2>&1 || true
+    echo "TEST CONTAINER CLEANED"
+  fi
+}
+trap cleanup EXIT
+
+echo "=== START ISOLATED STAGE ==="
+
+created=1
+CTA_IMAGE=cta-max-faiss:local \
+CTA_CONTAINER_NAME="$NAME" \
+CTA_PORT="$PORT" \
+PODMAN_ROOT=/application1/podman/storage \
+PODMAN_RUNROOT=/run/containers/storage \
+bash "$ROOT/run_cta_native.sh" start
+
+echo "=== INDEPENDENT HTTP TEST ==="
+
+python3 -B - "$ROOT" "$PORT" <<'PY'
+import json
+import socket
+import sys
+import time
+import urllib.request
 from pathlib import Path
-import shutil
 
-src = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
-dst = Path("/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031")
+root = Path(sys.argv[1])
+port = int(sys.argv[2])
 
-if not src.is_dir() or dst.exists() or dst.is_symlink():
-    raise SystemExit("STOP: Source missing or stage already exists")
+for _ in range(90):
+    try:
+        with socket.create_connection(("127.0.0.1", port), 1):
+            break
+    except OSError:
+        time.sleep(2)
+else:
+    raise RuntimeError("Stage server did not become ready")
 
-if shutil.disk_usage(dst.parent).free < 4 * 1024**3:
-    raise SystemExit("STOP: Insufficient free disk space")
+src = root / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
 
-def exclude(directory, names):
-    if Path(directory) == src / "batch2":
-        return {"cta_max"} if "cta_max" in names else set()
-    return set()
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/v2/cta/predict",
+    data=src.read_bytes(),
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
 
-shutil.copytree(src, dst, symlinks=True, ignore=exclude)
-
-assert (dst / "run_cta_native.sh").is_file()
-assert (dst / "artifacts/v1.168-max/cta_max").is_dir()
-assert not (dst / "batch2/cta_max").exists()
-
-print("HANDOFF STAGE CREATED: PASS")
-print("DUPLICATE REFERENCE EXCLUDED: PASS")
-print("ORIGINAL CLEAN VM UNCHANGED: PASS")
-print("STAGE:", dst)
+with urllib.request.urlopen(req, timeout=240) as r:
+    data = json.load(r)
+    assert r.status == 200
+    assert data and not (
+        isinstance(data, dict) and "error" in data
+    )
+    print("STAGE HTTP 200: PASS")
+    print("CTA JSON: PASS")
 PY
 
-bash /application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/run_cta_native.sh check
+passed=1
+echo "ISOLATED HANDOFF RUNTIME: PASS"
+SH

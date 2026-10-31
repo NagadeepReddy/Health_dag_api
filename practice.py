@@ -1,49 +1,23 @@
 python3 -B - <<'PY'
 from pathlib import Path
-from collections import defaultdict
-import hashlib, json
+import json, hashlib
 
-base = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max")
-release = base / "cta_native_batch2_release_candidate"
+root = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_native_batch2_release_candidate")
+report = json.loads((root / "CTA_NATIVE_BATCH2_CPU_ACCEPTANCE_20261030.json").read_text())
+records = report["staged_source_sha256"]
+files = sorted(root.rglob("*.py"))
 
-roots = [
-    base,
-    Path("/application1/CTA_MAX_TRUE_BATCH2_DEV_20261029"),
-    Path("/application1/cta_max_true_batch_dev_20261028")
-]
+print("STAGED PYTHON FILES:", len(files))
+print("REPORT CHECKSUM RECORDS:", len(records))
 
-def digest(p):
-    return hashlib.sha256(p.read_bytes()).hexdigest()
-
-staged = sorted(release.rglob("*.py"))
-others = defaultdict(list)
-
-for root in roots:
-    if not root.is_dir():
-        continue
-    for p in root.rglob("*.py"):
-        if release in p.parents or "__pycache__" in p.parts:
-            continue
-        others[p.name].append(p)
-
-print("=== STAGED CODE COMPARISON ===")
-print("Staged Python files:", len(staged))
-
-for p in staged:
-    matches = others[p.name]
-    staged_hash = digest(p)
-    identical = sum(digest(q) == staged_hash for q in matches)
-    different = len(matches) - identical
-    print(f"{p.name}: identical={identical}, different={different}")
-
-report = release / "CTA_NATIVE_BATCH2_CPU_ACCEPTANCE_20261030.json"
-print("\n=== ACCEPTANCE REPORT ===")
-if report.is_file():
-    data = json.loads(report.read_text())
-    print("Report: FOUND")
-    print("Top-level fields:", ", ".join(data.keys()))
+if isinstance(records, dict):
+    print("CHECKSUM RECORD EXAMPLE:", next(iter(records.items()), None))
 else:
-    print("Report: MISSING")
+    print("CHECKSUM RECORD EXAMPLE:", records[0] if records else None)
 
-print("\nREAD-ONLY AUDIT COMPLETE")
+print("\nACTUAL SOURCE CHECKSUMS:")
+for p in files:
+    print(p.relative_to(root), hashlib.sha256(p.read_bytes()).hexdigest())
+
+print("\nREAD-ONLY CHECK COMPLETE")
 PY

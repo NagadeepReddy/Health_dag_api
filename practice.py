@@ -1,22 +1,101 @@
 python3 -B - <<'PY'
 from pathlib import Path
+import subprocess
 
 root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
-files = [
-    "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_worker_adapter.py",
-    "artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_native_launcher.py",
-    "batch2/real_max_batch2_backend.py",
+available_kb = int(next(x.split()[1] for x in Path("/proc/meminfo").read_text().splitlines() if x.startswith("MemAvailable:")))
+if available_kb < 20 * 1024 * 1024:
+    raise SystemExit("STOP: Less than 20 GiB available RAM")
+
+code = r'''
+import json, subprocess, sys, time, urllib.request
+from pathlib import Path
+
+launch = "from maxserve_cta_extension.cta_queue_compat import install; assert install(); from maxserve_cta_extension.cta_native_launcher import main; main()"
+cmd = [sys.executable, "-B", "-u", "-c", launch,
+       "--port", "18767",
+       "--model-path", "/workspace/artifacts/v1.168-max/cta_native_model",
+       "--devices", "cpu", "--max-batch-size", "2"]
+
+log = open("/tmp/cta_clean_test.log", "w")
+server = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+try:
+    ready = False
+    for _ in range(240):
+        if server.poll() is not None:
+            break
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:18767/health", timeout=2) as r:
+                if r.status == 200:
+                    ready = True
+                    break
+        except Exception:
+            pass
+        time.sleep(1)
+
+    if not ready:
+        raise RuntimeError("Clean native server did not become ready")
+
+    print("CLEAN NATIVE SERVER: READY", flush=True)
+    fixture = Path("/workspace/artifacts/v1.168-max/cta_native_adjusted_sanity_input.json")
+    payload = json.loads(fixture.read_text())
+    request = urllib.request.Request(
+        "http://127.0.0.1:18767/v2/cta/predict",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST")
+    with urllib.request.urlopen(request, timeout=180) as response:
+        result = json.loads(response.read())
+        print("CLEAN CTA HTTP:", response.status)
+        print("RESPONSE FIELDS:", sorted(result.keys()))
+        assert response.status == 200
+        assert result
+        print("CLEAN NATIVE CTA REQUEST: PASS")
+except Exception as exc:
+    print("CLEAN NATIVE CTA REQUEST: FAIL", repr(exc))
+    log.flush()
+    lines = Path("/tmp/cta_clean_test.log").read_text(errors="replace").splitlines()
+    print("LAST SERVER LOG LINES:")
+    print("\n".join(lines[-25:]))
+finally:
+    server.terminate()
+    try:
+        server.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        server.wait()
+    log.close()
+    print("ISOLATED TEST SERVER: STOPPED")
+'''
+
+cmd = [
+    "podman", "--root", "/application1/podman/storage",
+    "--runroot", "/run/containers/storage",
+    "run", "--rm", "-i", "--pull=never",
+    "--network=none", "--read-only",
+    "--memory=14g", "--memory-swap=14g",
+    "--cpus=4", "--pids-limit=256",
+    "--tmpfs", "/tmp:rw,size=2g,mode=1777",
+    "--tmpfs", "/root:rw,size=64m",
+    "-e", "PYTHONDONTWRITEBYTECODE=1",
+    "-e", "PYTHONUNBUFFERED=1",
+    "-e", "HOME=/tmp",
+    "-e", "TMPDIR=/tmp",
+    "-e", "XDG_CACHE_HOME=/tmp/cta_cache",
+    "-e", "HF_HOME=/tmp/cta_cache",
+    "-e", "TORCH_HOME=/tmp/cta_cache",
+    "-e", "CUDA_VISIBLE_DEVICES=",
+    "-e", "OTEL_SDK_DISABLED=true",
+    "-e", "OTEL_METRICS_EXPORTER=none",
+    "-e", "OTEL_TRACES_EXPORTER=none",
+    "-e", "OTEL_LOGS_EXPORTER=none",
+    "-e", "PYTHONPATH=/workspace/artifacts/v1.168-max/cta_native_batch2_release_candidate:/workspace/artifacts/v1.168/core-artifact:/batch2:/workspace/artifacts/v1.168-max",
+    "-v", f"{root}:/workspace:ro",
+    "-v", f"{root}/batch2:/batch2:ro",
+    "--entrypoint", "/opt/venv/bin/python",
+    "localhost/cta-max-faiss:local",
+    "-B", "-"
 ]
 
-for name in files:
-    p = root / name
-    print("\nFILE:", name)
-    if not p.is_file():
-        print("MISSING")
-        continue
-    for number, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
-        if any(x in line for x in ("/workspace", "/batch2", "/application1", "backend_file", "model_path")):
-            print(f"{number}: {line.strip()[:180]}")
-
-print("\nREAD-ONLY CHECK COMPLETE")
+raise SystemExit(subprocess.run(cmd, input=code, text=True).returncode)
 PY

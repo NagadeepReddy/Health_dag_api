@@ -1,9 +1,9 @@
 python3 -B - <<'PY'
 from pathlib import Path
-import hashlib
+import shutil, hashlib
 
-old = Path("/application1/cta_max_true_batch_dev_20261028/cta_max")
-repo = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
+src = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
+dst = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/batch2/cta_max")
 
 folders = [
     "context_head_weights",
@@ -16,29 +16,34 @@ folders = [
     "sibling_context_weights",
 ]
 
-def inventory(root):
-    result = {}
-    for p in root.rglob("*.npy"):
-        h = hashlib.sha256()
-        with p.open("rb") as f:
-            for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
-                h.update(chunk)
-        result[p.relative_to(root).as_posix()] = h.hexdigest()
-    return result
+def sha256(p):
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
-print("=== MAX WEIGHT COMPARISON ===")
+if not dst.is_dir():
+    raise SystemExit("STOP: clean CTA_MAX module folder missing")
+
 for name in folders:
-    a, b = old / name, repo / name
-    if not a.is_dir() or not b.is_dir():
-        print("MISSING:", name)
-        continue
-    left, right = inventory(a), inventory(b)
-    print(name, "PASS" if left == right else "DIFFERENT",
-          "| Old:", len(left), "| Repo:", len(right))
-    if left != right:
-        for file in sorted(set(left) | set(right)):
-            if left.get(file) != right.get(file):
-                print("  MISMATCH:", file)
+    if not (src / name).is_dir() or (dst / name).exists():
+        raise SystemExit("STOP: missing source or existing target: " + name)
 
-print("READ-ONLY CHECK COMPLETE")
+required = sum(p.stat().st_size for name in folders for p in (src / name).rglob("*") if p.is_file())
+if shutil.disk_usage(dst).free < required * 2:
+    raise SystemExit("STOP: insufficient disk space")
+
+for name in folders:
+    source = src / name
+    target = dst / name
+    shutil.copytree(source, target)
+    a = {p.relative_to(source).as_posix(): sha256(p) for p in source.rglob("*") if p.is_file()}
+    b = {p.relative_to(target).as_posix(): sha256(p) for p in target.rglob("*") if p.is_file()}
+    if a != b:
+        raise SystemExit("FAIL: weight checksum mismatch: " + name)
+    print("PASS:", name, "| Files:", len(a))
+
+print("WEIGHT FOLDERS COPIED:", len(folders))
+print("ORIGINALS UNCHANGED")
 PY

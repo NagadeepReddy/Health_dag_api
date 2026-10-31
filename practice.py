@@ -1,7 +1,24 @@
-CLEAN=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
+python3 -B - <<'PY'
+from pathlib import Path
 
-echo "=== ROTARY WEIGHT LOOKUP ==="
-nl -ba "$CLEAN/artifacts/v1.168-max/cta_max/run_real_sanity_input_adapter.py" | sed -n '35,85p'
+roots = {
+    "ORIGINAL": Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max"),
+    "CLEAN": Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/artifacts/v1.168-max/cta_max"),
+}
 
-echo "=== CLEAN ROTARY WEIGHT FILE ==="
-ls -lh "$CLEAN/artifacts/v1.168-max/cta_max/sequence_weights/"*rotary*
+for label, root in roots.items():
+    print(f"\n=== {label} ROTARY WEIGHTS ===")
+    files = sorted(root.rglob("*inv_freq*.npy"))
+    if not files:
+        print("MISSING")
+    for p in files:
+        with p.open("rb") as f:
+            valid = f.read(6) == b"\x93NUMPY"
+        print(
+            "VALID_NPY=" + str(valid),
+            "SIZE=" + str(p.stat().st_size),
+            "PATH=" + str(p.relative_to(root))
+        )
+
+print("\nREAD-ONLY CHECK COMPLETE")
+PY

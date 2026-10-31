@@ -1,8 +1,4 @@
-echo "=== HOST MEMORY ==="
-free -h
-
-echo "=== CONTAINER MEMORY USAGE ==="
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  stats --no-stream \
-  --format 'NAME={{.Name}} MEMORY={{.MemUsage}} CPU={{.CPU}}'
+  inspect cta-postman-validated-20261030 \
+  --format 'MEMORY={{.HostConfig.Memory}} SHM={{.HostConfig.ShmSize}} PIDS={{.HostConfig.PidsLimit}} NETWORK={{.HostConfig.NetworkMode}} STATUS={{.State.Status}}'

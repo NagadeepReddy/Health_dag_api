@@ -1,1 +1,1 @@
-podman --root /application1/podman/storage --runroot /run/containers/storage stop --time 60 0c95d4a8f887
+podman --root /application1/podman/storage --runroot /run/containers/storage inspect 0c95d4a8f887 --format 'OLD CONTAINER STATUS: {{.State.Status}}'; free -h; ss -ltnp '( sport = :18767 )'

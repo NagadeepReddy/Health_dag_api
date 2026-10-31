@@ -1,34 +1,35 @@
-CLEAN=/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030
-export PODMAN_ROOT=/application1/podman/storage
-export PODMAN_RUNROOT=/run/containers/storage
-export CTA_IMAGE=localhost/cta-max-faiss:local
-
 python3 -B - <<'PY'
+import json
+import urllib.request
+import urllib.error
 from pathlib import Path
 
-p = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030/run_cta_native.sh")
-s = p.read_text()
+root = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
+source = root / "artifacts/v1.168-max/cta_native_adjusted_sanity_input.json"
 
-old = "  --tmpfs /tmp:rw,size=2g,mode=1777 \\\n"
-extra = "  --tmpfs /opt/venv/lib/python3.12/site-packages/max/_core_mojo/__mojocache__:rw,size=1g,mode=1777 \\\n"
+if not source.is_file():
+    raise SystemExit("STOP: Clean package input JSON missing")
 
-if extra in s:
-    print("MOJO CACHE FIX: ALREADY PRESENT")
-elif s.count(old) == 1:
-    p.write_text(s.replace(old, old + extra))
-    print("MOJO CACHE FIX: APPLIED")
-else:
-    raise SystemExit("STOP: Unexpected launcher format")
+request = urllib.request.Request(
+    "http://127.0.0.1:18767/v2/cta/predict",
+    data=source.read_bytes(),
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
+
+try:
+    with urllib.request.urlopen(request, timeout=150) as response:
+        result = json.load(response)
+        assert response.status == 200
+        assert result not in (None, {}, [])
+
+        print("CLEAN VM NATIVE HTTP: 200 PASS")
+        print("CTA RESPONSE JSON: PASS")
+        print("RESPONSE TYPE:", type(result).__name__)
+        print("RESPONSE KEYS:", list(result)[:15] if isinstance(result, dict) else "Array")
+except urllib.error.HTTPError as e:
+    print("HTTP FAILED:", e.code)
+    print(e.read(1000).decode(errors="replace"))
+except Exception as e:
+    print("HTTP FAILED:", type(e).__name__, str(e)[:500])
 PY
-
-bash -n "$CLEAN/run_cta_native.sh" || exit 1
-bash "$CLEAN/run_cta_native.sh" check || exit 1
-
-PODMAN=(podman --root "$PODMAN_ROOT" --runroot "$PODMAN_RUNROOT")
-
-if "${PODMAN[@]}" container exists cta-clean-native-batch2; then
-  "${PODMAN[@]}" rm -f cta-clean-native-batch2 || exit 1
-fi
-
-echo "=== START CORRECTED CLEAN CONTAINER ==="
-bash "$CLEAN/run_cta_native.sh" start

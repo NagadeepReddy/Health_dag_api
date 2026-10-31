@@ -1,26 +1,17 @@
 REPO=/application1/sajjna8/rt-pzaas-cta-offers-v1
 
-echo "=== LOCAL TRITON COMMIT ==="
-git -C "$REPO" log -1 \
-  --format='%h | %an | %ad | %s' \
-  --date=short triton
+echo "=== COMMITS ON TRACKED REMOTE ==="
+git -C "$REPO" log --oneline \
+  triton..origin/triton | head -20
 
-echo "=== TRACKED REMOTE COMMIT ==="
-git -C "$REPO" log -1 \
-  --format='%h | %an | %ad | %s' \
-  --date=short origin/triton
+echo "=== TRITON CODE DIFFERENCES ==="
+git -C "$REPO" diff --stat \
+  triton origin/triton -- \
+  artifacts/v1.168-triton \
+  artifacts/baseImage/Dockerfile.triton
 
-echo "=== ACTUAL REMOTE BRANCH ==="
-timeout 15 git -C "$REPO" \
-  ls-remote --heads origin triton || true
+echo "=== LATEST TRITON PATCH ==="
+git -C "$REPO" show --stat --oneline \
+  origin/triton | head -60
 
-echo "=== RECENT TRITON HISTORY ==="
-git -C "$REPO" log -5 \
-  --format='%h | %an | %ad | %s' \
-  --date=short triton
-
-echo "=== TRITON FILE SUMMARY ==="
-git -C "$REPO" ls-tree -r --name-only triton |
-grep -E 'Dockerfile.triton|config.pbtxt|/model.py$|test_triton_client.py|deployment-params.json'
-
-echo "READ-ONLY INSPECTION: COMPLETE"
+echo "TRITON COMPARISON: COMPLETE"

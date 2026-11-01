@@ -1,1 +1,1 @@
-find /application1 -maxdepth 5 -type d -name 'rt-pzai-bplan-v1' -print 2>/dev/null
+git -c safe.directory=/application1/abbaka/vcg-realtime-ssd/rt-pzai-bplan-v1 -C /application1/abbaka/vcg-realtime-ssd/rt-pzai-bplan-v1 remote get-url origin

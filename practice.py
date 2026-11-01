@@ -1,20 +1,20 @@
 cd /application1/sajjna8/rt-pzai-bplan-v1 && python3 - <<'PY'
 import json
-p = "artifacts/v1.113/samples/sanity_input.json"
-data = json.load(open(p))
+from pathlib import Path
 
-def inspect(x, path="root", depth=0):
-    if depth > 5:
-        return
-    if isinstance(x, dict):
-        print(path, "KEYS:", list(x.keys())[:20])
-        for k, v in x.items():
-            if isinstance(v, (dict, list)):
-                inspect(v, path + "." + k, depth + 1)
-    elif isinstance(x, list):
-        print(path, "LIST LENGTH:", len(x))
-        if x:
-            inspect(x[0], path + "[0]", depth + 1)
+src = Path("artifacts/v1.113/samples/sanity_input.json")
+dst = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_sanity_features.json")
 
-inspect(data)
+data = json.loads(src.read_text())
+features = data["serviceRequest"]["rtModel"]["rtModelReq"][0]["features"]
+
+assert isinstance(features, dict)
+assert "profile" in features
+
+dst.write_text(json.dumps(features, indent=2))
+
+print("BPLAN INPUT EXTRACTION: PASS")
+print("Feature keys:", list(features))
+print("Test fixture:", dst)
+print("Original sample: unchanged")
 PY

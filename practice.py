@@ -1,40 +1,64 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
+REPO=/application1/sajjna8/rt-pzai-bplan-v1
+ROOT="$REPO/artifacts/v1.113-max/maxserve_bplan_extension"
 
-ROOT="$ROOT" python3 - <<'PY'
-import os, json
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --entrypoint python3 \
+  -v "$ROOT:/bplan_out:rw" \
+  -v /application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031:/cta:ro \
+  localhost/cta-max-faiss:local - <<'PY'
+import json
+import numpy as np
+import torch
 from pathlib import Path
 
-root = Path(os.environ["ROOT"])
-p = root / "bplan_21_weight_resolution.json"
-data = json.loads(p.read_text())
-manifest = json.loads((root / "max_weights/manifest.json").read_text())
+root = Path("/bplan_out")
+mapping = json.loads(
+    (root / "bplan_21_weight_resolution.json").read_text()
+)["resolved"]
 
-fixes = {
-    "fn_rotary_emb_inv_freq.npy": "att_pooling.rotary_emb.inv_freq",
-    "out_norm1_g.npy": "sequence_transformer.out_norm1.g",
-    "out_norm2_g.npy": "sequence_transformer.out_norm2.g",
-}
+cta = torch.load(
+    "/cta/artifacts/v1.168/core-artifact/model_0_base.pt",
+    map_location="cpu",
+    weights_only=True
+)
 
-resolved = data["resolved"]
-pending = data["pending"]
+cta_helpers = Path("/cta/artifacts/v1.168-max/cta_max")
+destination = root / "bplan_weight_layout"
 
-assert len(resolved) == 18 and len(pending) == 3
-assert {Path(k).name for k in pending} == set(fixes)
+validated = []
 
-for filename in list(pending):
-    weight = fixes[Path(filename).name]
-    assert weight in manifest, f"Missing BPLAN tensor: {weight}"
-    resolved[filename] = weight
-    del pending[filename]
-    print("MAPPED:", filename, "->", weight)
+for filename, key in sorted(mapping.items()):
+    source = cta_helpers / filename
+    bplan_source = root / "max_weights" / f"{key}.npy"
 
-assert len(resolved) == 21 and not pending
-assert all(weight in manifest for weight in resolved.values())
+    assert source.is_file(), f"CTA helper missing: {filename}"
+    assert key in cta, f"CTA tensor missing: {key}"
+    assert bplan_source.is_file(), f"BPLAN tensor missing: {key}"
 
-p.write_text(json.dumps(data, indent=2))
+    helper = np.load(source, allow_pickle=False)
+    original = cta[key].detach().cpu().numpy()
+    bplan = np.load(bplan_source, allow_pickle=False)
 
-print("BPLAN 21 WEIGHT NAME MAPPINGS: PASS")
-print("RESOLVED:", len(resolved))
-print("PENDING:", len(pending))
-print("ORIGINAL DS AND CTA: UNCHANGED")
+    if helper.shape == original.shape and np.allclose(helper, original, rtol=1e-5, atol=1e-6):
+        converted = bplan
+    elif helper.shape == original.T.shape and np.allclose(helper, original.T, rtol=1e-5, atol=1e-6):
+        converted = bplan.T
+    else:
+        raise RuntimeError(
+            f"STOP: unverified weight transformation: {filename}"
+        )
+
+    validated.append((filename, converted.copy()))
+
+for filename, array in validated:
+    target = destination / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    np.save(target, array, allow_pickle=False)
+
+print("BPLAN VALIDATED WEIGHT EXPORT: PASS")
+print("WEIGHTS:", len(validated))
+print("LOCATION:", destination)
+print("ORIGINAL BPLAN DS AND CTA: UNCHANGED")
 PY

@@ -1,5 +1,19 @@
-CTA=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
 
-grep -RnE --include='*.py' \
-'np\.save\(|fn_attn_out_weight|fn_rotary_emb_inv_freq|seq_dense_bias' \
-"$CTA" 2>/dev/null | head -65
+ROOT="$ROOT" python3 - <<'PY'
+import json, os
+from pathlib import Path
+
+root = Path(os.environ["ROOT"])
+report = json.loads((root / "bplan_helper_weight_mapping.json").read_text())
+manifest = json.loads((root / "max_weights/manifest.json").read_text())
+
+for name, candidates in report.items():
+    if not candidates:
+        print("UNRESOLVED:", name)
+        term = Path(name).stem.split("_")[0]
+        possible = [k for k in manifest if term in k.lower()]
+        print("  POSSIBLE BPLAN TENSORS:", possible[:5])
+
+print("TOTAL UNRESOLVED:", sum(not v for v in report.values()))
+PY

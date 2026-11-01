@@ -1,29 +1,29 @@
 ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
-
 ROOT="$ROOT" python3 - <<'PY'
-import os, json
+import os
 from pathlib import Path
 
 root = Path(os.environ["ROOT"])
-stage = root / "bplan_helper_weights_stage"
-dev = root / "bplan_max_dev"
-mapping = json.loads((stage / "mapping.json").read_text())
+file = root / "bplan_max_dev/parallel_transformer_block_2layers.py"
+weights = root / "bplan_helper_weights_stage/grecbase_integration_weights"
 
-print("=== STAGED WEIGHT CANDIDATES ===")
-for p in sorted(stage.rglob("*norm1*g*.npy")):
-    print(p.relative_to(stage))
+assert file.is_file()
+assert (weights / "fn_norm1_g.npy").is_file()
+assert (weights / "fn_norm1_g_layer1.npy").is_file()
 
-print("\n=== ORIGINAL BPLAN TENSOR MAPPINGS ===")
-for filename, key in sorted(mapping.items()):
-    if "norm1" in filename or "norm1" in key:
-        print(filename, "->", key)
+original = file.read_text()
+assert original.count("sequence_weights") == 1, "STOP: unexpected path references"
 
-print("\n=== MAX CODE REFERENCES ===")
-for p in sorted(dev.glob("*.py")):
-    lines = p.read_text().splitlines()
-    for i, line in enumerate(lines):
-        if "fn_norm1_g" in line or "sequence_weights" in line:
-            print(f"{p.name}:{i+1}: {line.strip()[:180]}")
+backup = file.with_suffix(".py.before_bplan_path_fix")
+assert not backup.exists(), "STOP: backup already exists"
 
-print("\nORIGINAL DS AND CTA: UNCHANGED")
+updated = original.replace("sequence_weights", "grecbase_integration_weights")
+compile(updated, str(file), "exec")
+
+backup.write_text(original)
+file.write_text(updated)
+
+print("BPLAN TRANSFORMER WEIGHT PATH: FIXED")
+print("BOTH LAYER WEIGHTS: PRESENT")
+print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

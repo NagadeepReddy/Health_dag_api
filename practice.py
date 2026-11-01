@@ -1,8 +1,5 @@
-echo "=== PODMAN STORAGE ==="
-podman info --format '{{.Store.GraphRoot}}' 2>&1
-echo "=== ALL IMAGES ==="
-podman images --format '{{.Repository}}:{{.Tag}}' 2>&1 | head -20
-echo "=== ALL CONTAINERS ==="
-podman ps -a --format '{{.Names}} | {{.Image}}' 2>&1 | head -20
-echo "=== APPLICATION1 MOUNT ==="
-findmnt /application1
+echo "=== ALTERNATE CONTAINER STORAGE ==="
+find /application1 -maxdepth 5 -type d \( -name overlay-images -o -name overlay-containers \) -print 2>/dev/null
+echo "=== CTA RELEASE ==="
+ls -ld /application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
+ls -lh /application1/CTA_MAX_TEAM_HANDOFF_20261031.tar.gz

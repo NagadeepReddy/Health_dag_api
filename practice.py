@@ -4,52 +4,40 @@ podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never \
   --entrypoint python3 \
-  -v "$ROOT:/bplan:ro" \
-  -v /application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031:/cta:ro \
+  -v "$ROOT:/bplan:rw" \
   localhost/cta-max-faiss:local - <<'PY'
-import json
-import numpy as np
+import json, numpy as np
 from pathlib import Path
-from collections import Counter
 
 root = Path("/bplan")
-cta = Path("/cta/artifacts/v1.168-max/cta_max")
 data = json.loads((root / "bplan_all_90_weight_mapping.json").read_text())
+mapping = data["resolved"]
+dst = root / "bplan_helper_weights_stage"
 
-assert len(data["resolved"]) == 90
+assert len(mapping) == 90
 assert not data["ambiguous"] and not data["missing"]
+assert not dst.exists(), "STOP: staging folder already exists"
 
-counts = Counter()
+# Validate everything before writing
+items = []
+for name, key in sorted(mapping.items()):
+    src = root / "max_weights" / f"{key}.npy"
+    assert src.is_file(), f"Missing: {src}"
+    arr = np.load(src, allow_pickle=False)
+    assert np.issubdtype(arr.dtype, np.number), name
+    assert np.isfinite(arr).all(), name
+    items.append((name, key, arr))
 
-for filename, key in sorted(data["resolved"].items()):
-    cta_file = cta / filename
-    bplan_file = root / "max_weights" / f"{key}.npy"
+for name, key, arr in items:
+    target = dst / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    np.save(target, arr, allow_pickle=False)
 
-    if not cta_file.is_file() or not bplan_file.is_file():
-        counts["MISSING FILE"] += 1
-        print("MISSING FILE:", filename, key)
-        continue
+(dst / "mapping.json").write_text(json.dumps(mapping, indent=2))
 
-    expected = np.load(cta_file, mmap_mode="r")
-    actual = np.load(bplan_file, mmap_mode="r")
-
-    if actual.shape == expected.shape:
-        status = "SAME SHAPE"
-    elif actual.ndim == 2 and actual.T.shape == expected.shape:
-        status = "TRANSPOSE CANDIDATE"
-    else:
-        status = "DIFFERENT SHAPE"
-
-    counts[status] += 1
-
-    if status != "SAME SHAPE":
-        print(status, filename,
-              "CTA:", expected.shape,
-              "BPLAN:", actual.shape)
-
-print("\n=== BPLAN 90 WEIGHT SHAPE AUDIT ===")
-for status, count in sorted(counts.items()):
-    print(status + ":", count)
-print("TOTAL:", sum(counts.values()))
+print("BPLAN WEIGHT STAGING: PASS")
+print("EXPORTED:", len(items))
+print("LOCATION:", dst)
 print("ORIGINAL DS AND CTA: UNCHANGED")
+print("GRAPH ADAPTATION: STILL REQUIRED")
 PY

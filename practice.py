@@ -10,29 +10,39 @@ data = json.loads(p.read_text())
 manifest = json.loads((root / "max_weights/manifest.json").read_text())
 
 fixes = {
-    "grecbase_integration_weights/seq_dense_bias.npy": "seq_dense.bias",
-    "grecbase_integration_weights/seq_dense_weight.npy": "seq_dense.weight",
+    "seq_dense_bias.npy": "seq_dense.bias",
+    "seq_dense_weight.npy": "seq_dense.weight",
 }
 
-assert len(data["resolved"]) == 88
-assert set(data["ambiguous"]) == set(fixes)
-assert not data["missing"]
+print("CURRENT RESOLVED:", len(data["resolved"]))
+print("ACTUAL AMBIGUOUS:", list(data["ambiguous"]))
 
-for filename, key in fixes.items():
-    assert key in data["ambiguous"][filename]
-    assert key in manifest
-    data["resolved"][filename] = key
-    del data["ambiguous"][filename]
-    print("MAPPED:", filename, "->", key)
+updated = dict(data["resolved"])
+remaining = dict(data["ambiguous"])
 
-assert len(data["resolved"]) == 90
-assert not data["ambiguous"] and not data["missing"]
+for basename, weight in fixes.items():
+    matches = [
+        name for name in remaining
+        if Path(name).name == basename
+    ]
+    assert len(matches) == 1, f"STOP: expected one match for {basename}: {matches}"
 
+    filename = matches[0]
+    assert weight in remaining[filename], f"STOP: candidate missing: {weight}"
+    assert weight in manifest, f"STOP: BPLAN tensor missing: {weight}"
+
+    updated[filename] = weight
+    del remaining[filename]
+    print("MAPPED:", filename, "->", weight)
+
+assert len(updated) == 90, f"STOP: resolved {len(updated)}/90"
+assert not remaining and not data["missing"], "STOP: unresolved mappings remain"
+
+data["resolved"] = updated
+data["ambiguous"] = remaining
 p.write_text(json.dumps(data, indent=2))
 
 print("BPLAN 90 WEIGHT NAME MAPPINGS: PASS")
-print("RESOLVED: 90")
-print("AMBIGUOUS: 0")
-print("MISSING: 0")
+print("RESOLVED: 90 | AMBIGUOUS: 0 | MISSING: 0")
 print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

@@ -1,1 +1,1 @@
-"protocol=https`nhost=gitlab.verizon.com`n" | git credential-manager erase
+git ls-remote https://gitlab.verizon.com/sajjna8/rt-pzaas-cta-offers-v1.git HEAD

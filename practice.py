@@ -1,31 +1,48 @@
 ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
 
-ROOT="$ROOT" python3 - <<'PY'
+cat > "$ROOT/bplan_max_dev/bplan_weights.py" <<'PY'
 from pathlib import Path
-import os, json
+import json
+import numpy as np
 
-root = Path(os.environ["ROOT"])
-patterns = (
-    "np.load(", "torch.load(", ".npy",
-    "WDIR", "model_0_base.pt",
-    "v1.168", "10438", "10819", "10727",
+WEIGHT_DIR = Path(__file__).resolve().parent.parent / "max_weights"
+MANIFEST = json.loads(
+    (WEIGHT_DIR / "manifest.json").read_text()
 )
 
-report = {}
-for file in sorted((root / "bplan_max_dev").glob("*.py")):
-    matches = [
-        {"line": i, "code": line.strip()}
-        for i, line in enumerate(file.read_text().splitlines(), 1)
-        if any(p in line for p in patterns)
-    ]
-    if matches:
-        report[file.name] = matches
+def load_weight(name, expected_shape=None):
+    if name not in MANIFEST:
+        raise KeyError(f"BPLAN weight missing: {name}")
 
-out = root / "bplan_max_full_dependency_audit.json"
-out.write_text(json.dumps(report, indent=2))
+    path = WEIGHT_DIR / f"{name}.npy"
+    arr = np.load(path, allow_pickle=False)
 
-print("FULL DEPENDENCY AUDIT: SAVED")
-print("FILES WITH REFERENCES:", len(report))
-print("REFERENCES:", sum(map(len, report.values())))
-print("REPORT:", out)
+    actual = tuple(arr.shape)
+    declared = tuple(MANIFEST[name]["shape"])
+
+    if actual != declared:
+        raise ValueError(f"{name}: manifest shape mismatch")
+
+    if expected_shape is not None:
+        if actual != tuple(expected_shape):
+            raise ValueError(
+                f"{name}: expected {expected_shape}, got {actual}"
+            )
+
+    return arr
+
+def validate():
+    assert len(MANIFEST) == 208
+    for name in MANIFEST:
+        load_weight(name)
+    return len(MANIFEST)
 PY
+
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never \
+  --entrypoint python3 \
+  -v "$ROOT:/bplan:ro" \
+  -w /bplan/bplan_max_dev \
+  localhost/cta-max-faiss:local \
+  -c "from bplan_weights import validate; print('BPLAN MAX WEIGHT LOADER: PASS', validate())"

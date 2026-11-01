@@ -1,12 +1,20 @@
 cd /application1/sajjna8/rt-pzai-bplan-v1 && python3 - <<'PY'
 import json
-from pathlib import Path
+p = "artifacts/v1.113/samples/sanity_input.json"
+data = json.load(open(p))
 
-p = Path("artifacts/v1.113/samples/sanity_input.json")
-data = json.loads(p.read_text())
+def inspect(x, path="root", depth=0):
+    if depth > 5:
+        return
+    if isinstance(x, dict):
+        print(path, "KEYS:", list(x.keys())[:20])
+        for k, v in x.items():
+            if isinstance(v, (dict, list)):
+                inspect(v, path + "." + k, depth + 1)
+    elif isinstance(x, list):
+        print(path, "LIST LENGTH:", len(x))
+        if x:
+            inspect(x[0], path + "[0]", depth + 1)
 
-print("Sample exists:", p.exists())
-print("Top-level keys:", list(data) if isinstance(data, dict) else type(data).__name__)
-print("Has nested jsonData:", isinstance(data, dict) and "jsonData" in data)
-print("Sample size:", p.stat().st_size, "bytes")
+inspect(data)
 PY

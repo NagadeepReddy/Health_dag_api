@@ -1,40 +1,29 @@
-REPO=/application1/sajjna8/rt-pzai-bplan-v1
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never \
-  --entrypoint python3 \
-  -v "$REPO:$REPO:ro" \
-  -w "$REPO" \
-  localhost/cta-max-faiss:local -B - <<'PY'
-import sys
-import types
-import traceback
+ROOT="$ROOT" python3 - <<'PY'
+import os, json
 from pathlib import Path
 
-dev = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev").resolve()
-assert (dev / "att_pooling_max.py").is_file(), "STOP: BPLAN helper missing"
+root = Path(os.environ["ROOT"])
+stage = root / "bplan_helper_weights_stage"
+dev = root / "bplan_max_dev"
+mapping = json.loads((stage / "mapping.json").read_text())
 
-# Resolve legacy cta_max imports from the isolated BPLAN folder.
-pkg = types.ModuleType("cta_max")
-pkg.__path__ = [str(dev)]
-sys.modules["cta_max"] = pkg
-sys.path.insert(0, str(dev))
+print("=== STAGED WEIGHT CANDIDATES ===")
+for p in sorted(stage.rglob("*norm1*g*.npy")):
+    print(p.relative_to(stage))
 
-try:
-    from max.driver import CPU
-    from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
+print("\n=== ORIGINAL BPLAN TENSOR MAPPINGS ===")
+for filename, key in sorted(mapping.items()):
+    if "norm1" in filename or "norm1" in key:
+        print(filename, "->", key)
 
-    graph = build_grecbase_fusion_graph_order_correct(
-        DeviceRef.from_device(CPU())
-    )
+print("\n=== MAX CODE REFERENCES ===")
+for p in sorted(dev.glob("*.py")):
+    lines = p.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if "fn_norm1_g" in line or "sequence_weights" in line:
+            print(f"{p.name}:{i+1}: {line.strip()[:180]}")
 
-    print("BPLAN MAX GRAPH BUILD: PASS")
-    print("INPUTS:", len(graph.inputs))
-
-except Exception:
-    print("BPLAN MAX GRAPH BUILD: FAILED")
-    traceback.print_exc()
-    raise SystemExit(1)
+print("\nORIGINAL DS AND CTA: UNCHANGED")
 PY

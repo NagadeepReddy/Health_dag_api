@@ -1,36 +1,11 @@
-REPO=/application1/sajjna8/rt-pzai-bplan-v1
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never \
-  --entrypoint python3 \
-  -v "$REPO:$REPO:ro" \
-  -w "$REPO" \
-  localhost/cta-max-faiss:local -B - <<'PY'
-import sys, types, traceback
-from pathlib import Path
+echo "=== BPLAN WEIGHT LOCATIONS ==="
+find "$ROOT" -name '*remove_tasks_dense1*' -print
 
-dev = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev").resolve()
+echo "=== MAX HELPER WEIGHT PATH ==="
+sed -n '1,32p' \
+"$ROOT/bplan_max_dev/grecbase_get_path_max.py"
 
-pkg = types.ModuleType("cta_max")
-pkg.__path__ = [str(dev)]
-sys.modules["cta_max"] = pkg
-sys.path.insert(0, str(dev))
-
-try:
-    from max.driver import CPU
-    from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
-
-    graph = build_grecbase_fusion_graph_order_correct(
-        DeviceRef.from_device(CPU())
-    )
-
-    print("BPLAN MAX GRAPH BUILD: PASS")
-    print("GRAPH INPUTS:", len(graph.inputs))
-
-except Exception:
-    print("BPLAN MAX GRAPH BUILD: FAILED")
-    traceback.print_exc()
-    sys.exit(1)
-PY
+echo "=== ORIGINAL BPLAN CHECKPOINT ==="
+ls -lh /application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/base_model.pt

@@ -1,24 +1,27 @@
-DST=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
 
-DST="$DST" python3 - <<'PY'
-import os, re
+ROOT="$ROOT" python3 - <<'PY'
+import os, json
 from pathlib import Path
 
-root = Path(os.environ["DST"])
-checks = {
-    "nlp_bert_max.py": r"vocab_size|Embedding\(|10727|10094|WDIR",
-    "sequence_postprocess_max.py": r"seq_dense|vocab_size|512|256|WDIR",
-    "grecbase_fusion_full_head_72_max.py": r"input_types|fused_dims|graph.output|BPLAN_BASE_PT|WDIR",
-    "main_context_max.py": r"WDIR|deep_embedding|Embedding\(|3146|3506",
-}
+root = Path(os.environ["ROOT"])
+manifest = json.loads((root / "max_weights/manifest.json").read_text())
+mapping = json.loads((root / "bplan_all_90_weight_mapping.json").read_text())["resolved"]
 
-for name, pattern in checks.items():
-    print(f"\n=== {name} ===")
-    p = root / name
-    if not p.is_file():
-        print("MISSING FILE")
-        continue
-    for number, line in enumerate(p.read_text().splitlines(), 1):
-        if re.search(pattern, line):
-            print(f"{number}: {line.strip()[:180]}")
+print("=== BPLAN SEQ_DENSE TENSORS ===")
+for key, info in manifest.items():
+    if "seq_dense" in key:
+        print(key, info)
+
+print("\n=== SEQ_DENSE HELPER MAPPINGS ===")
+for filename, key in mapping.items():
+    if "seq_dense" in filename or "seq_dense" in key:
+        print(filename, "->", key)
+
+print("\n=== MAX LAYER USAGE ===")
+for name in ("sequence_postprocess_max.py", "grecbase_fusion_full_head_72_max.py"):
+    path = root / "bplan_max_dev" / name
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        if "seq_dense" in line or "seq_raw" in line:
+            print(f"{name}:{n}: {line.strip()}")
 PY

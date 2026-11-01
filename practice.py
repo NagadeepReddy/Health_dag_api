@@ -9,40 +9,46 @@ podman --root /application1/podman/storage \
   -v "$OUT:/bplan_out:rw" \
   -w /workspace/artifacts/v1.113/core-artifact \
   localhost/cta-max-faiss:local - <<'PY'
-import json, time, traceback
+import json
+import torch
 from pathlib import Path
+from pipeline import pipeline
 
-try:
-    from pipeline import pipeline
+body = json.loads(Path("/bplan_out/bplan_sanity_features.json").read_text())
 
-    body = json.loads(
-        Path("/bplan_out/bplan_sanity_features.json").read_text()
-    )
+model = pipeline()
+if not model.loaded:
+    model.load()
 
-    model = pipeline()
-    calls = [0]
-    original_inference = model.inference
+original_forward = model.bplan_model.forward
+captured = {}
 
-    def tracked_inference(*args, **kwargs):
-        calls[0] += 1
-        return original_inference(*args, **kwargs)
+def capture_forward(*args, **kwargs):
+    if captured:
+        raise RuntimeError("Unexpected repeated neural call")
+    captured["inputs"] = {
+        k: v.detach().cpu().clone() if isinstance(v, torch.Tensor) else v
+        for k, v in kwargs.items()
+    }
+    out = original_forward(*args, **kwargs)
+    captured["output"] = out.detach().cpu().clone()
+    return out
 
-    model.inference = tracked_inference
+model.bplan_model.forward = capture_forward
+response = model.predict_raw(body)
 
-    start = time.time()
-    response = model.predict_raw(body)
+assert "output" in captured, "Neural inference was not executed"
+assert torch.isfinite(captured["output"]).all(), "Non-finite model output"
+assert isinstance(response, dict)
 
-    Path("/bplan_out/bplan_pytorch_baseline.json").write_text(
-        json.dumps(response, indent=2, default=str)
-    )
+torch.save(captured["inputs"], "/bplan_out/bplan_neural_inputs.pt")
+torch.save(captured["output"], "/bplan_out/bplan_pytorch_neural_output.pt")
 
-    print("PYTORCH BASELINE: PASS")
-    print("NEURAL INFERENCE CALLS:", calls[0])
-    print("ELAPSED SECONDS:", round(time.time() - start, 2))
-    print("BASELINE SAVED: /bplan_out/bplan_pytorch_baseline.json")
-
-except Exception:
-    print("PYTORCH BASELINE: FAILED")
-    traceback.print_exc()
-    raise SystemExit(1)
+print("BPLAN NEURAL CAPTURE: PASS")
+print("INPUT SHAPES:")
+for k, v in captured["inputs"].items():
+    print(k, tuple(v.shape) if isinstance(v, torch.Tensor) else type(v).__name__)
+print("OUTPUT SHAPE:", tuple(captured["output"].shape))
+print("OUTPUT FINITE: PASS")
+print("NEURAL PARITY FIXTURES SAVED")
 PY

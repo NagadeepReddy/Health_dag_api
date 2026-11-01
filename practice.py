@@ -1,37 +1,30 @@
 python3 - <<'PY'
 from pathlib import Path
-import re
+import re, ast
 
-p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev/grecbase_fusion_full_head_72_max.py")
-src = p.read_text()
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
+dev = root / "bplan_max_dev"
+assert (root / "max_weights/manifest.json").is_file()
 
-repo = p.resolve().parents[4]
-base = repo / "artifacts/v1.113/core-artifact/base_model.pt"
-weights = p.parent.parent / "max_weights/manifest.json"
-
-assert base.is_file(), f"Missing BPLAN checkpoint: {base}"
-assert weights.is_file(), f"Missing BPLAN weights: {weights}"
-
-updated, n1 = re.subn(
-    r"""(?m)^WDIR\s*=\s*Path\(__file__\)\.parent\s*/\s*['"]grecbase_integration_weights['"]\s*$""",
-    """WDIR = Path(__file__).resolve().parent.parent / "max_weights"
-BPLAN_BASE_PT = Path(__file__).resolve().parents[4] / "artifacts/v1.113/core-artifact/base_model.pt" """.rstrip(),
-    src
+pattern = re.compile(
+    r"""(?m)^WDIR\s*=\s*Path\(__file__\)\.parent\s*/\s*['"]grecbase_integration_weights['"]\s*$"""
 )
+replacement = 'WDIR = Path(__file__).resolve().parent.parent / "max_weights"'
 
-updated, n2 = re.subn(
-    r"""['"]artifacts/v1\.168/core-artifact/model_0_base\.pt['"]""",
-    "str(BPLAN_BASE_PT)",
-    updated
-)
+changes = []
+for p in sorted(dev.glob("*.py")):
+    original = p.read_text()
+    updated, count = pattern.subn(replacement, original)
+    if count:
+        ast.parse(updated, filename=str(p))
+        changes.append((p, updated, count))
 
-assert n1 == 1 and n2 == 1, f"STOP: unexpected matches WDIR={n1}, checkpoint={n2}"
+assert changes, "STOP: No helper weight paths matched"
 
-compile(updated, str(p), "exec")
-p.write_text(updated)
+for p, updated, count in changes:
+    p.write_text(updated)
+    print(f"UPDATED: {p.name} ({count})")
 
-print("BPLAN MAX WEIGHT PATHS: PASS")
-print("BPLAN CHECKPOINT:", base)
-print("BPLAN MAX WEIGHTS:", weights.parent)
+print("BPLAN MAX HELPER WEIGHT PATHS: PASS")
 print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

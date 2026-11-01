@@ -8,10 +8,17 @@ podman --root /application1/podman/storage \
   -w "$REPO" \
   localhost/cta-max-faiss:local -B - <<'PY'
 import sys
+import types
 import traceback
 from pathlib import Path
 
 dev = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev").resolve()
+assert (dev / "att_pooling_max.py").is_file(), "STOP: BPLAN helper missing"
+
+# Resolve legacy cta_max imports from the isolated BPLAN folder.
+pkg = types.ModuleType("cta_max")
+pkg.__path__ = [str(dev)]
+sys.modules["cta_max"] = pkg
 sys.path.insert(0, str(dev))
 
 try:
@@ -25,6 +32,7 @@ try:
 
     print("BPLAN MAX GRAPH BUILD: PASS")
     print("INPUTS:", len(graph.inputs))
+
 except Exception:
     print("BPLAN MAX GRAPH BUILD: FAILED")
     traceback.print_exc()

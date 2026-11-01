@@ -1,27 +1,32 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
+REPO=/application1/sajjna8/rt-pzai-bplan-v1
 
-ROOT="$ROOT" python3 - <<'PY'
-import os, json
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --entrypoint python3 \
+  -v "$REPO:$REPO:ro" \
+  -w "$REPO" \
+  localhost/cta-max-faiss:local -B - <<'PY'
+import sys
+import traceback
 from pathlib import Path
 
-root = Path(os.environ["ROOT"])
-manifest = json.loads((root / "max_weights/manifest.json").read_text())
-mapping = json.loads((root / "bplan_all_90_weight_mapping.json").read_text())["resolved"]
+dev = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev").resolve()
+sys.path.insert(0, str(dev))
 
-print("=== BPLAN SEQ_DENSE TENSORS ===")
-for key, info in manifest.items():
-    if "seq_dense" in key:
-        print(key, info)
+try:
+    from max.driver import CPU
+    from max.graph import DeviceRef
+    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
 
-print("\n=== SEQ_DENSE HELPER MAPPINGS ===")
-for filename, key in mapping.items():
-    if "seq_dense" in filename or "seq_dense" in key:
-        print(filename, "->", key)
+    graph = build_grecbase_fusion_graph_order_correct(
+        DeviceRef.from_device(CPU())
+    )
 
-print("\n=== MAX LAYER USAGE ===")
-for name in ("sequence_postprocess_max.py", "grecbase_fusion_full_head_72_max.py"):
-    path = root / "bplan_max_dev" / name
-    for n, line in enumerate(path.read_text().splitlines(), 1):
-        if "seq_dense" in line or "seq_raw" in line:
-            print(f"{name}:{n}: {line.strip()}")
+    print("BPLAN MAX GRAPH BUILD: PASS")
+    print("INPUTS:", len(graph.inputs))
+except Exception:
+    print("BPLAN MAX GRAPH BUILD: FAILED")
+    traceback.print_exc()
+    raise SystemExit(1)
 PY

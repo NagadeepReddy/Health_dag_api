@@ -1,48 +1,30 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
-
-cat > "$ROOT/bplan_max_dev/bplan_weights.py" <<'PY'
+python3 - <<'PY'
 from pathlib import Path
-import json
-import numpy as np
 
-WEIGHT_DIR = Path(__file__).resolve().parent.parent / "max_weights"
-MANIFEST = json.loads(
-    (WEIGHT_DIR / "manifest.json").read_text()
-)
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
+p = root / "artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev/grecbase_fusion_full_head_72_max.py"
 
-def load_weight(name, expected_shape=None):
-    if name not in MANIFEST:
-        raise KeyError(f"BPLAN weight missing: {name}")
+source = p.read_text()
 
-    path = WEIGHT_DIR / f"{name}.npy"
-    arr = np.load(path, allow_pickle=False)
+old_dir = 'WDIR = Path(__file__).parent / "grecbase_integration_weights"'
+old_checkpoint = '"artifacts/v1.168/core-artifact/model_0_base.pt"'
 
-    actual = tuple(arr.shape)
-    declared = tuple(MANIFEST[name]["shape"])
+assert source.count(old_dir) == 1, "STOP: weight directory pattern differs"
+assert source.count(old_checkpoint) == 1, "STOP: checkpoint pattern differs"
 
-    if actual != declared:
-        raise ValueError(f"{name}: manifest shape mismatch")
+new_dir = '''WDIR = Path(__file__).resolve().parent.parent / "max_weights"
+BPLAN_BASE_PT = Path(__file__).resolve().parents[3] / "artifacts/v1.113/core-artifact/base_model.pt"'''
 
-    if expected_shape is not None:
-        if actual != tuple(expected_shape):
-            raise ValueError(
-                f"{name}: expected {expected_shape}, got {actual}"
-            )
+updated = source.replace(old_dir, new_dir)
+updated = updated.replace(old_checkpoint, "str(BPLAN_BASE_PT)")
 
-    return arr
+assert (root / "artifacts/v1.113/core-artifact/base_model.pt").is_file()
+assert (p.parent.parent / "max_weights/manifest.json").is_file()
 
-def validate():
-    assert len(MANIFEST) == 208
-    for name in MANIFEST:
-        load_weight(name)
-    return len(MANIFEST)
+p.write_text(updated)
+
+print("BPLAN MAX GRAPH WEIGHT PATHS: UPDATED")
+print("BPLAN CHECKPOINT: CONFIGURED")
+print("ORIGINAL CTA SOURCE: UNCHANGED")
+print("ORIGINAL BPLAN DS CODE: UNCHANGED")
 PY
-
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never \
-  --entrypoint python3 \
-  -v "$ROOT:/bplan:ro" \
-  -w /bplan/bplan_max_dev \
-  localhost/cta-max-faiss:local \
-  -c "from bplan_weights import validate; print('BPLAN MAX WEIGHT LOADER: PASS', validate())"

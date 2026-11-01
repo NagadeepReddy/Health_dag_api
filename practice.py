@@ -5,42 +5,34 @@ import json, os
 from pathlib import Path
 
 root = Path(os.environ["ROOT"])
-mapping = json.loads((root / "bplan_helper_weight_mapping.json").read_text())
-fixed = json.loads((root / "bplan_21_weight_resolution.json").read_text())["resolved"]
+p = root / "bplan_all_90_weight_mapping.json"
+data = json.loads(p.read_text())
 manifest = json.loads((root / "max_weights/manifest.json").read_text())
 
-resolved, ambiguous, missing = {}, {}, {}
-
-for filename, candidates in mapping.items():
-    if filename in fixed:
-        key = fixed[filename]
-    elif len(candidates) == 1:
-        key = candidates[0]
-    else:
-        ambiguous[filename] = candidates
-        continue
-
-    if key not in manifest:
-        missing[filename] = key
-    else:
-        resolved[filename] = key
-
-report = {
-    "resolved": resolved,
-    "ambiguous": ambiguous,
-    "missing": missing
+fixes = {
+    "grecbase_integration_weights/seq_dense_bias.npy": "seq_dense.bias",
+    "grecbase_integration_weights/seq_dense_weight.npy": "seq_dense.weight",
 }
-out = root / "bplan_all_90_weight_mapping.json"
-out.write_text(json.dumps(report, indent=2))
 
-print("TOTAL HELPER FILES:", len(mapping))
-print("UNIQUELY MAPPED:", len(resolved))
-print("AMBIGUOUS:", len(ambiguous))
-print("MISSING:", len(missing))
-for name, candidates in ambiguous.items():
-    print("AMBIGUOUS:", name, candidates[:5])
-for name, key in missing.items():
-    print("MISSING:", name, key)
-print("REPORT:", out)
+assert len(data["resolved"]) == 88
+assert set(data["ambiguous"]) == set(fixes)
+assert not data["missing"]
+
+for filename, key in fixes.items():
+    assert key in data["ambiguous"][filename]
+    assert key in manifest
+    data["resolved"][filename] = key
+    del data["ambiguous"][filename]
+    print("MAPPED:", filename, "->", key)
+
+assert len(data["resolved"]) == 90
+assert not data["ambiguous"] and not data["missing"]
+
+p.write_text(json.dumps(data, indent=2))
+
+print("BPLAN 90 WEIGHT NAME MAPPINGS: PASS")
+print("RESOLVED: 90")
+print("AMBIGUOUS: 0")
+print("MISSING: 0")
 print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

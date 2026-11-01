@@ -1,1 +1,1 @@
-git -c safe.directory=/application1/abbaka/vcg-realtime-ssd/rt-pzai-bplan-v1 -C /application1/abbaka/vcg-realtime-ssd/rt-pzai-bplan-v1 remote get-url origin
+test ! -e /application1/sajjna8/rt-pzai-bplan-v1 && git clone --branch development --single-branch https://gitlab.verizon.com/jarvis/jarvis_models/vcg-realtime-ssd/rt-pzai-bplan-v1.git /application1/sajjna8/rt-pzai-bplan-v1

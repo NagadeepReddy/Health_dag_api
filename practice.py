@@ -1,1 +1,1 @@
-git ls-remote https://gitlab.verizon.com/sajjna8/rt-pzaas-cta-offers-v1.git HEAD
+git ls-remote https://gitlab.verizon.com/jarvis/jarvis_models/vcg-realtime-ssd/rt-pzaas-cta-offers-v1.git HEAD

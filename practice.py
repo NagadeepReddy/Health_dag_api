@@ -1,1 +1,1 @@
-git ls-remote https://gitlab.verizon.com/jarvis/jarvis_models/vcg-realtime-ssd/rt-pzaas-cta-offers-v1.git HEAD
+find /application1 -maxdepth 5 -type d -name 'rt-pzai-bplan-v1' -print 2>/dev/null

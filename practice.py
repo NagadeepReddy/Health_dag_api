@@ -1,51 +1,64 @@
 ROOT=/application1/sajjna8/rt-pzai-bplan-v1
 P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-AVAILABLE=$(awk '/MemAvailable:/ {print int($2/1024)}' /proc/meminfo)
-echo "AVAILABLE MEMORY: ${AVAILABLE} MiB"
-
-if [ "$AVAILABLE" -lt 12000 ]; then
-  echo "STOP: Insufficient free memory for separate PyTorch baseline"
-else
-  "${P[@]}" exec -i bplan-debug /opt/venv/bin/python - <<'PY'
-import json, time
+"${P[@]}" exec -i bplan-debug /opt/venv/bin/python - <<'PY'
+import json
 from pathlib import Path
-
 from pipeline import pipeline
 
-sample = Path(
-    "/workspace/artifacts/v1.113/core-artifact/"
-    "test_samples/test_sample_myplan_bundle.json"
-)
-expected_path = sample.with_name(
-    "test_sample_myplan_bundle_output.json"
-)
-
-body = json.loads(sample.read_text())
-expected = json.loads(expected_path.read_text())
-
-print("ORIGINAL PYTORCH BASELINE: START", flush=True)
-start = time.monotonic()
-
+sample = Path("/workspace/artifacts/v1.113/core-artifact/test_samples/test_sample_myplan_bundle.json")
 model = pipeline()
-actual = model.predict_raw(body)
+result = model.predict_raw(json.loads(sample.read_text()))
 
-def lists(obj):
+Path("/tmp/bplan_pytorch_myplan.json").write_text(json.dumps(result))
+print("PYTORCH BASELINE SAVED")
+PY
+
+"${P[@]}" cp \
+  bplan-debug:/tmp/bplan_pytorch_myplan.json \
+  /tmp/bplan_pytorch_myplan.json || exit 1
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+def load(path):
+    obj = json.loads(Path(path).read_text())
     data = obj["jsonData"]
     if isinstance(data, str):
         data = json.loads(data)
-    return data["prediction"]["ctaList"]
+    return data["prediction"]["ctaList"], obj.get("transactionMetadata", {})
 
-def ids(group):
-    return [str(x.get("propositionId")) for x in group]
+pt, pm = load("/tmp/bplan_pytorch_myplan.json")
+mx, mm = load("/tmp/bplan_myplan_trace.json")
 
-for i, (e, a) in enumerate(zip(lists(expected), lists(actual))):
-    print(f"LIST {i}")
-    print(" EXPECTED:", ids(e))
-    print(" PYTORCH: ", ids(a))
+print("\n=== PYTORCH VS MAX PARITY ===")
+print("PYTORCH INFERENCE:", "inference" in pm)
+print("MAX INFERENCE:", "inference" in mm)
 
-print("PYTORCH VS SAVED EXPECTED:",
-      "MATCH" if lists(expected) == lists(actual) else "DIFFERENT")
-print("BASELINE ELAPSED:", round(time.monotonic()-start, 1), "seconds")
+passed = len(pt) == len(mx)
+
+for i in range(max(len(pt), len(mx))):
+    a = pt[i] if i < len(pt) else []
+    b = mx[i] if i < len(mx) else []
+
+    ids_a = [x.get("propositionId") for x in a]
+    ids_b = [x.get("propositionId") for x in b]
+
+    exact = a == b
+    same_ids = sorted(map(str, ids_a)) == sorted(map(str, ids_b))
+
+    print(f"\nLIST {i}")
+    print("PYTORCH COUNT:", len(a))
+    print("MAX COUNT:", len(b))
+    print("EXACT MATCH:", exact)
+    print("SAME IDS:", same_ids)
+    print("SAME ORDER:", ids_a == ids_b)
+
+    passed &= exact
+
+print("\nBUSINESS PARITY:", "PASS" if passed else "DIFFERENT")
+print("FULL MODEL PARITY:",
+      "NOT TESTED — FALLBACK" if "inference" not in pm and "inference" not in mm
+      else "REQUIRES NUMERICAL VALIDATION")
 PY
-fi

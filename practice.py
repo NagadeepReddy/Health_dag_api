@@ -1,13 +1,15 @@
-CTA=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
+STAGE=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
 
-echo "=== WORKER ADAPTER ==="
-grep -n -A 22 -E 'def (__init__|predict|predict_batch)\(' \
-  "$CTA/cta_worker_adapter.py"
+echo "=== NATIVE MAX SERVE FILES ==="
+find "$STAGE" -type f \
+  \( -name '*native*launcher*.py' \
+  -o -name '*native*scheduler*.py' \
+  -o -name '*scheduler*factory*.py' \
+  -o -name '*native*http*.py' \
+  -o -name '*architecture*registration*.py' \
+  -o -name 'cta_worker_adapter.py' \) \
+  -not -path '*/__pycache__/*' | sort
 
-echo "=== SCHEDULER FACTORY ==="
-grep -n -A 18 -E 'def |class ' \
-  "$CTA/cta_native_scheduler_factory.py"
-
-echo "=== ROUTER REGISTRATION ==="
-grep -n -A 12 -E 'register|def |class ' \
-  "$CTA/cta_router.py" | head -100
+echo "=== BPLAN ADAPTER ==="
+test -f /application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev/bplan_max_model_adapter.py \
+  && echo "BPLAN ADAPTER: READY"

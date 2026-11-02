@@ -1,20 +1,51 @@
-SAMPLE=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+python3 - <<'PY'
+from pathlib import Path
 
-test -f "$SAMPLE" || { echo "STOP: sample missing"; exit 1; }
+ROOT = Path("/application1")
+BPLAN = ROOT / "sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev"
+CTA = ROOT / "CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension"
 
-echo "=== REAL BPLAN POST ==="
-curl -sS --max-time 20 \
-  -o /tmp/bplan_post_result.json \
-  -w 'HTTP STATUS: %{http_code}\n' \
-  -X POST http://127.0.0.1:18768/bplan/predict \
-  -H 'Content-Type: application/json' \
-  --data-binary @"$SAMPLE"
+names = (
+    "native_scheduler.py",
+    "native_worker_registration.py",
+    "native_launcher.py",
+    "spawn_worker.py",
+    "native_scheduler_factory.py",
+)
 
-echo "=== RESPONSE ==="
-head -c 1000 /tmp/bplan_post_result.json 2>/dev/null
-echo
+terms = (
+    "zmqconfig", "request_queue", "response_queue",
+    "deserialize", "serialize", "drainer",
+    "load_scheduler", "scheduler_factory",
+    "schedulerresult", "max_items_per_iteration",
+    "queue_config", "queue_type"
+)
 
-echo "=== WORKER LOGS ==="
-"${P[@]}" logs --tail 200 bplan-debug 2>&1 | \
-  grep -iE 'BPLAN|factory|worker|scheduler|queue|response|error|traceback|exception|failed|type' | tail -65
+for label, base in [("BPLAN", BPLAN), ("CTA", CTA)]:
+    print(f"\n========== {label} QUEUE IMPLEMENTATION ==========")
+    if not base.exists():
+        print("DIRECTORY MISSING:", base)
+        continue
+
+    files = sorted(
+        p for p in base.rglob("*.py")
+        if any(p.name.endswith(n) for n in names)
+    )
+
+    for file in files:
+        lines = file.read_text(errors="replace").splitlines()
+        matches = [
+            i for i, line in enumerate(lines)
+            if any(t in line.lower() for t in terms)
+        ]
+        if not matches:
+            continue
+
+        print(f"\n--- {file.relative_to(base)} ---")
+        shown = set()
+        for i in matches[:22]:
+            for j in range(max(0, i-2), min(len(lines), i+4)):
+                if j not in shown:
+                    print(f"{j+1:4}: {lines[j][:180]}")
+                    shown.add(j)
+PY

@@ -6,50 +6,26 @@ podman --root /application1/podman/storage \
   --entrypoint python3 \
   -v "$REPO:$REPO:ro" -w "$REPO" \
   localhost/cta-max-faiss:local -B - <<'PY'
-import sys, types, torch, traceback
 from pathlib import Path
+import numpy as np
 
-try:
-    root = Path("artifacts/v1.113-max/maxserve_bplan_extension").resolve()
-    dev = root / "bplan_max_dev"
+root = Path("artifacts/v1.113-max/maxserve_bplan_extension")
 
-    pkg = types.ModuleType("cta_max")
-    pkg.__path__ = [str(dev)]
-    sys.modules["cta_max"] = pkg
-    sys.path.insert(0, str(dev))
+for folder in (
+    root / "max_weights",
+    root / "grecbase_integration_weights",
+    root / "bplan_max_dev/sequence_weights",
+):
+    print("\nDIRECTORY:", folder, "EXISTS:", folder.is_dir())
+    if folder.is_dir():
+        for file in sorted(folder.rglob("*.npy")):
+            if "rotary" in file.name.lower() or "inv_freq" in file.name.lower():
+                arr = np.load(file, mmap_mode="r")
+                print("WEIGHT:", file, "SHAPE:", arr.shape)
 
-    from max.driver import CPU
-    from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
-    from run_real_sanity_input_adapter import build_real_inputs
-
-    data = torch.load(root / "bplan_neural_inputs.pt",
-                      map_location="cpu", weights_only=True)
-    if "task_in" not in data and "tasks_in" in data:
-        data = {**data, "task_in": data["tasks_in"]}
-
-    labels, arrays = build_real_inputs(model_in=data)
-    graph = build_grecbase_fusion_graph_order_correct(DeviceRef.from_device(CPU()))
-
-    assert len(labels) == len(arrays) == len(graph.inputs) == 72
-
-    errors = []
-    for i, (label, array, inp) in enumerate(zip(labels, arrays, graph.inputs)):
-        actual = tuple(array.shape)
-        expected = tuple(int(d) for d in inp.type.shape)
-        if actual != expected:
-            errors.append((i, label, actual, expected))
-
-    for error in errors:
-        print("SHAPE MISMATCH:", error)
-
-    assert not errors, f"{len(errors)} input mismatches"
-
-    print("BPLAN REAL MAX INPUT SHAPES: PASS (72/72)")
-    print("ORIGINAL DS AND CTA: UNCHANGED")
-
-except Exception:
-    print("BPLAN REAL MAX INPUT VALIDATION: FAILED")
-    traceback.print_exc()
-    sys.exit(1)
+adapter = root / "bplan_max_dev/run_real_sanity_input_adapter.py"
+print("\n=== ADAPTER ROTARY CONFIG ===")
+for i, line in enumerate(adapter.read_text().splitlines(), 1):
+    if 65 <= i <= 100:
+        print(f"{i}: {line}")
 PY

@@ -1,44 +1,24 @@
 python3 - <<'PY'
-import ast
 from pathlib import Path
 
 root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
 ext = root / "artifacts/v1.113-max/maxserve_bplan_extension"
 
-files = {
-    "Native worker adapter": ext / "bplan_max_dev/bplan_native_worker_adapter.py",
-    "MAX model adapter": ext / "bplan_max_dev/bplan_max_model_adapter.py",
-    "Native scheduler": ext / "bplan_native_serve_dev/bplan_native_scheduler.py",
-    "Original DS pipeline": root / "artifacts/v1.113/core-artifact/pipeline.py",
-}
+sections = [
+    (ext / "bplan_max_dev/bplan_max_model_adapter.py", 120, 180),
+    (ext / "bplan_max_dev/bplan_native_worker_adapter.py", 1, 50),
+    (ext / "bplan_native_serve_dev/bplan_native_scheduler.py", 15, 125),
+    (root / "artifacts/v1.113/core-artifact/pipeline.py", 2490, 2580),
+]
 
-for name, path in files.items():
-    print(f"\n=== {name} ===")
+for path, start, end in sections:
+    print(f"\n=== {path.name}: {start}-{end} ===")
     if not path.is_file():
-        print("FILE MISSING:", path)
+        print("FILE MISSING")
         continue
+    lines = path.read_text().splitlines()
+    for n in range(start, min(end, len(lines)) + 1):
+        print(f"{n}: {lines[n-1][:160]}")
 
-    tree = ast.parse(path.read_text())
-    methods = {
-        node.name: node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-
-    for method in (
-        "predict_batch", "predict", "__call__",
-        "run_iteration", "inference_batch", "predict_raw"
-    ):
-        if method in methods:
-            print(f"{method}: line {methods[method]}")
-
-    if name == "Native scheduler":
-        for number, line in enumerate(path.read_text().splitlines(), 1):
-            if any(s in line for s in (
-                "max_items_per_iteration", "predict_batch",
-                "len(active)", "batch_fn"
-            )):
-                print(f"{number}: {line.strip()[:140]}")
-
-print("\nREAD-ONLY CHECK COMPLETE")
+print("\nREAD-ONLY INSPECTION COMPLETE")
 PY

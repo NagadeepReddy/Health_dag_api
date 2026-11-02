@@ -1,59 +1,51 @@
-DEV=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev
+REPO=/application1/sajjna8/rt-pzai-bplan-v1
 
-DEV="$DEV" python3 - <<'PY'
-import os
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --entrypoint python3 \
+  -v "$REPO:$REPO:ro" -w "$REPO" \
+  localhost/cta-max-faiss:local -B - <<'PY'
+import sys, json, traceback
 from pathlib import Path
 
-target = Path(os.environ["DEV"]) / "bplan_native_worker_adapter.py"
-assert not target.exists(), "STOP: adapter already exists; do not overwrite"
-assert (target.parent / "bplan_max_model_adapter.py").is_file()
+root = Path("artifacts/v1.113").resolve()
+dev = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev").resolve()
 
-target.write_text('''"""BPLAN native MAX Serve worker adapter. No DS changes."""
+sys.path[:0] = [
+    str(root / "core-artifact"),
+    str(root / "utils/dependency-utils"),
+    str(dev),
+]
 
-import gc
+try:
+    import pipeline
+    from bplan_max_model_adapter import BPlanMAXModel
+    from bplan_native_worker_adapter import BPlanNativeWorkerAdapter
 
+    worker = BPlanNativeWorkerAdapter(
+        pipeline_factory=pipeline.pipeline,
+        max_factory=BPlanMAXModel,
+    )
 
-class BPlanNativeWorkerAdapter:
-    def __init__(self, pipeline_factory, max_factory):
-        self.pipeline_factory = pipeline_factory
-        self.max_factory = max_factory
-        self.pipeline = None
-        self.backend = None
-        self.max_calls = 0
+    sample = root / "core-artifact/test_samples/test_sample_1.json"
+    body = json.loads(sample.read_text())
 
-    def initialize(self):
-        if self.pipeline is None:
-            pipeline = self.pipeline_factory()
-            pipeline.load()
+    print("INITIALIZING BPLAN WORKER...", flush=True)
+    result = worker.predict(body)
 
-            assert pipeline.loaded
-            pipeline.bplan_model = None
-            pipeline.base_model = None
-            gc.collect()
+    assert worker.max_calls == 1, "MAX neural inference not called"
+    assert "inference_raw" in worker.pipeline.transactionMetadata
+    assert isinstance(result, dict)
+    assert isinstance(result["jsonData"]["prediction"], dict)
 
-            backend = self.max_factory()
+    print("BPLAN NATIVE WORKER: PASS")
+    print("MAX NEURAL CALLS:", worker.max_calls)
+    print("BPLAN JSON RESPONSE: PASS")
+    print("ORIGINAL DS AND CTA: UNCHANGED")
 
-            class MAXProxy:
-                def __call__(_, **kwargs):
-                    self.max_calls += 1
-                    return backend(**kwargs)
-
-            pipeline.bplan_model = MAXProxy()
-            self.backend = backend
-            self.pipeline = pipeline
-
-        return self.pipeline
-
-    def predict(self, body):
-        if not isinstance(body, dict):
-            raise TypeError("BPLAN request must be a JSON object")
-
-        pipeline = self.initialize()
-        return pipeline.predict_raw(body)
-''')
-
-print("BPLAN NATIVE WORKER ADAPTER: CREATED")
-print("ORIGINAL DS AND CTA: UNCHANGED")
+except Exception:
+    print("BPLAN WORKER VALIDATION: FAILED")
+    traceback.print_exc()
+    sys.exit(1)
 PY
-
-python3 -m py_compile "$DEV/bplan_native_worker_adapter.py"

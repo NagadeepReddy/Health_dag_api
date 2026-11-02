@@ -1,54 +1,61 @@
+
 python3 - <<'PY'
 import json
 from pathlib import Path
 
 base = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples")
+
 files = {
-    "MAX MYPLAN": Path("/tmp/bplan_myplan_trace.json"),
-    "EXPECTED MYPLAN": base / "test_sample_myplan_bundle_output.json",
-    "MAX FIRST TEST": Path("/tmp/bplan_verified_result.json"),
+    "MYPLAN MAX": Path("/tmp/bplan_myplan_trace.json"),
+    "MYPLAN EXPECTED": base / "test_sample_myplan_bundle_output.json",
+    "FIRST MAX TEST": Path("/tmp/bplan_verified_result.json"),
 }
 
-def inspect(label, path):
+for label, path in files.items():
     print(f"\n=== {label} ===")
+
     if not path.is_file():
-        print("MISSING:", path)
-        return
+        print("FILE MISSING")
+        continue
 
     obj = json.loads(path.read_text())
+    meta = obj.get("transactionMetadata", {})
     data = obj.get("jsonData", {})
+
     if isinstance(data, str):
         data = json.loads(data)
 
-    meta = obj.get("transactionMetadata", {})
     if not isinstance(meta, dict):
         meta = {}
 
-    print("Metadata keys:", list(meta))
-    for key in ("pre_out", "inference", "inference_raw"):
-        value = meta.get(key, "<ABSENT>")
-        print(key, ":", str(value)[:1200])
+    pre = meta.get("pre_out", {})
+    if not isinstance(pre, dict):
+        pre = {}
 
-    prediction = data.get("prediction", {}) if isinstance(data, dict) else {}
+    deep = pre.get("deep_cols", {})
+    if not isinstance(deep, dict):
+        deep = {}
+
+    print("Inference recorded:", "inference" in meta)
+    print("Deep profile available:",
+          deep.get("bplan_cd", "n/a"),
+          deep.get("data_tier_fin", "n/a"))
+
+    prediction = data.get("prediction", {})
     lists = prediction.get("ctaList", [])
-    print("CTA LIST SIZES:", [len(x) if isinstance(x, list) else "N/A" for x in lists])
 
-    for index, group in enumerate(lists):
-        if not isinstance(group, list):
-            continue
-        ids = [
-            item.get("propositionId")
-            for item in group[:8]
-            if isinstance(item, dict)
-        ]
-        print(f"CTA LIST {index} FIRST IDS:", ids)
+    print("CTA list sizes:",
+          [len(x) if isinstance(x, list) else "N/A"
+           for x in lists])
 
-for label, path in files.items():
-    inspect(label, path)
+    for i, group in enumerate(lists):
+        if isinstance(group, list):
+            print(f"List {i} IDs:",
+                  [x.get("propositionId")
+                   for x in group
+                   if isinstance(x, dict)][:20])
 
-print("\n=== ORIGINAL PIPELINE FALLBACK CONDITION ===")
-p = base.parent / "pipeline.py"
-lines = p.read_text(errors="replace").splitlines()
-for n in range(3996, 4015):
-    print(f"{n}: {lines[n-1].strip()}")
+print("\n=== FALLBACK RULE ===")
+print("Missing bplan_cd AND data_tier_fin triggers")
+print("the original pipeline's default recommendation path.")
 PY

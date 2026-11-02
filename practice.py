@@ -1,11 +1,19 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1
+SAMPLE=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=host \
-  -v "$ROOT:/workspace:ro" \
-  -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -m bplan_native_serve_dev.bplan_native_launcher
+curl -sS --max-time 180 \
+  -o /tmp/bplan_typed_response.json \
+  -w 'BPLAN HTTP STATUS: %{http_code}\n' \
+  -X POST http://127.0.0.1:18768/bplan/predict \
+  -H 'Content-Type: application/json' \
+  --data-binary @"$SAMPLE"
+
+python3 - <<'PY'
+import json
+p = "/tmp/bplan_typed_response.json"
+try:
+    with open(p) as f:
+        data = json.load(f)
+    print("RESPONSE:", json.dumps(data, indent=2)[:1500])
+except Exception as e:
+    print("RESPONSE ERROR:", e)
+PY

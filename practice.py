@@ -1,9 +1,13 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max
+SOURCE="$ROOT/maxserve_bplan_extension/bplan_helper_weights_stage"
+TARGET="$ROOT/bplan_helper_weights_stage"
 
-echo "=== BPLAN WEIGHT FILE LOCATIONS ==="
-find "$ROOT/artifacts" -type f \
-  \( -name 'fn_norm1_g.npy' -o -name 'base_model.pt' -o -name 'bplan_model.pt' \) \
-  -printf '%p\n'
-
-echo "=== EXPECTED WEIGHTS DIRECTORY ==="
-ls -lah "$ROOT/artifacts/v1.113-max/bplan_helper_weights_stage/grecbase_integration_weights" 2>&1 | head -35
+if [ ! -f "$SOURCE/grecbase_integration_weights/fn_norm1_g.npy" ]; then
+  echo "STOP: Source weight missing"
+elif [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+  echo "STOP: Target already exists; preserving it"
+else
+  ln -s maxserve_bplan_extension/bplan_helper_weights_stage "$TARGET"
+  test -f "$TARGET/grecbase_integration_weights/fn_norm1_g.npy" \
+    && echo "BPLAN BATCH-2 WEIGHT PATH: PASS"
+fi

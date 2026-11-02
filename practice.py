@@ -1,11 +1,17 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1
+SAMPLE=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=host \
-  -v "$ROOT:/workspace:ro" \
-  -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -m bplan_native_serve_dev.bplan_native_launcher
+if ss -ltn | grep -q ':18768 '; then
+  echo "BPLAN LISTENER: PASS"
+  curl -sS --max-time 120 \
+    -o /tmp/bplan_response.json \
+    -w 'BPLAN HTTP STATUS: %{http_code}\n' \
+    -X POST http://127.0.0.1:18768/bplan/predict \
+    -H 'Content-Type: application/json' \
+    --data-binary @"$SAMPLE"
+  if [ -f /tmp/bplan_response.json ]; then
+    head -c 1000 /tmp/bplan_response.json
+    echo
+  fi
+else
+  echo "BPLAN LISTENER: NOT RUNNING"
+fi

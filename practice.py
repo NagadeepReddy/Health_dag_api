@@ -1,18 +1,59 @@
-CTA=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
-BPLAN=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
+DEV=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev
 
-echo "=== BPLAN ADAPTER ==="
-test -f "$BPLAN/bplan_max_dev/bplan_max_model_adapter.py" && echo "PASS"
+DEV="$DEV" python3 - <<'PY'
+import os
+from pathlib import Path
 
-echo "=== NATIVE REGISTRATION ==="
-sed -n '1,150p' "$CTA/cta_architecture_registration.py"
+target = Path(os.environ["DEV"]) / "bplan_native_worker_adapter.py"
+assert not target.exists(), "STOP: adapter already exists; do not overwrite"
+assert (target.parent / "bplan_max_model_adapter.py").is_file()
 
-echo "=== SCHEDULER FACTORY ==="
-sed -n '1,160p' "$CTA/cta_scheduler_factory.py"
+target.write_text('''"""BPLAN native MAX Serve worker adapter. No DS changes."""
 
-echo "=== NATIVE LAUNCHER ==="
-sed -n '1,130p' "$CTA/cta_native_launcher.py"
+import gc
 
-echo "=== HTTP ENTRY INTERFACES ==="
-grep -nE '^(class |def |async def |    def )|register|route|scheduler' \
-"$CTA/cta_native_http_entry.py" | head -65
+
+class BPlanNativeWorkerAdapter:
+    def __init__(self, pipeline_factory, max_factory):
+        self.pipeline_factory = pipeline_factory
+        self.max_factory = max_factory
+        self.pipeline = None
+        self.backend = None
+        self.max_calls = 0
+
+    def initialize(self):
+        if self.pipeline is None:
+            pipeline = self.pipeline_factory()
+            pipeline.load()
+
+            assert pipeline.loaded
+            pipeline.bplan_model = None
+            pipeline.base_model = None
+            gc.collect()
+
+            backend = self.max_factory()
+
+            class MAXProxy:
+                def __call__(_, **kwargs):
+                    self.max_calls += 1
+                    return backend(**kwargs)
+
+            pipeline.bplan_model = MAXProxy()
+            self.backend = backend
+            self.pipeline = pipeline
+
+        return self.pipeline
+
+    def predict(self, body):
+        if not isinstance(body, dict):
+            raise TypeError("BPLAN request must be a JSON object")
+
+        pipeline = self.initialize()
+        return pipeline.predict_raw(body)
+''')
+
+print("BPLAN NATIVE WORKER ADAPTER: CREATED")
+print("ORIGINAL DS AND CTA: UNCHANGED")
+PY
+
+python3 -m py_compile "$DEV/bplan_native_worker_adapter.py"

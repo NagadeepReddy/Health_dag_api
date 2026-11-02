@@ -1,11 +1,1 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm --pull=never --network=host \
-  -v /application1/sajjna8/rt-pzai-bplan-v1:/workspace:ro \
-  -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -m bplan_native_serve_dev.bplan_native_launcher \
-  --model /workspace/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_model \
-  --devices cpu --port 18768
+sed -n '1,160p' /application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_native_http_entry.py

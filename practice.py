@@ -1,20 +1,12 @@
-python3 - <<'PY'
-from pathlib import Path
-import ast
+SAMPLE=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json
 
-p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_native_launcher.py")
-s = p.read_text()
+curl -sS --max-time 180 \
+  -o /tmp/bplan_native_response.json \
+  -w '\nBPLAN HTTP STATUS: %{http_code}\n' \
+  -X POST http://127.0.0.1:18768/bplan/predict \
+  -H 'Content-Type: application/json' \
+  --data-binary @"$SAMPLE"
 
-old = "from max.entrypoints import headless_workers"
-new = "from max.entrypoints import workers as headless_workers"
-
-assert s.count(old) == 1, "STOP: unexpected launcher import"
-
-updated = s.replace(old, new)
-ast.parse(updated)
-p.write_text(updated)
-
-print("BPLAN HEADLESS IMPORT: CORRECTED TO MATCH CTA")
-print("BPLAN SYNTAX: PASS")
-print("ORIGINAL DS AND CTA: UNCHANGED")
-PY
+echo "=== RESPONSE ==="
+head -c 1000 /tmp/bplan_native_response.json
+echo

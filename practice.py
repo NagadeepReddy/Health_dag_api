@@ -6,7 +6,7 @@ podman --root /application1/podman/storage \
   --entrypoint python3 \
   -v "$REPO:$REPO:ro" -w "$REPO" \
   localhost/cta-max-faiss:local -B - <<'PY'
-import sys, json, traceback, gc
+import sys, json, gc, hashlib, traceback
 from pathlib import Path
 
 root = Path("artifacts/v1.113").resolve()
@@ -18,73 +18,83 @@ sys.path[:0] = [
     str(dev),
 ]
 
-import pipeline
-from bplan_max_model_adapter import BPlanMAXModel
+try:
+    import pipeline
+    from bplan_max_model_adapter import BPlanMAXModel
 
-ds = pipeline.pipeline()
-ds.load()
-print("ORIGINAL PIPELINE LOAD: PASS", flush=True)
+    sample = root / "core-artifact/test_samples/test_sample_1.json"
+    body = json.loads(sample.read_text())
 
-ds.bplan_model = None
-gc.collect()
+    ds = pipeline.pipeline()
+    ds.load()
+    print("ORIGINAL PIPELINE: PASS", flush=True)
 
-class TrackedMAX:
-    calls = 0
+    print("RUNNING ORIGINAL PYTORCH JSON...", flush=True)
+    original = ds.predict_raw(body)
+    assert "inference_raw" in ds.transactionMetadata
+    original_prediction = original["jsonData"]["prediction"]
+    print("ORIGINAL PYTORCH JSON: PASS", flush=True)
 
-    def __init__(self):
-        self.model = BPlanMAXModel()
+    # Release original neural models; preserve DS code and artifacts.
+    ds.bplan_model = None
+    ds.base_model = None
+    gc.collect()
 
-    def __call__(self, **kwargs):
-        self.calls += 1
-        print("MAX BACKEND CALLED:", self.calls, flush=True)
-        try:
-            result = self.model(**kwargs)
-            print("MAX BACKEND OUTPUT:", tuple(result.shape), flush=True)
-            return result
-        except Exception:
-            print("MAX BACKEND EXCEPTION:", flush=True)
-            traceback.print_exc()
-            raise
+    class TrackedMAX:
+        calls = 0
 
-backend = TrackedMAX()
-ds.bplan_model = backend
+        def __init__(self):
+            self.model = BPlanMAXModel()
 
-original_inference = ds.inference
-original_postprocess = ds.postprocess
+        def __call__(self, **kwargs):
+            self.calls += 1
+            return self.model(**kwargs)
 
-def traced_inference(*args, **kwargs):
-    print("ENTER ORIGINAL INFERENCE", flush=True)
-    try:
-        result = original_inference(*args, **kwargs)
-        print("ORIGINAL RANKING: PASS", flush=True)
-        return result
-    except Exception:
-        print("ORIGINAL INFERENCE EXCEPTION:", flush=True)
-        traceback.print_exc()
-        raise
+    backend = TrackedMAX()
+    ds.bplan_model = backend
 
-def traced_postprocess(*args, **kwargs):
-    print("ENTER ORIGINAL POSTPROCESS", flush=True)
-    try:
-        result = original_postprocess(*args, **kwargs)
-        print("ORIGINAL POSTPROCESS: PASS", flush=True)
-        return result
-    except Exception:
-        print("ORIGINAL POSTPROCESS EXCEPTION:", flush=True)
-        traceback.print_exc()
-        raise
+    # Clear previous run metadata before validating MAX.
+    ds.transactionMetadata = {}
 
-ds.inference = traced_inference
-ds.postprocess = traced_postprocess
+    print("RUNNING MODULAR MAX JSON...", flush=True)
+    result = ds.predict_raw(body)
 
-sample = root / "core-artifact/test_samples/test_sample_1.json"
-body = json.loads(sample.read_text())
+    assert backend.calls == 1, (
+        f"STOP: expected 1 MAX inference call, got {backend.calls}"
+    )
+    assert "inference_raw" in ds.transactionMetadata, \
+        "STOP: MAX ranking not completed"
 
-print("RUNNING ORIGINAL JSON FLOW...", flush=True)
-result = ds.predict_raw(body)
+    max_prediction = result["jsonData"]["prediction"]
 
-print("MAX CALLS:", backend.calls)
-print("RANKING RECORDED:", "inference_raw" in ds.transactionMetadata)
-print("RESPONSE TYPE:", type(result).__name__)
-print("ORIGINAL DS AND CTA: UNCHANGED")
+    def canonical(value):
+        return json.dumps(
+            value, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, default=str
+        )
+
+    before = canonical(original_prediction)
+    after = canonical(max_prediction)
+
+    print("MAX NEURAL CALLS:", backend.calls)
+    print("PYTORCH PREDICTION SHA256:",
+          hashlib.sha256(before.encode()).hexdigest())
+    print("MAX PREDICTION SHA256:",
+          hashlib.sha256(after.encode()).hexdigest())
+
+    if before != after:
+        print("BPLAN BUSINESS JSON PARITY: NOT YET PASSED")
+        if isinstance(original_prediction, dict) and isinstance(max_prediction, dict):
+            for key in sorted(set(original_prediction) | set(max_prediction)):
+                if canonical(original_prediction.get(key)) != canonical(max_prediction.get(key)):
+                    print("DIFFERENT PREDICTION FIELD:", key)
+        sys.exit(2)
+
+    print("BPLAN BUSINESS JSON PARITY: PASS")
+    print("ORIGINAL DS AND CTA: UNCHANGED")
+
+except Exception:
+    print("BPLAN BUSINESS JSON VALIDATION: FAILED")
+    traceback.print_exc()
+    sys.exit(1)
 PY

@@ -1,28 +1,30 @@
 python3 - <<'PY'
 from pathlib import Path
 
-p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev")
+base = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
 
-for f in sorted(p.glob("*.py")):
-    if not any(x in f.name for x in ("adapter", "scheduler", "worker", "pipeline")):
+for p in sorted(base.rglob("*.py")):
+    lines = p.read_text(errors="replace").splitlines()
+    hits = [
+        i for i, line in enumerate(lines)
+        if any(x in line for x in (
+            "class BPlanMAXModel",
+            "class BPlanMaxModel",
+            "def predict(",
+            "def predict_batch(",
+            "def initialize(",
+            "def load_model(",
+            "def run_inference("
+        ))
+    ]
+    if not hits:
         continue
 
-    lines = f.read_text(errors="replace").splitlines()
-    terms = (
-        "predict(", "predict_batch(", "adapter.",
-        "load_model", "pipeline.", "infer(",
-        "mock", "stub", "placeholder",
-        "return result", "return results",
-        "run_inference"
-    )
-
-    hits = [i for i, s in enumerate(lines) if any(t in s.lower() for t in terms)]
-    if hits:
-        print(f"\n=== {f.name} ===")
-        shown = set()
-        for i in hits[:18]:
-            for j in range(max(0, i-3), min(len(lines), i+6)):
-                if j not in shown:
-                    print(f"{j+1}: {lines[j][:180]}")
-                    shown.add(j)
+    print(f"\n=== {p.relative_to(base)} ===")
+    shown = set()
+    for i in hits[:8]:
+        for j in range(max(0, i-3), min(len(lines), i+28)):
+            if j not in shown:
+                print(f"{j+1}: {lines[j][:180]}")
+                shown.add(j)
 PY

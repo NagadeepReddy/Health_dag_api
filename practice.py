@@ -12,41 +12,35 @@ changes = {
     graph: [
         ("[1, 50], device=device) for _ in range(3)",
          "[1, 20], device=device) for _ in range(3)"),
-        ("[1, 1, 50, 1]", "[1, 1, 20, 1]"),
-        ("[1, 1, 50, 256]", "[1, 1, 20, 256]"),
+        ("[1, 50, 1], device=device)",
+         "[1, 20, 1], device=device)"),
+        ("[1, 1, 50, 256], device=device)",
+         "[1, 1, 20, 256], device=device)"),
     ],
     adapter: [
-        ("page_wide.reshape(1, 50, 1)",
-         "page_wide.reshape(1, 20, 1)"),
-        ("assert page_in_length == 50",
-         "assert page_in_length == 20"),
-        ("50-token sequence", "20-token sequence"),
+        ("page_wide.reshape(1, 50, 1)", "page_wide.reshape(1, 20, 1)"),
+        ("assert page_in_length == 50", "assert page_in_length == 20"),
     ],
 }
 
 updated = {}
-
 for file, replacements in changes.items():
-    assert file.is_file(), f"STOP: missing {file}"
-    text = file.read_text()
-
-    for old, new in replacements:
-        assert text.count(old) == 1, f"STOP: unexpected pattern {old}"
-        text = text.replace(old, new)
-
-    compile(text, str(file), "exec")
-    updated[file] = text
-
-for file, text in updated.items():
+    original = file.read_text()
+    new = original
+    for old, replacement in replacements:
+        count = new.count(old)
+        assert count == 1, f"STOP: {file.name}: {old} (found {count})"
+        new = new.replace(old, replacement)
+    compile(new, str(file), "exec")
     backup = file.with_suffix(".py.before_bplan_seq20")
     assert not backup.exists(), f"STOP: backup exists {backup}"
+    updated[file] = (original, new, backup)
 
-for file, text in updated.items():
-    backup = file.with_suffix(".py.before_bplan_seq20")
-    backup.write_text(file.read_text())
-    file.write_text(text)
+for file, (original, new, backup) in updated.items():
+    backup.write_text(original)
+    file.write_text(new)
 
-print("BPLAN MAX SEQUENCE DIMENSIONS: PASS (20)")
-print("JET DIMENSIONS: UNCHANGED (50)")
+print("BPLAN SEQUENCE SHAPES: PASS (20)")
+print("JET SHAPES: UNCHANGED (50)")
 print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

@@ -1,74 +1,54 @@
 python3 - <<'PY'
+import json
 from pathlib import Path
 
-p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_router.py")
-s = p.read_text()
+samples = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples")
+expected = samples / "test_sample_myplan_bundle_output.json"
+actual = Path("/tmp/bplan_myplan_trace.json")
 
-changes = [
-    (
-        '    body = await request.json()\n',
-        '    body = await request.json()\n'
-        '    print("BPLAN TRACE: POST RECEIVED", flush=True)\n'
-    ),
-    (
-        '    request_id = str(getattr(request.state, "request_id", None) or uuid4())\n',
-        '    request_id = str(getattr(request.state, "request_id", None) or uuid4())\n'
-        '    print("BPLAN TRACE: QUEUE READY", request_id, flush=True)\n'
-    ),
-    (
-        '                    output = await response_queue.get()\n',
-        '                    output = await response_queue.get()\n'
-        '                    print("BPLAN TRACE: RESPONSE RECEIVED", request_id, flush=True)\n'
-    )
-]
+if not expected.is_file() or not actual.is_file():
+    raise SystemExit("STOP: Expected or actual response missing")
 
-if "BPLAN TRACE: POST RECEIVED" in s:
-    print("BPLAN ROUTE TRACING: ALREADY INSTALLED")
-else:
-    for old, new in changes:
-        if s.count(old) != 1:
-            raise SystemExit(f"STOP: Expected location not unique: {old.strip()}")
-        s = s.replace(old, new, 1)
-    compile(s, str(p), "exec")
-    p.write_text(s)
-    print("BPLAN ROUTE TRACING: INSTALLED")
+e = json.loads(expected.read_text())
+a = json.loads(actual.read_text())
 
-print("BPLAN SYNTAX: PASS")
+print("=== BPLAN MYPLAN VALIDATION ===")
+print("ACTUAL KEYS:", list(a) if isinstance(a, dict) else type(a).__name__)
+
+def business(x):
+    x = x.get("jsonData", x) if isinstance(x, dict) else x
+    return json.loads(x) if isinstance(x, str) else x
+
+e, a = business(e), business(a)
+diffs = []
+
+def compare(x, y, path="$"):
+    if type(x) != type(y):
+        diffs.append(path + ": type mismatch")
+    elif isinstance(x, dict):
+        for k in x.keys() | y.keys():
+            if k not in x or k not in y:
+                diffs.append(path + "." + str(k) + ": missing key")
+            else:
+                compare(x[k], y[k], path + "." + str(k))
+    elif isinstance(x, list):
+        if len(x) != len(y):
+            diffs.append(path + ": length mismatch")
+        for i, (v, w) in enumerate(zip(x, y)):
+            compare(v, w, f"{path}[{i}]")
+    elif x != y:
+        diffs.append(path + ": value mismatch")
+
+compare(e, a)
+print("BUSINESS OUTPUT:", "MATCH" if not diffs else "DIFFERENT")
+print("DIFFERENCES:", len(diffs))
+for d in diffs[:15]:
+    print(d)
 PY
 
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
-
-"${P[@]}" rm -f bplan-debug 2>/dev/null || true
-
-"${P[@]}" run -d --name bplan-debug --pull=never \
-  --network=host -v "$ROOT:/workspace:ro" -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
-  --entrypoint /opt/venv/bin/python localhost/cta-max-faiss:local \
-  -m bplan_native_serve_dev.bplan_native_launcher || exit 1
-
-echo "=== WAIT FOR SERVER ==="
-READY=0
-for i in $(seq 1 120); do
-  CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
-    http://127.0.0.1:18768/bplan/predict)
-  if [ "$CODE" = 405 ]; then READY=1; break; fi
-  sleep 1
-done
-
-if [ "$READY" = 1 ]; then
-  echo "=== MYPLAN REQUEST TRACE ==="
-  curl -sS --max-time 35 \
-    -o /tmp/bplan_myplan_trace.json \
-    -w 'HTTP STATUS: %{http_code}\n' \
-    -H 'Content-Type: application/json' \
-    --data-binary @"$ROOT/artifacts/v1.113/core-artifact/test_samples/test_sample_myplan_bundle.json" \
-    http://127.0.0.1:18768/bplan/predict
-else
-  echo "SERVER NOT READY"
-fi
-
-echo "=== TRACE RESULTS ==="
-"${P[@]}" logs --tail 400 bplan-debug 2>&1 |
-  grep -E 'BPLAN TRACE|BPLAN REAL MAX|BPLAN SPAWN|BPLAN FACTORY|BPLAN RESPONSE SOCKET|BPLAN RESPONSE ID MATCH|worker failed|Error in background|POST /bplan' |
-  tail -40
+echo "=== MAX BACKEND EXECUTION ==="
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  logs --tail 300 bplan-debug 2>&1 |
+  grep -E 'BPLAN REAL MAX EXECUTION|BPLAN RESPONSE ID MATCH|Traceback|RuntimeError|AttributeError' |
+  tail -20

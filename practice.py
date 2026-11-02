@@ -1,49 +1,55 @@
 python3 - <<'PY'
+import ast, json
 from pathlib import Path
-import json
-import re
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
-core = root / "artifacts/v1.113/core-artifact"
-actual = Path("/tmp/bplan_myplan_trace.json")
-expected = core / "test_samples/test_sample_myplan_bundle_output.json"
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact")
+tree = ast.parse((root / "pipeline.py").read_text())
 
-print("=== ORIGINAL DS DEFAULT DEFINITIONS ===")
-symbols = (
+print("=== CURRENT DS FALLBACK DEFINITIONS ===")
+names = {
     "DEFAULT_PROPOSITION_LIST_BPLAN",
-    "CURRENT_PROPOSITION_LIST_TAB",
-    "CURRENT_PROPOSITION_LIST_CD",
-)
+    "DEFAULT_PROPOSITION_LIST_TAB",
+    "DEFAULT_PROPOSITION_LIST_CD",
+}
 
-for p in sorted(core.rglob("*.py")):
-    lines = p.read_text(errors="replace").splitlines()
-    for i, line in enumerate(lines):
-        if any(re.match(r"^\s*" + name + r"\s*=", line)
-               for name in symbols):
-            print(f"\nFILE: {p.relative_to(core)} LINE: {i+1}")
-            for j in range(i, min(i+12, len(lines))):
-                print(f"{j+1}: {lines[j][:180]}")
+for node in tree.body:
+    if isinstance(node, ast.Assign):
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        for name in targets:
+            if name not in names:
+                continue
+            try:
+                value = ast.literal_eval(node.value)
+                print("\n", name)
+                for group, items in value.items():
+                    if isinstance(items, list):
+                        print(group, "COUNT:", len(items))
+                        print("NAMES:", [
+                            x.get("propositionName")
+                            for x in items
+                            if isinstance(x, dict)
+                        ][:25])
+            except Exception as e:
+                print(name, "NOT STATIC:", type(e).__name__)
 
-print("\n=== MYPLAN EXPECTED VS CURRENT ===")
+print("\n=== EXPECTED VS MAX ===")
+files = {
+    "EXPECTED": root / "test_samples/test_sample_myplan_bundle_output.json",
+    "MAX": Path("/tmp/bplan_myplan_trace.json"),
+}
 
-for label, p in (("EXPECTED", expected), ("CURRENT MAX HTTP", actual)):
-    if not p.is_file():
-        print(label, "MISSING")
-        continue
-
-    obj = json.loads(p.read_text())
-    data = obj.get("jsonData", {})
+for label, path in files.items():
+    obj = json.loads(path.read_text())
+    data = obj["jsonData"]
     if isinstance(data, str):
         data = json.loads(data)
 
-    meta = obj.get("transactionMetadata", {})
-    print(f"\n{label}")
-    print("INFERENCE RECORDED:", isinstance(meta, dict) and "inference" in meta)
-
-    lists = data.get("prediction", {}).get("ctaList", [])
-    for i, group in enumerate(lists):
-        if isinstance(group, list):
-            print("LIST", i, "COUNT", len(group),
-                  "IDS", [x.get("propositionId") for x in group
-                          if isinstance(x, dict)])
+    print("\n", label)
+    for i, group in enumerate(data["prediction"]["ctaList"]):
+        print("LIST", i, "COUNT", len(group))
+        print("NAMES:", [
+            x.get("propositionName")
+            for x in group
+            if isinstance(x, dict)
+        ][:25])
 PY

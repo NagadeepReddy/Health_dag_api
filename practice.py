@@ -1,21 +1,34 @@
 python3 - <<'PY'
 from pathlib import Path
-import py_compile
+import re, py_compile
 
-src = Path("/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_http_pipeline.py")
-dst = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_http_pipeline.py")
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev")
+launcher = root / "bplan_native_launcher.py"
+pipeline = root / "bplan_http_pipeline.py"
 
-assert src.is_file(), f"Missing CTA reference: {src}"
-assert dst.parent.is_dir(), f"Missing BPLAN directory: {dst}"
-assert not dst.exists(), "STOP: BPLAN pipeline already exists; preserve it"
+assert launcher.is_file() and pipeline.is_file(), "STOP: required file missing"
 
-code = src.read_text()
-code = code.replace("CTA", "BPLAN").replace("Cta", "BPlan").replace("cta", "bplan")
+code = launcher.read_text()
+pipe_code = pipeline.read_text()
 
-dst.write_text(code)
-py_compile.compile(str(dst), doraise=True)
+classes = re.findall(r"class\s+(\w+)\s*\(\s*TokenGeneratorPipeline\s*\)", pipe_code)
+assert len(classes) == 1, f"STOP: unexpected HTTP pipeline classes: {classes}"
 
-print("BPLAN ISOLATED HTTP PIPELINE: CREATED")
-print("BPLAN PIPELINE SYNTAX: PASS")
+marker = 'sys.argv = ["max.entrypoints.pipelines", "serve", *sys.argv[1:]]'
+assert code.count(marker) == 1, "STOP: launcher structure differs"
+
+if "BPLAN_HTTP_PIPELINE_WIRED" not in code:
+    wiring = (
+        "    # BPLAN_HTTP_PIPELINE_WIRED\n"
+        "    from max.serve import api_server\n"
+        f"    from bplan_native_serve_dev.bplan_http_pipeline import {classes[0]}\n"
+        f"    api_server.TokenGeneratorPipeline = {classes[0]}\n"
+    )
+    code = code.replace(marker, wiring + "\n    " + marker)
+    launcher.write_text(code)
+
+py_compile.compile(str(launcher), doraise=True)
+print("BPLAN HTTP PIPELINE WIRING: PASS")
+print("BPLAN NATIVE LAUNCHER SYNTAX: PASS")
 print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

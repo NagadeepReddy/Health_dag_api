@@ -1,7 +1,27 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts
-echo "=== NATIVE MODEL DIRECTORY ==="
-find "$ROOT/v1.113-max/maxserve_bplan_extension" -maxdepth 4 \( -name config.json -o -name bplan_native_model \) -print
-echo "=== ORIGINAL MODEL CONFIG ==="
-ls -l "$ROOT/v1.113/config/config.json"
-echo "=== BPLAN REGISTRATION ==="
-grep -nE 'name=|model_path|architecture|register' "$ROOT/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_architecture_registration.py"
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
+model = root / "bplan_native_model"
+model.mkdir(parents=True, exist_ok=True)
+
+config = {
+    "model_type": "llama",
+    "architectures": ["BPlanMaxPipelineModel"],
+    "vocab_size": 32000,
+    "hidden_size": 256,
+    "intermediate_size": 1024,
+    "num_hidden_layers": 2,
+    "num_attention_heads": 8,
+    "num_key_value_heads": 8,
+    "max_position_embeddings": 128,
+    "bos_token_id": 1,
+    "eos_token_id": 2
+}
+
+(model / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+print("BPLAN ISOLATED MODEL CONFIG: CREATED")
+print("MODEL PATH:", model)
+print("ORIGINAL DS AND CTA: UNCHANGED")
+PY

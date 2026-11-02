@@ -5,53 +5,84 @@ import os, ast
 from pathlib import Path
 
 dev = Path(os.environ["DEV"])
-model = dev / "bplan_pipeline_model.py"
-registry = dev / "bplan_architecture_registration.py"
+target = dev / "bplan_native_launcher.py"
 
-assert not model.exists() and not registry.exists(), "STOP: files already exist"
+for name in ("bplan_spawn_worker.py", "bplan_worker_registration.py",
+             "bplan_architecture_registration.py"):
+    assert (dev / name).is_file(), f"STOP: missing {name}"
 
-files = {
-    model: '''
-from max.pipelines.lib import PipelineModel
+assert not target.exists(), "STOP: launcher already exists"
 
-class BPlanMaxPipelineModel(PipelineModel):
-    @classmethod
-    def calculate_max_seq_len(cls, pipeline_config, huggingface_config):
-        return 20
+code = '''"""BPLAN-only built-in Modular MAX Serve launcher."""
 
-    @classmethod
-    def infer_optimal_batch_size(cls, *args, **kwargs):
-        return 1
-''',
-    registry: '''
-from dataclasses import replace
+import inspect
+import runpy
+import sys
 
-def register_bplan_architecture():
-    from max.pipelines.architectures.llama3.arch import llama_arch
-    from max.pipelines.lib import PIPELINE_REGISTRY, SupportedEncoding
-    from .bplan_pipeline_model import BPlanMaxPipelineModel
 
-    arch = replace(
-        llama_arch,
-        name="BPlanMaxPipelineModel",
-        pipeline_model=BPlanMaxPipelineModel,
-        default_encoding=SupportedEncoding.float32,
-        supported_encodings={
-            SupportedEncoding.float32:
-            llama_arch.supported_encodings[SupportedEncoding.bfloat16]
-        },
+def main():
+    from bplan_native_serve_dev.bplan_architecture_registration import (
+        register_bplan_architecture,
     )
-    PIPELINE_REGISTRY.register(arch, allow_override=True)
-    return arch
+    from bplan_native_serve_dev.bplan_spawn_worker import BPlanFactoryWrapper
+
+    register_bplan_architecture()
+
+    from max.pipelines.lib import PIPELINE_REGISTRY
+    original_factory = PIPELINE_REGISTRY.retrieve_factory
+
+    def select_factory(config, *args, **kwargs):
+        model_config = getattr(config, "model_config", None)
+        model_path = str(getattr(model_config, "model_path", "")).rstrip("/")
+
+        if model_path.endswith("/bplan_native_model"):
+            print("BPLAN: native model factory selected", flush=True)
+            return None, BPlanFactoryWrapper()
+
+        return original_factory(config, *args, **kwargs)
+
+    PIPELINE_REGISTRY.retrieve_factory = select_factory
+
+    from max.serve.pipelines import model_worker
+
+    original_spawn = model_worker.start_model_worker
+    signature = inspect.signature(original_spawn)
+    assert "model_factory" in signature.parameters
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def bplan_spawn(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.arguments["model_factory"] = BPlanFactoryWrapper(
+            bound.arguments["model_factory"]
+        )
+        async with original_spawn(*bound.args, **bound.kwargs) as monitor:
+            yield monitor
+
+    model_worker.start_model_worker = bplan_spawn
+
+    from max.serve import api_server
+    if getattr(api_server, "start_model_worker", None) is original_spawn:
+        api_server.start_model_worker = bplan_spawn
+
+    print("BPLAN NATIVE MAX LAUNCHER: REGISTERED", flush=True)
+
+    sys.argv = ["max.entrypoints.pipelines", "serve", *sys.argv[1:]]
+    runpy.run_module("max.entrypoints.pipelines",
+                     run_name="__main__", alter_sys=True)
+
+
+if __name__ == "__main__":
+    main()
 '''
-}
 
-for path, code in files.items():
-    ast.parse(code)
-for path, code in files.items():
-    path.write_text(code.strip() + "\n")
+ast.parse(code)
+target.write_text(code)
 
-print("BPLAN NATIVE ARCHITECTURE: CREATED")
-print("BPLAN REGISTRATION SYNTAX: PASS")
+print("BPLAN NATIVE LAUNCHER: CREATED")
+print("BPLAN SERVING REGISTRATION: PREPARED")
 print("ORIGINAL DS AND CTA: UNCHANGED")
 PY
+
+python3 -m py_compile "$DEV/bplan_native_launcher.py"

@@ -1,12 +1,13 @@
-SAMPLE=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json
+P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-curl -sS --max-time 180 \
-  -o /tmp/bplan_native_response.json \
-  -w '\nBPLAN HTTP STATUS: %{http_code}\n' \
-  -X POST http://127.0.0.1:18768/bplan/predict \
-  -H 'Content-Type: application/json' \
-  --data-binary @"$SAMPLE"
+echo "=== RUNNING CONTAINERS ==="
+$P ps --format '{{.ID}} {{.Image}} {{.Command}}'
 
-echo "=== RESPONSE ==="
-head -c 1000 /tmp/bplan_native_response.json
-echo
+echo "=== MAX / BPLAN WORKER PROCESSES ==="
+ps -eo pid,ppid,etime,args --forest | grep -E 'bplan|model_worker|multiprocessing.spawn|18768' | grep -v grep
+
+echo "=== BPLAN CONTAINER PROCESSES ==="
+for id in $($P ps --format '{{.ID}}'); do
+  echo "CONTAINER: $id"
+  $P top "$id" pid,ppid,args 2>&1 | grep -E 'PID|bplan|python|spawn'
+done

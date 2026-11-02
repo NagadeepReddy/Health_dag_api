@@ -1,41 +1,33 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev
-STAGE=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/bplan_batch2_graph_dev
-
-ROOT="$ROOT" STAGE="$STAGE" python3 - <<'PY'
+python3 - <<'PY'
 from pathlib import Path
-import os, shutil, ast
+import shutil, ast
 
-src = Path(os.environ["ROOT"])
-dst = Path(os.environ["STAGE"])
-dst.mkdir(parents=True, exist_ok=True)
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max")
+stage = root / "bplan_batch2_graph_dev"
+name = "grecbase_fusion_full_head_72_max.py"
 
-files = sorted(src.glob("*.py"))
-for f in files:
-    target = dst / f.name
-    if target.exists():
-        print("PRESERVED EXISTING:", f.name)
-    else:
-        shutil.copy2(f, target)
+matches = [
+    p for p in root.rglob(name)
+    if stage not in p.parents and p.is_file()
+]
 
-print("BPLAN BATCH-2 ISOLATED SOURCE:", dst)
-print("PYTHON FILES:", len(list(dst.glob("*.py"))))
+print("MATCHING GRAPH SOURCES:", len(matches))
+for p in matches:
+    print("SOURCE:", p)
 
-entry = dst / "grecbase_fusion_full_head_72_max.py"
-if not entry.is_file():
-    raise SystemExit("STOP: main graph file missing")
+if len(matches) != 1:
+    raise SystemExit("STOP: Need exactly one original graph source; nothing changed")
 
-lines = entry.read_text().splitlines()
-print("\n=== GRAPH INPUT AND SHAPE LOCATIONS ===")
-for i, line in enumerate(lines, 1):
-    if any(x in line for x in (
-        "Graph(", "TensorType(", "input_types=",
-        "ops.reshape(", "ops.constant(", "graph.output("
-    )):
-        print(f"{i}: {line.strip()[:160]}")
+stage.mkdir(parents=True, exist_ok=True)
+target = stage / name
 
-for f in dst.glob("*.py"):
-    ast.parse(f.read_text(), filename=str(f))
+if target.exists():
+    print("PRESERVED EXISTING:", target)
+else:
+    shutil.copy2(matches[0], target)
+    print("COPIED INTO ISOLATED STAGE:", target)
 
-print("\nISOLATED BATCH-2 SOURCE SYNTAX: PASS")
-print("ORIGINAL MAX SOURCE: UNCHANGED")
+ast.parse(target.read_text(), filename=str(target))
+print("BPLAN BATCH-2 MAIN GRAPH SYNTAX: PASS")
+print("ORIGINAL SOURCE: UNCHANGED")
 PY

@@ -1,12 +1,7 @@
-DIR=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
+B=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_http_pipeline.py
+C=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension/cta_http_pipeline.py
 
-echo "=== SCHEDULER FACTORY ==="
-nl -ba "$DIR/bplan_scheduler_factory.py" | head -110
-
-echo "=== WORKER ADAPTER LOCATION ==="
-find /application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension \
-  -name 'bplan_native_worker_adapter.py' -print
-
-echo "=== HTTP PIPELINE LIFECYCLE ==="
-grep -nE '__aenter__|response_worker|_engine_queue|worker_monitor|_bplan_wait_for_healthy_worker' \
-  "$DIR/bplan_http_pipeline.py"
+for f in "$B" "$C"; do
+  echo "===== $f ====="
+  grep -nE 'def __aenter__|def __aexit__|response_worker|wait_for_healthy|create_task|_engine_queue' "$f"
+done

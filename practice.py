@@ -1,6 +1,6 @@
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  run --rm --pull=never --network=none \
+  run --rm -i --pull=never --network=none \
   -v /application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact:/source:ro \
   -v /application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_helper_weights_stage/grecbase_integration_weights:/export:rw \
   --entrypoint /opt/venv/bin/python \
@@ -15,19 +15,19 @@ if "state_dict" in state:
 
 for name, shape in [("out_norm1", (256,)), ("out_norm2", (2048,))]:
     key = f"sequence_transformer.{name}.g"
-    assert key in state, f"STOP: missing checkpoint tensor {key}"
+    assert key in state, f"Missing tensor: {key}"
     values = state[key].detach().cpu().numpy().astype(np.float32)
-    assert values.shape == shape, f"STOP: unexpected shape for {key}"
+    assert values.shape == shape
 
     target = Path("/export") / f"{name}_g.npy"
     if target.exists():
-        assert np.array_equal(np.load(target), values), f"STOP: existing weight differs: {target}"
-        print("VERIFIED:", target.name, values.shape)
+        assert np.array_equal(np.load(target), values)
+        print("VERIFIED:", target.name, flush=True)
     else:
         with target.open("xb") as f:
             np.save(f, values)
-        print("EXPORTED:", target.name, values.shape)
+        print("EXPORTED:", target.name, flush=True)
 
-print("BPLAN OUTPUT NORMALIZATION WEIGHTS: READY")
-print("ORIGINAL DS AND CTA: UNCHANGED")
+print("BPLAN NORMALIZATION WEIGHTS: READY", flush=True)
+print("ORIGINAL DS AND CTA: UNCHANGED", flush=True)
 PY

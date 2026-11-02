@@ -2,53 +2,53 @@ set -e
 
 ROOT=/application1/sajjna8/rt-pzai-bplan-v1
 EXT="$ROOT/artifacts/v1.113-max/maxserve_bplan_extension"
-WEIGHTS="$EXT/bplan_helper_weights_stage/grecbase_integration_weights"
 
-test -d "$WEIGHTS" || { echo "STOP: weight directory missing"; exit 1; }
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+ext = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
+file = ext / "bplan_max_dev/att_pooling_max.py"
+weights = ext / "bplan_helper_weights_stage/grecbase_integration_weights"
+
+assert file.is_file() and weights.is_dir()
+
+source = file.read_text()
+prefix = re.escape(str(weights) + "/")
+pattern = re.compile(r"""(['"])""" + prefix + r"""([^'"]+\.npy)\1""")
+
+names = [m.group(2) for m in pattern.finditer(source)]
+assert "att_pooling.norm2.g.npy" in names, "STOP: expected path not found"
+
+for name in names:
+    assert (weights / name).is_file(), f"STOP: missing weight {name}"
+
+def replace(match):
+    name = match.group(2)
+    return (
+        'str(__import__("pathlib").Path(__file__).resolve().parents[1]'
+        ' / "bplan_helper_weights_stage"'
+        ' / "grecbase_integration_weights"'
+        f' / "{name}")'
+    )
+
+updated, count = pattern.subn(replace, source)
+compile(updated, str(file), "exec")
+file.write_text(updated)
+
+print("BPLAN POOLING PORTABLE PATHS: PASS")
+print("REFERENCES FIXED:", count)
+print("ORIGINAL DS AND CTA: UNCHANGED")
+PY
 
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never --network=none \
   -v "$ROOT:/workspace:ro" \
-  -v "$WEIGHTS:/export:rw" \
   -w /workspace \
   -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local - <<'PY'
-import torch
-import numpy as np
-from pathlib import Path
-
-checkpoint = Path("/workspace/artifacts/v1.113/core-artifact/base_model.pt")
-state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-state = state.get("state_dict", state)
-
-weights = {
-    name: tensor.detach().cpu().numpy()
-    for name, tensor in state.items()
-    if name.startswith("att_pooling.")
-    and isinstance(tensor, torch.Tensor)
-}
-
-assert "att_pooling.norm2.g" in weights, \
-    "STOP: required pooling tensor missing in original checkpoint"
-
-exported = 0
-
-for name, values in weights.items():
-    target = Path("/export") / (name + ".npy")
-
-    if target.exists():
-        assert np.array_equal(np.load(target), values), \
-            f"STOP: existing tensor differs: {name}"
-    else:
-        with target.open("xb") as file:
-            np.save(file, values)
-        exported += 1
-
-print("BPLAN POOLING WEIGHTS: PASS", len(weights), flush=True)
-print("NEWLY EXPORTED:", exported, flush=True)
-
 from bplan_max_dev.bplan_max_model_adapter import BPlanMAXModel
 
 print("BPLAN REAL MAX INITIALIZATION: START", flush=True)

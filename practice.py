@@ -6,14 +6,13 @@ podman --root /application1/podman/storage \
   --entrypoint python3 \
   -v "$REPO:$REPO:ro" -w "$REPO" \
   localhost/cta-max-faiss:local -B - <<'PY'
-import sys, types, torch, traceback
+import sys, types, torch, numpy as np, traceback
 from pathlib import Path
 
 try:
     root = Path("artifacts/v1.113-max/maxserve_bplan_extension").resolve()
     dev = root / "bplan_max_dev"
 
-    # Temporary BPLAN-local import compatibility.
     pkg = types.ModuleType("cta_max")
     pkg.__path__ = [str(dev)]
     sys.modules["cta_max"] = pkg
@@ -21,41 +20,60 @@ try:
 
     from max.driver import CPU
     from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
-    from run_real_sanity_input_adapter import build_real_inputs
-
-    data = torch.load(root / "bplan_neural_inputs.pt",
-                      map_location="cpu", weights_only=True)
-
-    if "task_in" not in data and "tasks_in" in data:
-        data = {**data, "task_in": data["tasks_in"]}
-
-    labels, arrays = build_real_inputs(model_in=data)
-    graph = build_grecbase_fusion_graph_order_correct(
-        DeviceRef.from_device(CPU())
+    from max.engine import InferenceSession
+    from grecbase_fusion_full_head_72_max import (
+        build_grecbase_fusion_graph_order_correct
     )
 
-    assert len(labels) == len(arrays) == len(graph.inputs) == 72
+    state = torch.load(
+        "artifacts/v1.113/core-artifact/base_model.pt",
+        map_location="cpu", weights_only=True
+    )
+    if "state_dict" in state:
+        state = state["state_dict"]
 
-    mismatches = []
-    for i, (label, array, inp) in enumerate(
-        zip(labels, arrays, graph.inputs)
-    ):
-        actual = tuple(array.shape)
-        expected = tuple(int(x) for x in inp.type.shape)
-        if actual != expected:
-            mismatches.append((i, label, actual, expected))
+    registry = {}
 
-    for item in mismatches:
-        print("MISMATCH:", item)
+    def register(name, value):
+        if name in registry:
+            assert np.array_equal(registry[name], value), (
+                f"Conflicting weight: {name}"
+            )
+        else:
+            registry[name] = value
 
-    assert not mismatches, f"{len(mismatches)} input mismatches"
+    for name, tensor in state.items():
+        if not isinstance(tensor, torch.Tensor):
+            continue
 
-    print("BPLAN REAL MAX INPUTS: PASS (72/72)")
+        value = tensor.detach().cpu().contiguous().numpy()
+        register(name, value)
+
+        if name.endswith(".weight"):
+            register(name[:-7], value)
+
+        if name.startswith("sequence_transformer.ptransformer.") and ".fn." in name:
+            alias = name.replace(".fn.", ".", 1)
+            register(alias, value)
+            if alias.endswith(".weight"):
+                register(alias[:-7], value)
+
+    device = CPU()
+    graph = build_grecbase_fusion_graph_order_correct(
+        DeviceRef.from_device(device)
+    )
+
+    assert len(graph.inputs) == 72
+    print("BPLAN CORRECTED GRAPH: PASS", flush=True)
+
+    session = InferenceSession(devices=[device])
+    model = session.load(graph, weights_registry=registry)
+
+    print("BPLAN CORRECTED CPU COMPILE: PASS", flush=True)
     print("ORIGINAL DS AND CTA: UNCHANGED")
 
 except Exception:
-    print("BPLAN REAL MAX INPUTS: FAILED")
+    print("BPLAN CORRECTED CPU COMPILE: FAILED", flush=True)
     traceback.print_exc()
     sys.exit(1)
 PY

@@ -1,12 +1,11 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev
 
-echo "=== SAVED BPLAN PARITY INPUTS ==="
-find /bplan_out "$ROOT" -maxdepth 4 -type f \
-  \( -name '*neural_inputs.pt' -o \
-     -name '*neural_output.pt' -o \
-     -name '*baseline.json' \) 2>/dev/null
+echo "=== CURRENT MAX INPUT ADAPTER ==="
+sed -n '1,125p' "$ROOT/run_real_sanity_input_adapter.py"
 
-echo "=== MAX INPUT ADAPTERS ==="
-grep -RnE --include='*.py' \
-'def .*inputs|def .*infer_max|def .*pack|bplan_neural_inputs|bplan_pytorch_neural_output' \
-"$ROOT/bplan_max_dev" | head -35
+echo "=== MAX INFERENCE INPUT CONVERSION ==="
+grep -nE 'def infer_max_live|build_real_inputs|runtime_inputs|graph.inputs|model.execute' \
+"$ROOT/run_live_max_inference.py"
+
+echo "=== BPLAN GRAPH INPUT DEFINITIONS ==="
+sed -n '15,28p' "$ROOT/grecbase_fusion_full_head_72_max.py"

@@ -1,45 +1,44 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  exec -i bplan-debug /opt/venv/bin/python - <<'PY'
-import numpy as np
+python3 - <<'PY'
+import ast
 from pathlib import Path
 
-root = Path("/tmp")
-pt = root / "bplan_pytorch_scores.npz"
-mx = root / "bplan_max_scores.npz"
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
+ext = root / "artifacts/v1.113-max/maxserve_bplan_extension"
 
-if not pt.exists() or not mx.exists():
-    print("STOP: Saved numerical scores missing")
-    raise SystemExit(1)
+files = {
+    "Native worker adapter": ext / "bplan_max_dev/bplan_native_worker_adapter.py",
+    "MAX model adapter": ext / "bplan_max_dev/bplan_max_model_adapter.py",
+    "Native scheduler": ext / "bplan_native_serve_dev/bplan_native_scheduler.py",
+    "Original DS pipeline": root / "artifacts/v1.113/core-artifact/pipeline.py",
+}
 
-with np.load(pt) as a, np.load(mx) as b:
-    print("=== BPLAN NUMERICAL PARITY ===")
+for name, path in files.items():
+    print(f"\n=== {name} ===")
+    if not path.is_file():
+        print("FILE MISSING:", path)
+        continue
 
-    if a.files != b.files:
-        print("FAIL: Model call IDs differ", a.files, b.files)
-        raise SystemExit(1)
+    tree = ast.parse(path.read_text())
+    methods = {
+        node.name: node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
-    passed = bool(a.files)
+    for method in (
+        "predict_batch", "predict", "__call__",
+        "run_iteration", "inference_batch", "predict_raw"
+    ):
+        if method in methods:
+            print(f"{method}: line {methods[method]}")
 
-    for key in a.files:
-        x, y = a[key], b[key]
-        print("MODEL CALL:", key)
-        print("PYTORCH SHAPE:", x.shape)
-        print("MAX SHAPE:", y.shape)
+    if name == "Native scheduler":
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if any(s in line for s in (
+                "max_items_per_iteration", "predict_batch",
+                "len(active)", "batch_fn"
+            )):
+                print(f"{number}: {line.strip()[:140]}")
 
-        if x.shape != y.shape:
-            print("SHAPE MATCH: FAIL")
-            passed = False
-            continue
-
-        finite = bool(np.isfinite(x).all() and np.isfinite(y).all())
-        diff = float(np.max(np.abs(x.astype(np.float64) - y.astype(np.float64))))
-        close = finite and bool(np.allclose(x, y, rtol=1e-4, atol=1e-3))
-
-        print("FINITE:", finite)
-        print("MAX ABS DIFFERENCE:", diff)
-        print("ALLCLOSE:", close)
-        passed &= close
-
-    print("BPLAN NUMERICAL PARITY:", "PASS" if passed else "FAIL")
+print("\nREAD-ONLY CHECK COMPLETE")
 PY

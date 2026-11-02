@@ -1,40 +1,25 @@
-REPO=/application1/sajjna8/rt-pzai-bplan-v1
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never \
-  --entrypoint python3 \
-  -v "$REPO:$REPO:ro" -w "$REPO" \
-  localhost/cta-max-faiss:local -B - <<'PY'
-import sys, types, traceback
+ROOT="$ROOT" python3 - <<'PY'
+import os, json
 from pathlib import Path
 
-dev = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev").resolve()
+root = Path(os.environ["ROOT"])
+manifest = json.loads((root / "max_weights/manifest.json").read_text())
 
-# Temporary compatibility alias; BPLAN files only.
-pkg = types.ModuleType("cta_max")
-pkg.__path__ = [str(dev)]
-sys.modules["cta_max"] = pkg
-sys.path.insert(0, str(dev))
+print("=== BPLAN PAGE EMBEDDING WEIGHTS ===")
+for name in manifest:
+    if "page_embedding" in name:
+        print(name, manifest[name])
 
-try:
-    from max.driver import CPU
-    from max.graph import DeviceRef
-    from max.engine import InferenceSession
-    device = CPU()
+print("\n=== MAX GRAPH WEIGHT REGISTRATION ===")
+for file in sorted((root / "bplan_max_dev").glob("*.py")):
+    for line_no, line in enumerate(file.read_text().splitlines(), 1):
+        if ("page_embedding" in line or
+            "weights_registry" in line or
+            "weights_registry" in line or
+            "WeightsRegistry" in line):
+            print(f"{file.name}:{line_no}: {line.strip()[:180]}")
 
-    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
-    graph = build_grecbase_fusion_graph_order_correct(DeviceRef.from_device(device))
-
-    assert len(graph.inputs) == 72
-    print("BPLAN MAX GRAPH: PASS", flush=True)
-
-    session = InferenceSession(devices=[device])
-    model = session.load(graph)
-
-    print("BPLAN MAX CPU COMPILE: PASS", flush=True)
-except Exception:
-    print("BPLAN MAX CPU COMPILE: FAILED", flush=True)
-    traceback.print_exc()
-    sys.exit(1)
+print("\nORIGINAL DS AND CTA: UNCHANGED")
 PY

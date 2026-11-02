@@ -1,30 +1,24 @@
 python3 - <<'PY'
 from pathlib import Path
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact")
-p = root / "pipeline.py"
+p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/pipeline.py")
 lines = p.read_text(errors="replace").splitlines()
 
-print("=== MYPLAN FALLBACK AND INFERENCE BRANCH ===")
-for n in range(3996, min(4100, len(lines)) + 1):
-    print(f"{n}: {lines[n-1][:170]}")
+sections = [
+    ("POSTPROCESS ENTRY", 2608, 2645),
+    ("DISNEY / TIER RECOMMENDATIONS", 3200, 3300),
+    ("FALLBACK TO FINAL RESPONSE", 3996, 4055),
+]
 
-print("\n=== EXTRA RECOMMENDATION SOURCES ===")
-terms = (
-    "Disney Bundle Basic",
-    "DISNEY+",
-    "Disney Bundle",
-    "tierGroup",
-    "CURRENT_PROPOSITION_LIST",
-    "DEFAULT_PROPOSITION_LIST_BPLAN",
-)
-
-for file in sorted(root.rglob("*.py")):
-    if ".ipynb_checkpoints" in str(file):
-        continue
-    for n, line in enumerate(file.read_text(errors="replace").splitlines(), 1):
-        if any(term in line for term in terms):
-            print(f"{file.relative_to(root)}:{n}: {line.strip()[:160]}")
-            if n > 5000:
-                break
+for title, start, end in sections:
+    print(f"\n=== {title} ===")
+    for n in range(start, min(end, len(lines)) + 1):
+        line = lines[n-1]
+        if title == "DISNEY / TIER RECOMMENDATIONS":
+            if not any(x in line.lower() for x in (
+                "disney", "tiergroup", "perk", "append",
+                "extend", "3399", "4346", "4347", "4348"
+            )):
+                continue
+        print(f"{n}: {line[:180]}")
 PY

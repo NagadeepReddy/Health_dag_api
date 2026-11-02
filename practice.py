@@ -1,45 +1,61 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev
+REPO=/application1/sajjna8/rt-pzai-bplan-v1
 
-ROOT="$ROOT" python3 - <<'PY'
-import os
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --entrypoint python3 \
+  -v "$REPO:$REPO:ro" -w "$REPO" \
+  localhost/cta-max-faiss:local -B - <<'PY'
+import sys, types, torch, traceback
 from pathlib import Path
 
-file = Path(os.environ["ROOT"]) / "grecbase_fusion_full_head_72_max.py"
-original = file.read_text()
-lines = original.splitlines(keepends=True)
+try:
+    root = Path("artifacts/v1.113-max/maxserve_bplan_extension").resolve()
+    dev = root / "bplan_max_dev"
 
-matches = [i for i, line in enumerate(lines)
-           if "graph = Graph(" in line]
-assert len(matches) == 1, "STOP: unexpected graph definition"
+    # Temporary BPLAN-local import compatibility.
+    pkg = types.ModuleType("cta_max")
+    pkg.__path__ = [str(dev)]
+    sys.modules["cta_max"] = pkg
+    sys.path.insert(0, str(dev))
 
-i = matches[0]
-line = lines[i]
+    from max.driver import CPU
+    from max.graph import DeviceRef
+    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
+    from run_real_sanity_input_adapter import build_real_inputs
 
-marker = "TensorType(DType.int64, [1, 5]"
-assert line.count(marker) == 1, "STOP: NLP boundary not found"
+    data = torch.load(root / "bplan_neural_inputs.pt",
+                      map_location="cpu", weights_only=True)
 
-left, right = line.split(marker, 1)
+    if "task_in" not in data and "tasks_in" in data:
+        data = {**data, "task_in": data["tasks_in"]}
 
-old_jet = "[1, 20], device=device) for _ in range(3)"
-new_jet = "[1, 50], device=device) for _ in range(3)"
+    labels, arrays = build_real_inputs(model_in=data)
+    graph = build_grecbase_fusion_graph_order_correct(
+        DeviceRef.from_device(CPU())
+    )
 
-assert left.count(old_jet) == 1, "STOP: JET pattern differs"
-assert right.count("[1, 50]") == 3, "STOP: sequence pattern differs"
+    assert len(labels) == len(arrays) == len(graph.inputs) == 72
 
-left = left.replace(old_jet, new_jet)
-right = right.replace("[1, 50]", "[1, 20]")
+    mismatches = []
+    for i, (label, array, inp) in enumerate(
+        zip(labels, arrays, graph.inputs)
+    ):
+        actual = tuple(array.shape)
+        expected = tuple(int(x) for x in inp.type.shape)
+        if actual != expected:
+            mismatches.append((i, label, actual, expected))
 
-lines[i] = left + marker + right
-updated = "".join(lines)
-compile(updated, str(file), "exec")
+    for item in mismatches:
+        print("MISMATCH:", item)
 
-backup = file.with_suffix(".py.before_bplan_input_order_fix")
-assert not backup.exists(), "STOP: backup already exists"
+    assert not mismatches, f"{len(mismatches)} input mismatches"
 
-backup.write_text(original)
-file.write_text(updated)
+    print("BPLAN REAL MAX INPUTS: PASS (72/72)")
+    print("ORIGINAL DS AND CTA: UNCHANGED")
 
-print("BPLAN JET INPUTS: PASS (50)")
-print("BPLAN SEQUENCE INPUTS: PASS (20)")
-print("ORIGINAL DS AND CTA: UNCHANGED")
+except Exception:
+    print("BPLAN REAL MAX INPUTS: FAILED")
+    traceback.print_exc()
+    sys.exit(1)
 PY

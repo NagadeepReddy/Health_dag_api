@@ -1,24 +1,13 @@
-CTA=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031
-BPLAN=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
+CTA=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
 
-echo "=== CTA NATIVE SERVING COMPONENTS ==="
-find "$CTA" -type f \
-  \( -name 'cta_native_launcher.py' \
-  -o -name 'cta_native_scheduler_factory.py' \
-  -o -name 'cta_native_scheduler.py' \
-  -o -name 'cta_worker_adapter.py' \
-  -o -name 'cta_router.py' \) \
-  -print
+echo "=== WORKER ADAPTER ==="
+grep -n -A 22 -E 'def (__init__|predict|predict_batch)\(' \
+  "$CTA/cta_worker_adapter.py"
 
-echo "=== NATIVE SERVING INTERFACES ==="
-find "$CTA" -type f \
-  \( -name 'cta_native_launcher.py' \
-  -o -name 'cta_native_scheduler_factory.py' \
-  -o -name 'cta_worker_adapter.py' \
-  -o -name 'cta_router.py' \) \
-  -exec grep -HnE '^(class |def |    def )|register|SchedulerFactory' {} \; \
-  | head -90
+echo "=== SCHEDULER FACTORY ==="
+grep -n -A 18 -E 'def |class ' \
+  "$CTA/cta_native_scheduler_factory.py"
 
-echo "=== BPLAN ISOLATED ADAPTER ==="
-test -f "$BPLAN/bplan_max_dev/bplan_max_model_adapter.py" && \
-echo "BPLAN MODEL ADAPTER: PRESENT"
+echo "=== ROUTER REGISTRATION ==="
+grep -n -A 12 -E 'register|def |class ' \
+  "$CTA/cta_router.py" | head -100

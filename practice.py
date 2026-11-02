@@ -1,1 +1,1 @@
-scp -o StrictHostKeyChecking=accept-new sajjna8@10.119.98.21:/vzwhome/sajjna8/bplan_test_sample_for_postman.json "$env:USERPROFILE\Downloads\bplan_test_sample_for_postman.json"
+ssh -N -L 18768:127.0.0.1:18768 sajjna8@10.119.98.21

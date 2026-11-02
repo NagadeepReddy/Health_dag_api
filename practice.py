@@ -2,76 +2,46 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-files = {
-    "PYTORCH": Path("/tmp/bplan_pytorch_myplan.json"),
-    "MAX": Path("/tmp/bplan_myplan_trace.json"),
-}
-
-def load(p):
-    obj = json.loads(p.read_text())
+def load(path):
+    obj = json.loads(Path(path).read_text())
     data = obj["jsonData"]
     if isinstance(data, str):
         data = json.loads(data)
     return data["prediction"]["ctaList"]
 
-pt = load(files["PYTORCH"])
-mx = load(files["MAX"])
+pt = load("/tmp/bplan_pytorch_myplan.json")
+mx = load("/tmp/bplan_myplan_trace.json")
 
-print("=== BPLAN ORDER-INDEPENDENT BUSINESS PARITY ===")
+def canonical(items, ignore_order=False):
+    cleaned = []
+    for item in items:
+        x = dict(item)
+        if ignore_order:
+            x.pop("order", None)
+        cleaned.append(json.dumps(x, sort_keys=True))
+    return sorted(cleaned)
 
-all_pass = True
+print("=== BPLAN BUSINESS PARITY ===")
 
-for i, (a, b) in enumerate(zip(pt, mx)):
+for i in range(max(len(pt), len(mx))):
+    a = pt[i] if i < len(pt) else []
+    b = mx[i] if i < len(mx) else []
+
+    exact = canonical(a) == canonical(b)
+    without_order = canonical(a, True) == canonical(b, True)
+
     print(f"\nLIST {i}")
+    print("FULL RECORDS MATCH IGNORING POSITION:", exact)
+    print("MATCH IGNORING ORDER FIELD:", without_order)
 
-    def index(items):
-        out = {}
-        for item in items:
-            key = str(item.get("propositionId"))
-            out.setdefault(key, []).append(item)
-        return out
+    if i == 3:
+        print("\nPYTORCH PLAN RECORDS:")
+        for item in a:
+            print(json.dumps(item, sort_keys=True))
 
-    x, y = index(a), index(b)
+        print("\nMAX PLAN RECORDS:")
+        for item in b:
+            print(json.dumps(item, sort_keys=True))
 
-    print("COUNTS:", len(a), len(b))
-    print("SAME IDS:", sorted(x) == sorted(y))
-
-    differences = []
-
-    for key in sorted(x.keys() | y.keys()):
-        if key not in x or key not in y:
-            differences.append((key, "missing recommendation"))
-            continue
-
-        if len(x[key]) != len(y[key]):
-            differences.append((key, "duplicate count differs"))
-            continue
-
-        aa = sorted(x[key], key=lambda v: json.dumps(v, sort_keys=True))
-        bb = sorted(y[key], key=lambda v: json.dumps(v, sort_keys=True))
-
-        for left, right in zip(aa, bb):
-            for field in sorted(left.keys() | right.keys()):
-                if left.get(field) != right.get(field):
-                    differences.append((
-                        key, field,
-                        left.get(field, "<MISSING>"),
-                        right.get(field, "<MISSING>")
-                    ))
-
-    print("FIELD DIFFERENCES:", len(differences))
-    for d in differences[:12]:
-        print(" ", d)
-
-    passed = not differences and len(a) == len(b)
-    all_pass &= passed
-    print("FIELDS MATCH:", passed)
-
-print("\nORDER-INDEPENDENT BUSINESS PARITY:",
-      "PASS" if all_pass else "DIFFERENT")
-
-print("EXACT ORDER PARITY:",
-      "PASS" if pt == mx else "DIFFERENT")
-
-print("FULL NUMERICAL MODEL PARITY: NOT YET VERIFIED")
+print("\nCHECK COMPLETE — ORIGINAL FILES UNCHANGED")
 PY

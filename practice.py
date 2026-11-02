@@ -1,17 +1,11 @@
-SAMPLE=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json
+P="podman --root /application1/podman/storage --runroot /run/containers/storage"
 
-if ss -ltn | grep -q ':18768 '; then
-  echo "BPLAN LISTENER: PASS"
-  curl -sS --max-time 120 \
-    -o /tmp/bplan_response.json \
-    -w 'BPLAN HTTP STATUS: %{http_code}\n' \
-    -X POST http://127.0.0.1:18768/bplan/predict \
-    -H 'Content-Type: application/json' \
-    --data-binary @"$SAMPLE"
-  if [ -f /tmp/bplan_response.json ]; then
-    head -c 1000 /tmp/bplan_response.json
-    echo
-  fi
+ID=$($P ps --no-trunc --format '{{.ID}} {{.Command}}' | awk '/bplan_native_launcher/ {print $1; exit}')
+
+if [ -z "$ID" ]; then
+  echo "BPLAN CONTAINER NOT RUNNING"
 else
-  echo "BPLAN LISTENER: NOT RUNNING"
+  echo "BPLAN CONTAINER: $ID"
+  $P logs --tail 400 "$ID" 2>&1 | grep -Ei \
+    'BPLAN|scheduler|queue|factory|response|socket|predict|POST|traceback|error|exception' | tail -100
 fi

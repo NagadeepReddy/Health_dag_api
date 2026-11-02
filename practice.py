@@ -1,5 +1,1 @@
-http://127.0.0.1:18768/bplan/predict
-
-Test-Path "$env:USERPROFILE\Downloads\bplan_test_sample_for_postman.json"
-
-Test-Path "$env:USERPROFILE\bplan_test_sample_for_postman.json"
+podman --root /application1/podman/storage --runroot /run/containers/storage logs --tail 200 bplan-debug 2>&1 | grep -E 'BPLAN REAL MAX|BPLAN TRACE|BPLAN RESPONSE|POST /bplan/predict|ERROR|Traceback' | tail -40

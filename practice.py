@@ -22,8 +22,10 @@ sys.path.insert(0, str(dev))
 from run_real_sanity_input_adapter import build_real_inputs
 from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
 
-data = torch.load(root / "bplan_neural_inputs.pt",
-                  map_location="cpu", weights_only=True)
+data = torch.load(
+    root / "bplan_neural_inputs.pt",
+    map_location="cpu", weights_only=True
+)
 data = dict(data)
 if "task_in" not in data and "tasks_in" in data:
     data["task_in"] = data["tasks_in"]
@@ -33,24 +35,32 @@ graph = build_grecbase_fusion_graph_order_correct(
     DeviceRef.from_device(CPU())
 )
 
-assert len(arrays) == len(graph.inputs) == 72
+assert len(labels) == len(arrays) == len(graph.inputs) == 72
 
-mismatches = []
-for i, (label, arr, inp) in enumerate(zip(labels, arrays, graph.inputs)):
-    actual = np.asarray(arr)
-    expected_dtype = str(inp.type.dtype).lower()
-    if actual.dtype.name != expected_dtype:
-        exact = None
-        if actual.dtype == np.int64 and expected_dtype == "float32":
-            exact = bool(np.array_equal(
-                actual, actual.astype(np.float32).astype(np.int64)
-            ))
-        mismatches.append((i, label, actual.dtype.name,
-                           expected_dtype, exact))
+converted = []
+for i, (label, value, inp) in enumerate(zip(labels, arrays, graph.inputs)):
+    source = np.asarray(value)
+    expected = np.dtype(str(inp.type.dtype).split(".")[-1])
 
-for item in mismatches:
-    print("DTYPE MISMATCH:", item)
+    assert tuple(source.shape) == tuple(int(d) for d in inp.type.shape)
 
-print("TOTAL DTYPE MISMATCHES:", len(mismatches))
+    if source.dtype != expected:
+        assert source.dtype == np.dtype("int64")
+        assert expected == np.dtype("float32")
+        target = source.astype(expected)
+
+        assert np.array_equal(source, target.astype(source.dtype)), (
+            f"STOP: lossy conversion at {i}: {label}"
+        )
+
+        print(f"CONVERTED {i}: {label} int64 -> float32")
+        converted.append(label)
+
+assert len(converted) == 12, (
+    f"STOP: expected 12 wide-feature conversions, got {len(converted)}"
+)
+
+print("BPLAN INPUT DTYPES: PASS (72/72)")
+print("WIDE FEATURES CONVERTED:", len(converted))
 print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

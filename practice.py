@@ -1,24 +1,37 @@
 python3 - <<'PY'
 from pathlib import Path
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
-ext = root / "artifacts/v1.113-max/maxserve_bplan_extension"
-
-sections = [
-    (ext / "bplan_max_dev/bplan_max_model_adapter.py", 120, 180),
-    (ext / "bplan_max_dev/bplan_native_worker_adapter.py", 1, 50),
-    (ext / "bplan_native_serve_dev/bplan_native_scheduler.py", 15, 125),
-    (root / "artifacts/v1.113/core-artifact/pipeline.py", 2490, 2580),
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
+files = [
+    root / "bplan_max_dev/grecbase_fusion_full_head_72_max.py",
+    root / "bplan_max_dev/run_real_sanity_input_adapter.py",
+    root / "bplan_max_dev/bplan_max_model_adapter.py",
+    root / "bplan_native_serve_dev/bplan_native_worker_registration.py",
 ]
 
-for path, start, end in sections:
-    print(f"\n=== {path.name}: {start}-{end} ===")
-    if not path.is_file():
-        print("FILE MISSING")
-        continue
-    lines = path.read_text().splitlines()
-    for n in range(start, min(end, len(lines)) + 1):
-        print(f"{n}: {lines[n-1][:160]}")
+terms = (
+    "def build_", "def build_real_inputs", "TensorType(",
+    "Graph(", "reshape(", "broadcast(", "max_items_per_iteration",
+    "batch_size", "batch_dim", "predict_batch",
+    "shape == ", "shape =", "[1,", "(1,"
+)
 
-print("\nREAD-ONLY INSPECTION COMPLETE")
+for path in files:
+    print(f"\n=== {path.name} ===")
+    if not path.is_file():
+        print("FILE NOT FOUND")
+        continue
+
+    lines = path.read_text().splitlines()
+    matches = [
+        (i, line.strip())
+        for i, line in enumerate(lines, 1)
+        if any(term in line for term in terms)
+    ]
+
+    for number, line in matches[:90]:
+        print(f"{number}: {line[:180]}")
+    print("MATCHES:", len(matches))
+
+print("\nBPLAN BATCH-2 GRAPH INSPECTION COMPLETE")
 PY

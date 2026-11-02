@@ -1,8 +1,31 @@
-B=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
-C=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
+python3 - <<'PY'
+from pathlib import Path
+import ast
 
-echo "=== BPLAN WORKER STARTUP ==="
-nl -ba "$B/bplan_native_launcher.py" | sed -n '30,115p'
+p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_native_launcher.py")
+s = p.read_text()
 
-echo "=== WORKING CTA WORKER STARTUP ==="
-nl -ba "$C/cta_spawn_worker.py" | sed -n '1,130p'
+anchor = '    print("BPLAN NATIVE MAX LAUNCHER: REGISTERED", flush=True)'
+patch = '''    # Match the working CTA headless-worker startup wiring.
+    from max.serve import headless_workers
+    if getattr(headless_workers, "start_model_worker", None) is original_spawn:
+        headless_workers.start_model_worker = bplan_spawn
+    assert headless_workers.start_model_worker is bplan_spawn
+    print("BPLAN HEADLESS WORKER: WIRED", flush=True)
+
+'''
+
+assert s.count(anchor) == 1, "STOP: launcher structure unexpected"
+if "BPLAN HEADLESS WORKER: WIRED" not in s:
+    updated = s.replace(anchor, patch + anchor)
+    ast.parse(updated)
+    backup = p.with_suffix(".py.before_headless_fix")
+    if not backup.exists():
+        backup.write_text(s)
+    p.write_text(updated)
+
+ast.parse(p.read_text())
+print("BPLAN HEADLESS WORKER PATCH: PASS")
+print("BPLAN LAUNCHER SYNTAX: PASS")
+print("ORIGINAL DS AND CTA: UNCHANGED")
+PY

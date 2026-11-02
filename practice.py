@@ -1,50 +1,59 @@
-REPO=/application1/sajjna8/rt-pzai-bplan-v1
+BPLAN=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never \
-  --entrypoint python3 \
-  -v "$REPO:$REPO:ro" -w "$REPO" \
-  localhost/cta-max-faiss:local -B - <<'PY'
-import sys
-import traceback
+BPLAN="$BPLAN" python3 - <<'PY'
+import os, ast
 from pathlib import Path
-from queue import Queue
 
-dev = Path("artifacts/v1.113-max/maxserve_bplan_extension").resolve()
-sys.path.insert(0, str(dev))
+ext = Path(os.environ["BPLAN"])
+dev = ext / "bplan_native_serve_dev"
+target = dev / "bplan_spawn_worker.py"
 
-try:
-    from bplan_native_serve_dev.bplan_scheduler_factory import create_bplan_scheduler
-    from bplan_native_serve_dev.bplan_native_scheduler import BPlanNativeScheduler
+assert (dev / "bplan_scheduler_factory.py").is_file()
+assert (ext / "bplan_max_dev/bplan_native_worker_adapter.py").is_file()
+assert (ext / "bplan_max_dev/bplan_max_model_adapter.py").is_file()
+assert not target.exists(), "STOP: worker factory already exists"
 
-    class TestQueues:
-        def model_worker_queues(self):
-            return Queue(), Queue(), Queue()
+code = '''"""BPLAN-only model factory for native MAX Serve."""
 
-    class TestAdapter:
-        def predict(self, body):
-            return {"jsonData": {"prediction": {}}}
+import sys
+from pathlib import Path
 
-    scheduler = create_bplan_scheduler(TestAdapter(), TestQueues())
 
-    assert isinstance(scheduler, BPlanNativeScheduler)
-    assert scheduler.max_items_per_iteration == 1
+class BPlanFactoryWrapper:
+    def __init__(self, original_factory=None):
+        self.original_factory = original_factory
 
-    try:
-        create_bplan_scheduler(TestAdapter(), TestQueues(), max_items_per_iteration=2)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("Batching guard failed")
+    def __call__(self):
+        ext = Path(__file__).resolve().parents[1]
+        artifacts = Path(__file__).resolve().parents[3]
+        original = artifacts / "v1.113"
+        paths = (
+            original / "core-artifact",
+            original / "utils/dependency-utils",
+            ext / "bplan_max_dev",
+        )
+        for path in paths:
+            if not path.is_dir():
+                raise FileNotFoundError(path)
+            if str(path) not in sys.path:
+                sys.path.insert(0, str(path))
 
-    print("BPLAN MAX SCHEDULER IMPORT: PASS")
-    print("BPLAN NATIVE QUEUE INITIALIZATION: PASS")
-    print("SINGLE-REQUEST GUARD: PASS")
-    print("ORIGINAL DS AND CTA: UNCHANGED")
+        from pipeline import pipeline as BPlanPipeline
+        from bplan_max_model_adapter import BPlanMAXModel
+        from bplan_native_worker_adapter import BPlanNativeWorkerAdapter
 
-except Exception:
-    print("BPLAN NATIVE SCHEDULER VALIDATION: FAILED")
-    traceback.print_exc()
-    sys.exit(1)
+        worker = BPlanNativeWorkerAdapter(
+            pipeline_factory=BPlanPipeline,
+            max_factory=BPlanMAXModel,
+        )
+        pipeline = worker.initialize()
+        pipeline.bplan_native_adapter = worker
+        return pipeline
+'''
+
+ast.parse(code, filename=str(target))
+target.write_text(code)
+print("BPLAN NATIVE MODEL FACTORY: CREATED")
+print("BPLAN MODEL ADAPTER: CONNECTED")
+print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

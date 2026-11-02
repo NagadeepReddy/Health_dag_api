@@ -1,32 +1,34 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
+REPO=/application1/sajjna8/rt-pzai-bplan-v1
 
-ROOT="$ROOT" python3 - <<'PY'
-import os
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --entrypoint python3 \
+  -v "$REPO:$REPO:ro" -w "$REPO" \
+  localhost/cta-max-faiss:local -B - <<'PY'
+import sys, types, traceback
 from pathlib import Path
 
-root = Path(os.environ["ROOT"])
-file = root / "bplan_max_dev/grecbase_get_path_max.py"
-weights = root / "max_weights"
+dev = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev").resolve()
 
-for name in ("remove_tasks_dense1.weight.npy",
-             "remove_tasks_dense1.bias.npy"):
-    assert (weights / name).is_file(), f"Missing: {name}"
+# Temporary import compatibility only; no CTA model is loaded.
+pkg = types.ModuleType("cta_max")
+pkg.__path__ = [str(dev)]
+sys.modules["cta_max"] = pkg
+sys.path.insert(0, str(dev))
 
-original = file.read_text()
-old = 'WEIGHTS = Path(__file__).parent / "get_path_weights"'
-new = 'WEIGHTS = Path(__file__).resolve().parent.parent / "max_weights"'
+try:
+    from max.driver import CPU
+    from max.graph import DeviceRef
+    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
 
-assert original.count(old) == 1, "STOP: Check actual WEIGHTS definition"
-
-backup = file.with_suffix(".py.before_bplan_weight_fix")
-assert not backup.exists(), "STOP: Backup already exists"
-
-updated = original.replace(old, new)
-compile(updated, str(file), "exec")
-
-backup.write_text(original)
-file.write_text(updated)
-
-print("BPLAN MAX WEIGHT PATH: PASS")
-print("ORIGINAL DS AND CTA: UNCHANGED")
+    graph = build_grecbase_fusion_graph_order_correct(
+        DeviceRef.from_device(CPU())
+    )
+    print("BPLAN MAX GRAPH BUILD: PASS")
+    print("GRAPH INPUTS:", len(graph.inputs))
+except Exception:
+    print("BPLAN MAX GRAPH BUILD: FAILED")
+    traceback.print_exc()
+    sys.exit(1)
 PY

@@ -1,64 +1,72 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
-
-"${P[@]}" exec -i bplan-debug /opt/venv/bin/python - <<'PY'
-import json
-from pathlib import Path
-from pipeline import pipeline
-
-sample = Path("/workspace/artifacts/v1.113/core-artifact/test_samples/test_sample_myplan_bundle.json")
-model = pipeline()
-result = model.predict_raw(json.loads(sample.read_text()))
-
-Path("/tmp/bplan_pytorch_myplan.json").write_text(json.dumps(result))
-print("PYTORCH BASELINE SAVED")
-PY
-
-"${P[@]}" cp \
-  bplan-debug:/tmp/bplan_pytorch_myplan.json \
-  /tmp/bplan_pytorch_myplan.json || exit 1
-
 python3 - <<'PY'
 import json
 from pathlib import Path
 
+pt_path = Path("/tmp/bplan_pytorch_myplan.json")
+mx_path = Path("/tmp/bplan_myplan_trace.json")
+
+if not pt_path.is_file() or not mx_path.is_file():
+    raise SystemExit("STOP: Existing PyTorch or MAX response missing")
+
 def load(path):
-    obj = json.loads(Path(path).read_text())
+    obj = json.loads(path.read_text())
     data = obj["jsonData"]
     if isinstance(data, str):
         data = json.loads(data)
-    return data["prediction"]["ctaList"], obj.get("transactionMetadata", {})
+    return obj, data["prediction"]["ctaList"]
 
-pt, pm = load("/tmp/bplan_pytorch_myplan.json")
-mx, mm = load("/tmp/bplan_myplan_trace.json")
+pt_obj, pt = load(pt_path)
+mx_obj, mx = load(mx_path)
 
-print("\n=== PYTORCH VS MAX PARITY ===")
-print("PYTORCH INFERENCE:", "inference" in pm)
-print("MAX INFERENCE:", "inference" in mm)
+print("=== LIST 1 ORDER ===")
+for label, groups in (("PYTORCH", pt), ("MAX", mx)):
+    print(label, [
+        str(x.get("propositionId"))
+        for x in groups[1]
+    ])
 
-passed = len(pt) == len(mx)
+print("\n=== EXACT BUSINESS DIFFERENCES ===")
+diffs = []
 
-for i in range(max(len(pt), len(mx))):
-    a = pt[i] if i < len(pt) else []
-    b = mx[i] if i < len(mx) else []
+def compare(a, b, path="$"):
+    if type(a) is not type(b):
+        diffs.append((path, a, b))
+    elif isinstance(a, dict):
+        for key in sorted(a.keys() | b.keys()):
+            if key not in a or key not in b:
+                diffs.append((path+"."+str(key),
+                              a.get(key, "<MISSING>"),
+                              b.get(key, "<MISSING>")))
+            else:
+                compare(a[key], b[key], path+"."+str(key))
+    elif isinstance(a, list):
+        if len(a) != len(b):
+            diffs.append((path+".length", len(a), len(b)))
+        for i, (x, y) in enumerate(zip(a, b)):
+            compare(x, y, f"{path}[{i}]")
+    elif a != b:
+        diffs.append((path, a, b))
 
-    ids_a = [x.get("propositionId") for x in a]
-    ids_b = [x.get("propositionId") for x in b]
+compare(pt, mx)
 
-    exact = a == b
-    same_ids = sorted(map(str, ids_a)) == sorted(map(str, ids_b))
+print("DIFFERENCES:", len(diffs))
+for path, a, b in diffs[:25]:
+    print("FIELD:", path)
+    print("  PYTORCH:", str(a)[:150])
+    print("  MAX:    ", str(b)[:150])
 
-    print(f"\nLIST {i}")
-    print("PYTORCH COUNT:", len(a))
-    print("MAX COUNT:", len(b))
-    print("EXACT MATCH:", exact)
-    print("SAME IDS:", same_ids)
-    print("SAME ORDER:", ids_a == ids_b)
-
-    passed &= exact
-
-print("\nBUSINESS PARITY:", "PASS" if passed else "DIFFERENT")
-print("FULL MODEL PARITY:",
-      "NOT TESTED — FALLBACK" if "inference" not in pm and "inference" not in mm
-      else "REQUIRES NUMERICAL VALIDATION")
+print("\n=== INFERENCE METADATA ===")
+for label, obj in (("PYTORCH", pt_obj), ("MAX", mx_obj)):
+    meta = obj.get("transactionMetadata", {})
+    print(label, "KEYS:",
+          list(meta) if isinstance(meta, dict) else type(meta).__name__)
+    if isinstance(meta, dict):
+        print("INFERENCE:", str(meta.get("inference", "<ABSENT>"))[:500])
 PY
+
+echo "=== MAX EXECUTION MARKERS ==="
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  logs --tail 1000 bplan-debug 2>&1 |
+  grep -E 'BPLAN REAL MAX EXECUTION (START|PASS)|BPLAN RESPONSE ID MATCH' |
+  tail -15

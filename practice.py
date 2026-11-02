@@ -1,18 +1,17 @@
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1
 P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-echo "=== ACTUAL HTTP SERVER ==="
-ss -lntp '( sport = :18768 )'
+echo "=== REAL BPLAN HTTP REQUEST ==="
+curl -sS --max-time 30 \
+  -o /tmp/bplan_http_result.json \
+  -w 'HTTP STATUS: %{http_code}\nTIME: %{time_total}s\n' \
+  -X POST http://127.0.0.1:18768/bplan/predict \
+  -H 'Content-Type: application/json' \
+  --data-binary @"$ROOT/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json"
 
-echo "=== CONTAINER PROCESS IDENTITIES ==="
-for name in $("${P[@]}" ps -a --format '{{.Names}}' | grep -i bplan); do
-  echo "CONTAINER: $name"
-  "${P[@]}" inspect --format 'PID={{.State.Pid}} STATUS={{.State.Status}} STARTED={{.State.StartedAt}}' "$name"
-done
+echo "=== RESPONSE ==="
+head -c 1200 /tmp/bplan_http_result.json 2>/dev/null
+echo
 
-echo "=== SERVER PROCESS ==="
-PID=$(ss -lntp '( sport = :18768 )' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
-if [ -n "$PID" ]; then
-  ps -fp "$PID"
-  tr '\0' ' ' < "/proc/$PID/cmdline"
-  echo
-fi
+echo "=== ACTUAL BPLAN CONTAINER LOGS ==="
+"${P[@]}" logs --tail 120 bplan-debug 2>&1 | tail -100

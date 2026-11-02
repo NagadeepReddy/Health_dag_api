@@ -1,38 +1,64 @@
-python3 - <<'PY'
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1
+SAMPLES="$ROOT/artifacts/v1.113/core-artifact/test_samples"
+INPUT="$SAMPLES/test_sample_myplan_bundle.json"
+EXPECTED="$SAMPLES/test_sample_myplan_bundle_output.json"
+ACTUAL=/tmp/bplan_bundle_max_result.json
+
+test -f "$INPUT" && test -f "$EXPECTED" || { echo "STOP: Test files missing"; exit 1; }
+
+echo "=== BPLAN MAX BUSINESS OUTPUT TEST ==="
+curl -sS --max-time 180 \
+  -X POST http://127.0.0.1:18768/bplan/predict \
+  -H 'Content-Type: application/json' \
+  --data-binary @"$INPUT" \
+  -o "$ACTUAL" \
+  -w 'HTTP STATUS: %{http_code}\nTIME: %{time_total}s\n'
+
+echo "=== EXPECTED VS MAX RESPONSE ==="
+python3 - "$EXPECTED" "$ACTUAL" <<'PY'
+import json, sys
 from pathlib import Path
-import json
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
-samples = root / "artifacts/v1.113/core-artifact/test_samples"
+def load(path):
+    return json.loads(Path(path).read_text())
 
-print("=== ORIGINAL BPLAN TEST FILES ===")
-for p in sorted(samples.glob("*.json")):
-    print(p.name)
+expected = load(sys.argv[1])
+actual = load(sys.argv[2])
 
-print("\n=== AVAILABLE PROJECTION PARITY DATA ===")
-for name in (
-    "bplan_transfer_input.npy",
-    "bplan_transfer_weight.npy",
-    "bplan_transfer_reference.npy"
-):
-    p = Path("/bplan_out") / name
-    print(name, "FOUND" if p.is_file() else "MISSING")
+def business(obj):
+    data = obj.get("jsonData", obj)
+    if isinstance(data, str):
+        return json.loads(data)
+    return data
 
-print("\n=== SAVED MAX HTTP RESPONSE ===")
-p = Path("/tmp/bplan_verified_result.json")
-if p.is_file():
-    obj = json.loads(p.read_text())
-    print("Type:", type(obj).__name__)
-    print("Keys:", list(obj)[:15] if isinstance(obj, dict) else "not an object")
-else:
-    print("NOT FOUND")
+e = business(expected)
+a = business(actual)
 
-print("\n=== POSSIBLE PYTORCH BASELINE OUTPUTS ===")
-for p in sorted(samples.glob("*output*.json")):
-    try:
-        obj = json.loads(p.read_text())
-        print(p.name, "| Keys:",
-              list(obj)[:12] if isinstance(obj, dict) else type(obj).__name__)
-    except Exception as e:
-        print(p.name, "|", type(e).__name__)
+differences = []
+
+def compare(x, y, path="$"):
+    if type(x) is not type(y):
+        differences.append(path + ": type differs")
+    elif isinstance(x, dict):
+        for key in sorted(x.keys() | y.keys()):
+            if key not in x or key not in y:
+                differences.append(path + "." + key + ": missing key")
+            else:
+                compare(x[key], y[key], path + "." + key)
+    elif isinstance(x, list):
+        if len(x) != len(y):
+            differences.append(path + ": list length differs")
+        for i, (v1, v2) in enumerate(zip(x, y)):
+            compare(v1, v2, f"{path}[{i}]")
+    elif x != y:
+        differences.append(path + ": value differs")
+
+compare(e, a)
+
+print("EXPECTED TYPE:", type(e).__name__)
+print("MAX TYPE:", type(a).__name__)
+print("BUSINESS OUTPUT:", "MATCH" if not differences else "DIFFERENT")
+print("DIFFERENCE COUNT:", len(differences))
+for difference in differences[:10]:
+    print(" -", difference)
 PY

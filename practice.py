@@ -1,50 +1,51 @@
-python3 - <<'PY'
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1
+P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+
+AVAILABLE=$(awk '/MemAvailable:/ {print int($2/1024)}' /proc/meminfo)
+echo "AVAILABLE MEMORY: ${AVAILABLE} MiB"
+
+if [ "$AVAILABLE" -lt 12000 ]; then
+  echo "STOP: Insufficient free memory for separate PyTorch baseline"
+else
+  "${P[@]}" exec -i bplan-debug /opt/venv/bin/python - <<'PY'
+import json, time
 from pathlib import Path
-import json
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact")
-lines = (root / "pipeline.py").read_text(errors="replace").splitlines()
+from pipeline import pipeline
 
-print("=== ORIGINAL DS BUSINESS RULE CALLS ===")
-terms = (
-    "self.add_disney_family(",
-    "self.add_travelpass(",
-    "self.postprocess(",
-    "self.inference("
+sample = Path(
+    "/workspace/artifacts/v1.113/core-artifact/"
+    "test_samples/test_sample_myplan_bundle.json"
+)
+expected_path = sample.with_name(
+    "test_sample_myplan_bundle_output.json"
 )
 
-for i, line in enumerate(lines):
-    if any(t in line for t in terms):
-        print(f"\n--- LINE {i+1} ---")
-        for j in range(max(0, i-5), min(len(lines), i+7)):
-            print(f"{j+1}: {lines[j][:160]}")
+body = json.loads(sample.read_text())
+expected = json.loads(expected_path.read_text())
 
-print("\n=== MYPLAN EXPECTED VS ACTUAL IDS ===")
-files = {
-    "EXPECTED": root / "test_samples/test_sample_myplan_bundle_output.json",
-    "MAX HTTP": Path("/tmp/bplan_myplan_trace.json")
-}
+print("ORIGINAL PYTORCH BASELINE: START", flush=True)
+start = time.monotonic()
 
-results = {}
-for label, path in files.items():
-    if not path.is_file():
-        raise SystemExit(f"Missing: {path}")
-    obj = json.loads(path.read_text())
+model = pipeline()
+actual = model.predict_raw(body)
+
+def lists(obj):
     data = obj["jsonData"]
     if isinstance(data, str):
         data = json.loads(data)
-    groups = data["prediction"]["ctaList"]
-    results[label] = [
-        [str(x.get("propositionId")) for x in group]
-        for group in groups
-    ]
+    return data["prediction"]["ctaList"]
 
-for i, (expected, actual) in enumerate(zip(
-    results["EXPECTED"], results["MAX HTTP"]
-)):
-    print(f"\nLIST {i}")
-    print("Expected count:", len(expected))
-    print("Actual count:", len(actual))
-    print("Added IDs:", [x for x in actual if x not in expected])
-    print("Missing IDs:", [x for x in expected if x not in actual])
+def ids(group):
+    return [str(x.get("propositionId")) for x in group]
+
+for i, (e, a) in enumerate(zip(lists(expected), lists(actual))):
+    print(f"LIST {i}")
+    print(" EXPECTED:", ids(e))
+    print(" PYTORCH: ", ids(a))
+
+print("PYTORCH VS SAVED EXPECTED:",
+      "MATCH" if lists(expected) == lists(actual) else "DIFFERENT")
+print("BASELINE ELAPSED:", round(time.monotonic()-start, 1), "seconds")
 PY
+fi

@@ -1,12 +1,14 @@
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+B=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
+C=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
 
-for id in $("${P[@]}" ps -q); do
-  info=$("${P[@]}" inspect --format \
-    '{{json .Config.Env}} {{json .Config.Cmd}} {{json .Config.Entrypoint}}' "$id" 2>/dev/null)
+echo "=== BPLAN WORKER STARTUP ==="
+grep -nE 'start_model_worker|bplan_spawn|select_factory|retrieve_factory|install_bplan|BPlanFactoryWrapper|headless_workers' \
+  "$B/bplan_native_launcher.py" "$B/bplan_worker_registration.py"
 
-  if [[ "$info" == *bplan* || "$info" == *v1.113* ]]; then
-    echo "=== BPLAN CONTAINER: $id ==="
-    "${P[@]}" logs --tail 200 "$id" 2>&1 |
-      grep -Ei 'BPLAN|WORKER|QUEUE|RECEIVER|SCHEDULER|ERROR|TRACEBACK|EXCEPTION'
-  fi
-done
+echo "=== BPLAN QUEUE WIRING ==="
+grep -nE 'response_worker|engine_queue|response_queue|start_draining|run_iteration|create_bplan_scheduler' \
+  "$B/bplan_http_pipeline.py" "$B/bplan_native_scheduler.py" "$B/bplan_scheduler_factory.py"
+
+echo "=== WORKING CTA STARTUP ==="
+grep -nE 'start_model_worker|headless_workers|CTAFactoryWrapper|install_cta_scheduler_hook' \
+  "$C/cta_spawn_worker.py" 2>/dev/null

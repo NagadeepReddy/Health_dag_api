@@ -1,36 +1,29 @@
 python3 - <<'PY'
 from pathlib import Path
+import py_compile
 
-root = Path("/application1")
-b = root / "sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev"
-c = root / "CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension"
+p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_queue_compat.py")
 
-for label, base in [("BPLAN", b), ("CTA", c)]:
-    print(f"\n========== {label} REQUEST AND QUEUE ==========")
+s = p.read_text()
+old = "        original_init(self, pipeline_task)\n        self.response_queue_config"
+new = (
+    "        original_init(self, pipeline_task)\n"
+    "        from typing import Any\n"
+    "        self.request_queue_config = ZmqConfig[Any](Any)\n"
+    "        self.response_queue_config"
+)
 
-    for name in ("queue_compat", "http_pipeline", "context", "router"):
-        matches = sorted(base.rglob(f"*{name}*.py"))
-        for p in matches[:3]:
-            print(f"\n--- {p.name} ---")
-            lines = p.read_text(errors="replace").splitlines()
+if "self.request_queue_config = ZmqConfig[Any](Any)" in s:
+    print("REQUEST QUEUE FIX: ALREADY PRESENT")
+elif s.count(old) == 1:
+    p.write_text(s.replace(old, new, 1))
+    print("REQUEST QUEUE FIX: APPLIED")
+else:
+    raise SystemExit("STOP: Expected insertion point not found; no changes made")
 
-            if name in ("queue_compat", "context"):
-                selected = range(min(len(lines), 140))
-            else:
-                keywords = (
-                    "request_queue", "put_nowait", "enqueue",
-                    "context", "requestid", "request_id",
-                    "serialize", "queue_response", "type="
-                )
-                hits = [
-                    i for i, line in enumerate(lines)
-                    if any(k in line.lower() for k in keywords)
-                ]
-                selected = sorted({
-                    j for i in hits[:25]
-                    for j in range(max(0, i-2), min(len(lines), i+4))
-                })
-
-            for i in selected:
-                print(f"{i+1:4}: {lines[i][:180]}")
+py_compile.compile(str(p), doraise=True)
+print("BPLAN SYNTAX: PASS")
+for i, line in enumerate(p.read_text().splitlines(), 1):
+    if 13 <= i <= 25:
+        print(f"{i}: {line}")
 PY

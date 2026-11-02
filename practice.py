@@ -11,7 +11,7 @@ from pathlib import Path
 
 dev = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev").resolve()
 
-# Temporary import compatibility only; no CTA model is loaded.
+# Temporary compatibility alias; BPLAN files only.
 pkg = types.ModuleType("cta_max")
 pkg.__path__ = [str(dev)]
 sys.modules["cta_max"] = pkg
@@ -20,15 +20,21 @@ sys.path.insert(0, str(dev))
 try:
     from max.driver import CPU
     from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
+    from max.engine import InferenceSession
+    device = CPU()
 
-    graph = build_grecbase_fusion_graph_order_correct(
-        DeviceRef.from_device(CPU())
-    )
-    print("BPLAN MAX GRAPH BUILD: PASS")
-    print("GRAPH INPUTS:", len(graph.inputs))
+    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
+    graph = build_grecbase_fusion_graph_order_correct(DeviceRef.from_device(device))
+
+    assert len(graph.inputs) == 72
+    print("BPLAN MAX GRAPH: PASS", flush=True)
+
+    session = InferenceSession(devices=[device])
+    model = session.load(graph)
+
+    print("BPLAN MAX CPU COMPILE: PASS", flush=True)
 except Exception:
-    print("BPLAN MAX GRAPH BUILD: FAILED")
+    print("BPLAN MAX CPU COMPILE: FAILED", flush=True)
     traceback.print_exc()
     sys.exit(1)
 PY

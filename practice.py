@@ -1,10 +1,21 @@
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+python3 - <<'PY'
+from pathlib import Path
 
-echo "=== BPLAN REQUEST AND WORKER EVENTS ==="
-"${P[@]}" logs --timestamps bplan-debug 2>&1 |
-  grep -iE 'BPLAN|POST /bplan|worker failed|validationerror|scheduling|model load|predict_raw|killed|out of memory|oom' |
-  tail -100
+base = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev")
 
-echo "=== CONTAINER HEALTH ==="
-"${P[@]}" inspect bplan-debug \
-  --format 'Running={{.State.Running}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}}'
+targets = {
+    "bplan_router.py": (1, 150),
+    "bplan_native_scheduler.py": (43, 125),
+    "bplan_http_pipeline.py": (1, 115),
+}
+
+for name, (start, end) in targets.items():
+    p = base / name
+    print(f"\n========== {name} ==========")
+    if not p.is_file():
+        print("NOT FOUND")
+        continue
+    lines = p.read_text(errors="replace").splitlines()
+    for i in range(start - 1, min(end, len(lines))):
+        print(f"{i+1:4}: {lines[i][:170]}")
+PY

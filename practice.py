@@ -1,11 +1,10 @@
-P="podman --root /application1/podman/storage --runroot /run/containers/storage"
+DIR=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
 
-ID=$($P ps --no-trunc --format '{{.ID}} {{.Command}}' | awk '/bplan_native_launcher/ {print $1; exit}')
+echo "=== SCHEDULER RESPONSE ==="
+nl -ba "$DIR/bplan_native_scheduler.py" | sed -n '75,130p'
 
-if [ -z "$ID" ]; then
-  echo "BPLAN CONTAINER NOT RUNNING"
-else
-  echo "BPLAN CONTAINER: $ID"
-  $P logs --tail 400 "$ID" 2>&1 | grep -Ei \
-    'BPLAN|scheduler|queue|factory|response|socket|predict|POST|traceback|error|exception' | tail -100
-fi
+echo "=== RESPONSE QUEUE ==="
+nl -ba "$DIR/bplan_http_pipeline.py" | sed -n '85,125p'
+
+echo "=== WORKER REGISTRATION ==="
+nl -ba "$DIR/bplan_worker_registration.py" | sed -n '1,50p'

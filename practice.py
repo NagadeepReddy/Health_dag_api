@@ -1,10 +1,12 @@
 DIR=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
 
-for f in bplan_worker_registration.py bplan_native_worker_adapter.py bplan_http_pipeline.py; do
-  echo "========== $f =========="
-  if [ -f "$DIR/$f" ]; then
-    nl -ba "$DIR/$f" | head -180
-  else
-    echo "NOT FOUND"
-  fi
-done
+echo "=== SCHEDULER FACTORY ==="
+nl -ba "$DIR/bplan_scheduler_factory.py" | head -110
+
+echo "=== WORKER ADAPTER LOCATION ==="
+find /application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension \
+  -name 'bplan_native_worker_adapter.py' -print
+
+echo "=== HTTP PIPELINE LIFECYCLE ==="
+grep -nE '__aenter__|response_worker|_engine_queue|worker_monitor|_bplan_wait_for_healthy_worker' \
+  "$DIR/bplan_http_pipeline.py"

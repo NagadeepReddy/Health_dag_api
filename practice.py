@@ -6,23 +6,21 @@ from pathlib import Path
 import os
 
 root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
-link = root / "bplan_max_dev/sibling_context_weights"
-destination = root / "bplan_helper_weights_stage/sibling_context_weights"
-required = "sibling_context_head.deep_embedding.0.weight.npy"
+folder = root / "bplan_max_dev/main_context_weights"
 
-assert link.is_symlink(), "STOP: expected symlink"
-assert link.resolve() == destination.resolve(), "STOP: unexpected target"
-assert (destination / required).is_file(), "STOP: weight missing"
-assert len(list(destination.glob("*.npy"))) == 20, "STOP: unexpected weight count"
+if folder.is_symlink():
+    resolved = folder.resolve()
+    assert resolved.is_dir() and resolved.is_relative_to(root.resolve()), \
+        "STOP: unexpected main-context symlink target"
+    relative = os.path.relpath(resolved, folder.parent)
+    folder.unlink()
+    folder.symlink_to(relative)
+    print("MAIN CONTEXT SYMLINK: PORTABLE", flush=True)
+else:
+    folder.mkdir(parents=True, exist_ok=True)
 
-temporary = link.with_name("sibling_context_weights.relative_tmp")
-assert not temporary.exists() and not temporary.is_symlink()
-temporary.symlink_to("../bplan_helper_weights_stage/sibling_context_weights")
-assert (temporary / required).is_file()
-os.replace(temporary, link)
-
-print("BPLAN RELATIVE SYMLINK: PASS")
-print("BPLAN 20 SIBLING WEIGHTS: ACCESSIBLE ON HOST")
+assert folder.is_dir()
+print("MAIN CONTEXT DESTINATION: READY", flush=True)
 PY
 
 if [ $? -eq 0 ]; then
@@ -30,17 +28,39 @@ podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never --network=none \
   -v "$ROOT:/workspace:ro" \
+  -v "$EXT/bplan_max_dev/main_context_weights:/export:rw" \
   -w /workspace \
   -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension \
   --entrypoint /opt/venv/bin/python \
   localhost/cta-max-faiss:local - <<'PY'
+import torch
+import numpy as np
 from pathlib import Path
 
-root = Path("/workspace/artifacts/v1.113-max/maxserve_bplan_extension")
-target = root / "bplan_max_dev/sibling_context_weights/sibling_context_head.deep_embedding.0.weight.npy"
+state = torch.load(
+    "/workspace/artifacts/v1.113/core-artifact/base_model.pt",
+    map_location="cpu",
+    weights_only=True
+)
+state = state.get("state_dict", state)
 
-assert target.is_file(), f"Missing in container: {target}"
-print("BPLAN CONTAINER WEIGHT ACCESS: PASS", flush=True)
+weights = {
+    k: v.detach().cpu().numpy()
+    for k, v in state.items()
+    if k.startswith("context_head.") and isinstance(v, torch.Tensor)
+}
+assert "context_head.deep_embedding.0.weight" in weights
+
+for name, values in weights.items():
+    target = Path("/export") / (name + ".npy")
+    if target.exists():
+        assert np.array_equal(np.load(target), values), \
+            f"STOP: differing existing weight: {name}"
+    else:
+        with target.open("xb") as f:
+            np.save(f, values)
+
+print("BPLAN MAIN CONTEXT WEIGHTS: PASS", len(weights), flush=True)
 
 from bplan_max_dev.bplan_max_model_adapter import BPlanMAXModel
 model = BPlanMAXModel()

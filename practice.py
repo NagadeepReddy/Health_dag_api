@@ -1,33 +1,39 @@
 python3 - <<'PY'
 from pathlib import Path
-import shutil, ast
+import hashlib
+import difflib
 
 root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max")
-stage = root / "bplan_batch2_graph_dev"
 name = "grecbase_fusion_full_head_72_max.py"
 
-matches = [
-    p for p in root.rglob(name)
-    if stage not in p.parents and p.is_file()
-]
+original = root / "maxserve_bplan_extension/bplan_max_dev" / name
+staged = root / "bplan_batch2_graph_dev" / name
 
-print("MATCHING GRAPH SOURCES:", len(matches))
-for p in matches:
-    print("SOURCE:", p)
+for p in (original, staged):
+    if not p.is_file():
+        raise SystemExit(f"STOP: Missing {p}")
 
-if len(matches) != 1:
-    raise SystemExit("STOP: Need exactly one original graph source; nothing changed")
+a = original.read_bytes()
+b = staged.read_bytes()
 
-stage.mkdir(parents=True, exist_ok=True)
-target = stage / name
+print("ORIGINAL SHA256:", hashlib.sha256(a).hexdigest())
+print("ISOLATED SHA256:", hashlib.sha256(b).hexdigest())
+print("FILES IDENTICAL:", a == b)
 
-if target.exists():
-    print("PRESERVED EXISTING:", target)
-else:
-    shutil.copy2(matches[0], target)
-    print("COPIED INTO ISOLATED STAGE:", target)
+if a != b:
+    print("\n=== EXISTING DIFFERENCES ===")
+    changes = list(difflib.unified_diff(
+        original.read_text().splitlines(),
+        staged.read_text().splitlines(),
+        fromfile="original",
+        tofile="isolated",
+        lineterm=""
+    ))
+    print("\n".join(changes[:100]))
 
-ast.parse(target.read_text(), filename=str(target))
-print("BPLAN BATCH-2 MAIN GRAPH SYNTAX: PASS")
-print("ORIGINAL SOURCE: UNCHANGED")
+print("\n=== ISOLATED GRAPH SOURCE ===")
+for n, line in enumerate(staged.read_text().splitlines(), 1):
+    print(f"{n:3}: {line}")
+
+print("\nREAD-ONLY VERIFICATION COMPLETE")
 PY

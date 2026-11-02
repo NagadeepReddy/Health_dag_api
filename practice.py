@@ -1,13 +1,13 @@
-P="podman --root /application1/podman/storage --runroot /run/containers/storage"
+P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-echo "=== RUNNING CONTAINERS ==="
-$P ps --format '{{.ID}} {{.Image}} {{.Command}}'
+CID=$("${P[@]}" ps --format '{{.ID}} {{.Command}}' |
+  awk '/bplan_native_serve_dev.bplan_native_launcher/ {print $1; exit}')
 
-echo "=== MAX / BPLAN WORKER PROCESSES ==="
-ps -eo pid,ppid,etime,args --forest | grep -E 'bplan|model_worker|multiprocessing.spawn|18768' | grep -v grep
-
-echo "=== BPLAN CONTAINER PROCESSES ==="
-for id in $($P ps --format '{{.ID}}'); do
-  echo "CONTAINER: $id"
-  $P top "$id" pid,ppid,args 2>&1 | grep -E 'PID|bplan|python|spawn'
-done
+if [ -z "$CID" ]; then
+  echo "BPLAN CONTAINER NOT FOUND"
+else
+  echo "BPLAN CONTAINER: $CID"
+  echo "=== WORKER / QUEUE LOGS ==="
+  "${P[@]}" logs --tail 200 "$CID" 2>&1 |
+    grep -Ei 'BPLAN|WORKER|QUEUE|RECEIVER|SCHEDULER|ERROR|TRACEBACK|EXCEPTION|18768'
+fi

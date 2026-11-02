@@ -1,24 +1,8 @@
-python3 - <<'PY'
-from pathlib import Path
-import ast
+CTA=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
+BPLAN=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev")
-launcher = root / "bplan_native_launcher.py"
-pipeline = root / "bplan_http_pipeline.py"
+echo "=== WORKING CTA STARTUP ==="
+sed -n '1,110p' "$CTA/cta_native_http_entry.py"
 
-old = "BPlanNativeHTTPPipeline"
-new = "BPLANNativeHTTPPipeline"
-
-source = launcher.read_text()
-
-assert source.count(old) == 2, f"STOP: found {source.count(old)} references, expected 2"
-assert f"class {new}(" in pipeline.read_text(), "STOP: class not found"
-
-updated = source.replace(old, new)
-ast.parse(updated)
-launcher.write_text(updated)
-
-print("BPLAN CLASS NAME: FIXED (2 references)")
-print("LAUNCHER SYNTAX: PASS")
-print("ORIGINAL DS AND CTA: UNCHANGED")
-PY
+echo "=== BPLAN STARTUP ==="
+sed -n '1,110p' "$BPLAN/bplan_native_launcher.py"

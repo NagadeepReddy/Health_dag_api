@@ -1,15 +1,18 @@
 P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-echo "=== PORT 18768 OWNER ==="
-ss -lntp | grep ':18768' || true
+echo "=== ACTUAL HTTP SERVER ==="
+ss -lntp '( sport = :18768 )'
 
-echo "=== ALL BPLAN CONTAINERS ==="
-"${P[@]}" ps -a --format '{{.Names}} | {{.Status}}' | grep -i bplan || true
+echo "=== CONTAINER PROCESS IDENTITIES ==="
+for name in $("${P[@]}" ps -a --format '{{.Names}}' | grep -i bplan); do
+  echo "CONTAINER: $name"
+  "${P[@]}" inspect --format 'PID={{.State.Pid}} STATUS={{.State.Status}} STARTED={{.State.StartedAt}}' "$name"
+done
 
-echo "=== BPLAN INFERENCE LOGS ==="
-while IFS= read -r name; do
-  echo "=== $name ==="
-  "${P[@]}" logs --tail 350 "$name" 2>&1 |
-    grep -Ei 'BPLAN|POST /bplan|MAX EXECUTION|RESPONSE|SCHEDULER|WORKER|Traceback|ERROR|exception|timed out' |
-    tail -60
-done < <("${P[@]}" ps -a --format '{{.Names}}' | grep -i bplan)
+echo "=== SERVER PROCESS ==="
+PID=$(ss -lntp '( sport = :18768 )' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+if [ -n "$PID" ]; then
+  ps -fp "$PID"
+  tr '\0' ' ' < "/proc/$PID/cmdline"
+  echo
+fi

@@ -1,31 +1,28 @@
-python3 - <<'PY'
-from pathlib import Path
-import re
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  -v /application1/sajjna8/rt-pzai-bplan-v1:/workspace:ro \
+  -w /workspace \
+  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local - <<'PY'
+import traceback
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
-f = root / "bplan_max_dev/sequence_postprocess_max.py"
-weights = root / "bplan_helper_weights_stage/grecbase_integration_weights"
+print("BPLAN REAL MAX INITIALIZATION: START", flush=True)
 
-assert f.is_file() and weights.is_dir(), "STOP: required files missing"
-assert (weights / "out_norm1_g.npy").is_file(), "STOP: weight missing"
+try:
+    from bplan_max_dev.bplan_max_model_adapter import BPlanMAXModel
+    model = BPlanMAXModel()
 
-src = f.read_text()
-pattern = r"""(["'])(/application1/[^"']*/grecbase_integration_weights/?)(\1)"""
+    assert model.base is not None
+    assert model.head is not None
 
-def replace(match):
-    trailing = match.group(2).endswith("/")
-    expression = (
-        '(str(__import__("pathlib").Path(__file__).resolve().parents[1] '
-        '/ "bplan_helper_weights_stage" / "grecbase_integration_weights"))'
-    )
-    return f'({expression} + "/")' if trailing else expression
-
-updated, count = re.subn(pattern, replace, src)
-assert count > 0, "STOP: path structure differs; unchanged"
-compile(updated, str(f), "exec")
-f.write_text(updated)
-
-print("BPLAN POSTPROCESS PORTABLE PATH: PASS")
-print("REFERENCES FIXED:", count)
-print("ORIGINAL DS AND CTA: UNCHANGED")
+    print("BPLAN BASE GRAPH: PASS", flush=True)
+    print("BPLAN PREDICTION HEAD: PASS", flush=True)
+    print("BPLAN REAL MAX INITIALIZATION: PASS", flush=True)
+    print("ORIGINAL DS AND CTA: UNCHANGED", flush=True)
+except Exception:
+    print("BPLAN INITIALIZATION: NOT YET PASSING", flush=True)
+    traceback.print_exc()
+    raise
 PY

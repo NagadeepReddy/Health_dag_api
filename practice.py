@@ -1,24 +1,12 @@
 REPO=/application1/sajjna8/rt-pzai-bplan-v1
 PIPE="$REPO/artifacts/v1.113/core-artifact/pipeline.py"
-SAMPLES="$REPO/artifacts/v1.113/core-artifact/test_samples"
+EXT="$REPO/artifacts/v1.113-max/maxserve_bplan_extension"
 
-echo "=== ORIGINAL JSON ENTRY ==="
-sed -n '3933,4015p' "$PIPE"
+echo "=== JSON INFERENCE AND POSTPROCESS CALLS ==="
+grep -nE 'self\.inference\(|self\.postprocess\(|self\.preprocess\(|return json_out_final|def predict_raw' "$PIPE" | tail -45
 
-echo "=== ORIGINAL POSTPROCESS ==="
-sed -n '2608,2655p' "$PIPE"
-
-echo "=== REAL JSON SAMPLE STRUCTURE ==="
-SAMPLES="$SAMPLES" python3 - <<'PY'
-import json, os
-from pathlib import Path
-
-for path in sorted(Path(os.environ["SAMPLES"]).glob("test_sample_[12].json")):
-    data = json.loads(path.read_text())
-    print(path.name, "TYPE:", type(data).__name__)
-    if isinstance(data, dict):
-        print("TOP-LEVEL KEYS:", list(data))
-        for k, v in data.items():
-            print(" ", k, ":", type(v).__name__,
-                  "KEYS:", list(v)[:15] if isinstance(v, dict) else "")
-PY
+echo "=== EXISTING MAX SERVING FILES ==="
+find "$EXT" -maxdepth 3 -type f \
+  \( -name '*router*.py' -o -name '*serve*.py' \
+  -o -name '*adapter*.py' -o -name '*launcher*.py' \) \
+  | sort

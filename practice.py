@@ -1,61 +1,10 @@
-REPO=/application1/sajjna8/rt-pzai-bplan-v1
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never \
-  --entrypoint python3 \
-  -v "$REPO:$REPO:ro" -w "$REPO" \
-  localhost/cta-max-faiss:local -B - <<'PY'
-import sys, types, torch, traceback
-from pathlib import Path
+echo "=== BPLAN FEATURE LAYER ==="
+sed -n '1,150p' "$ROOT/att_pooling_max.py"
 
-try:
-    root = Path("artifacts/v1.113-max/maxserve_bplan_extension").resolve()
-    dev = root / "bplan_max_dev"
+echo "=== BPLAN GRAPH FEATURE CALL ==="
+sed -n '15,37p' "$ROOT/grecbase_fusion_full_head_72_max.py"
 
-    # Temporary compatibility alias; only BPLAN files are loaded.
-    pkg = types.ModuleType("cta_max")
-    pkg.__path__ = [str(dev)]
-    sys.modules["cta_max"] = pkg
-    sys.path.insert(0, str(dev))
-
-    from max.driver import CPU
-    from max.graph import DeviceRef
-    from grecbase_fusion_full_head_72_max import build_grecbase_fusion_graph_order_correct
-    from run_real_sanity_input_adapter import build_real_inputs
-
-    data = torch.load(root / "bplan_neural_inputs.pt",
-                      map_location="cpu", weights_only=True)
-
-    if "task_in" not in data and "tasks_in" in data:
-        data = {**data, "task_in": data["tasks_in"]}
-
-    labels, arrays = build_real_inputs(model_in=data)
-    graph = build_grecbase_fusion_graph_order_correct(
-        DeviceRef.from_device(CPU())
-    )
-
-    assert len(labels) == len(arrays) == len(graph.inputs) == 72
-
-    errors = []
-    for i, (label, array, inp) in enumerate(
-        zip(labels, arrays, graph.inputs)
-    ):
-        actual = tuple(array.shape)
-        expected = tuple(int(d) for d in inp.type.shape)
-        if actual != expected:
-            errors.append((i, label, actual, expected))
-
-    for error in errors:
-        print("SHAPE MISMATCH:", error)
-
-    assert not errors, f"{len(errors)} mismatches"
-
-    print("BPLAN REAL MAX INPUTS: PASS (72/72)")
-    print("ORIGINAL DS AND CTA: UNCHANGED")
-
-except Exception:
-    print("BPLAN REAL MAX INPUTS: FAILED")
-    traceback.print_exc()
-    sys.exit(1)
-PY
+echo "=== SEQUENCE LENGTH REFERENCES ==="
+grep -nE '50|20|concat|reshape|page_wide|def _call_' "$ROOT/att_pooling_max.py"

@@ -1,55 +1,50 @@
-DEV=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
+REPO=/application1/sajjna8/rt-pzai-bplan-v1
 
-DEV="$DEV" python3 - <<'PY'
-import os
-import ast
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --entrypoint python3 \
+  -v "$REPO:$REPO:ro" -w "$REPO" \
+  localhost/cta-max-faiss:local -B - <<'PY'
+import sys
+import traceback
 from pathlib import Path
+from queue import Queue
 
-dev = Path(os.environ["DEV"])
-target = dev / "bplan_scheduler_factory.py"
+dev = Path("artifacts/v1.113-max/maxserve_bplan_extension").resolve()
+sys.path.insert(0, str(dev))
 
-assert (dev / "bplan_native_scheduler.py").is_file()
-assert (dev / "bplan_context.py").is_file()
-assert not target.exists(), "STOP: factory already exists"
+try:
+    from bplan_native_serve_dev.bplan_scheduler_factory import create_bplan_scheduler
+    from bplan_native_serve_dev.bplan_native_scheduler import BPlanNativeScheduler
 
-code = '''"""BPLAN scheduler factory for native Modular MAX Serve."""
+    class TestQueues:
+        def model_worker_queues(self):
+            return Queue(), Queue(), Queue()
 
-from .bplan_native_scheduler import BPlanNativeScheduler
+    class TestAdapter:
+        def predict(self, body):
+            return {"jsonData": {"prediction": {}}}
 
+    scheduler = create_bplan_scheduler(TestAdapter(), TestQueues())
 
-def create_bplan_scheduler(
-    adapter,
-    scheduler_zmq_configs,
-    max_items_per_iteration=1,
-):
-    if max_items_per_iteration != 1:
-        raise ValueError("BPLAN batching not yet validated")
+    assert isinstance(scheduler, BPlanNativeScheduler)
+    assert scheduler.max_items_per_iteration == 1
 
-    request_queue, response_queue, cancel_queue = (
-        scheduler_zmq_configs.model_worker_queues()
-    )
+    try:
+        create_bplan_scheduler(TestAdapter(), TestQueues(), max_items_per_iteration=2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Batching guard failed")
 
-    return BPlanNativeScheduler(
-        adapter=adapter,
-        request_queue=request_queue,
-        response_queue=response_queue,
-        cancel_queue=cancel_queue,
-        max_items_per_iteration=1,
-    )
-'''
+    print("BPLAN MAX SCHEDULER IMPORT: PASS")
+    print("BPLAN NATIVE QUEUE INITIALIZATION: PASS")
+    print("SINGLE-REQUEST GUARD: PASS")
+    print("ORIGINAL DS AND CTA: UNCHANGED")
 
-ast.parse(code)
-target.write_text(code)
-
-for name in (
-    "bplan_context.py",
-    "bplan_native_scheduler.py",
-    "bplan_scheduler_factory.py",
-):
-    ast.parse((dev / name).read_text())
-
-print("BPLAN SCHEDULER FACTORY: CREATED")
-print("BPLAN SCHEDULER SYNTAX: PASS")
-print("NATIVE QUEUE WIRING: PREPARED")
-print("ORIGINAL DS AND CTA: UNCHANGED")
+except Exception:
+    print("BPLAN NATIVE SCHEDULER VALIDATION: FAILED")
+    traceback.print_exc()
+    sys.exit(1)
 PY

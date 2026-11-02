@@ -1,14 +1,21 @@
-B=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
-C=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
+python3 - <<'PY'
+from pathlib import Path
+import ast
 
-echo "=== BPLAN WORKER STARTUP ==="
-grep -nE 'start_model_worker|bplan_spawn|select_factory|retrieve_factory|install_bplan|BPlanFactoryWrapper|headless_workers' \
-  "$B/bplan_native_launcher.py" "$B/bplan_worker_registration.py"
+p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_spawn_worker.py")
+s = p.read_text()
 
-echo "=== BPLAN QUEUE WIRING ==="
-grep -nE 'response_worker|engine_queue|response_queue|start_draining|run_iteration|create_bplan_scheduler' \
-  "$B/bplan_http_pipeline.py" "$B/bplan_native_scheduler.py" "$B/bplan_scheduler_factory.py"
+old = "    def __call__(self):"
+new = '    def __call__(self):\n        print("BPLAN FACTORY ENTERED", flush=True)'
 
-echo "=== WORKING CTA STARTUP ==="
-grep -nE 'start_model_worker|headless_workers|CTAFactoryWrapper|install_cta_scheduler_hook' \
-  "$C/cta_spawn_worker.py" 2>/dev/null
+if "BPLAN FACTORY ENTERED" in s:
+    print("BPLAN FACTORY DIAGNOSTIC: ALREADY INSTALLED")
+else:
+    assert s.count(old) == 1, "STOP: unexpected factory structure"
+    updated = s.replace(old, new, 1)
+    ast.parse(updated)
+    p.write_text(updated)
+    print("BPLAN FACTORY DIAGNOSTIC: INSTALLED")
+
+print("ORIGINAL DS AND CTA: UNCHANGED")
+PY

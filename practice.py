@@ -1,33 +1,50 @@
-python3 - <<'PY'
-from pathlib import Path
-import py_compile
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1
+SAMPLE="$ROOT/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json"
+P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_max_dev/bplan_native_worker_adapter.py")
-s = p.read_text()
+test -f "$SAMPLE" || { echo "STOP: Sample missing"; exit 1; }
 
-target = "return backend(**kwargs)"
+"${P[@]}" rm -f bplan-debug 2>/dev/null || true
 
-if "BPLAN REAL MAX EXECUTION PASS" in s:
-    print("MAX EXECUTION LOGGING: ALREADY PRESENT")
-elif s.count(target) == 1:
-    lines = s.splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if target in line:
-            indent = line[:len(line) - len(line.lstrip())]
-            lines[i] = (
-                indent + 'print("BPLAN REAL MAX EXECUTION START", flush=True)\n'
-                + indent + 'result = backend(**kwargs)\n'
-                + indent + 'print("BPLAN REAL MAX EXECUTION PASS", flush=True)\n'
-                + indent + 'return result\n'
-            )
-            break
-    updated = "".join(lines)
-    compile(updated, str(p), "exec")
-    p.write_text(updated)
-    print("MAX EXECUTION LOGGING: INSTALLED")
-else:
-    raise SystemExit("STOP: Backend call not uniquely identified; no changes made")
+"${P[@]}" run -d --name bplan-debug --pull=never \
+  --network=host \
+  -v "$ROOT:/workspace:ro" \
+  -w /workspace \
+  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -m bplan_native_serve_dev.bplan_native_launcher || exit 1
 
-py_compile.compile(str(p), doraise=True)
-print("BPLAN SYNTAX: PASS")
-PY
+echo "=== WAIT FOR ROUTE ==="
+READY=0
+for i in $(seq 1 120); do
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+    http://127.0.0.1:18768/bplan/predict)
+  if [ "$CODE" = 405 ]; then
+    READY=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "$READY" = 1 ]; then
+  echo "BPLAN ROUTE: READY"
+  echo "=== REAL BPLAN POST ==="
+  curl -sS --max-time 180 \
+    -X POST http://127.0.0.1:18768/bplan/predict \
+    -H 'Content-Type: application/json' \
+    --data-binary @"$SAMPLE" \
+    -o /tmp/bplan_verified_result.json \
+    -w 'HTTP STATUS: %{http_code}\nTIME: %{time_total}s\n'
+
+  echo "=== RESPONSE ==="
+  head -c 800 /tmp/bplan_verified_result.json 2>/dev/null
+  echo
+else
+  echo "BPLAN ROUTE: NOT READY"
+fi
+
+echo "=== REAL MAX EXECUTION LOGS ==="
+"${P[@]}" logs --tail 300 bplan-debug 2>&1 |
+  grep -iE 'BPLAN REAL MAX|BPLAN|predict_raw|exception|traceback|error in|worker failed|HTTP/1.1' |
+  tail -65

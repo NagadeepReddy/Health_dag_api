@@ -1,37 +1,23 @@
-python3 - <<'PY'
-from pathlib import Path
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
+python3 - "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
 files = [
-    root / "bplan_max_dev/grecbase_fusion_full_head_72_max.py",
-    root / "bplan_max_dev/run_real_sanity_input_adapter.py",
-    root / "bplan_max_dev/bplan_max_model_adapter.py",
-    root / "bplan_native_serve_dev/bplan_native_worker_registration.py",
+    ("MAX GRAPH", root / "bplan_max_dev/grecbase_fusion_full_head_72_max.py", 1, 115),
+    ("INPUT PREPARATION", root / "bplan_max_dev/run_real_sanity_input_adapter.py", 1, 115),
 ]
 
-terms = (
-    "def build_", "def build_real_inputs", "TensorType(",
-    "Graph(", "reshape(", "broadcast(", "max_items_per_iteration",
-    "batch_size", "batch_dim", "predict_batch",
-    "shape == ", "shape =", "[1,", "(1,"
-)
-
-for path in files:
-    print(f"\n=== {path.name} ===")
+for title, path, start, end in files:
+    print(f"\n=== {title} ===")
     if not path.is_file():
-        print("FILE NOT FOUND")
+        print("MISSING:", path)
         continue
-
     lines = path.read_text().splitlines()
-    matches = [
-        (i, line.strip())
-        for i, line in enumerate(lines, 1)
-        if any(term in line for term in terms)
-    ]
+    for i in range(start - 1, min(end, len(lines))):
+        print(f"{i+1}: {lines[i]}")
 
-    for number, line in matches[:90]:
-        print(f"{number}: {line[:180]}")
-    print("MATCHES:", len(matches))
-
-print("\nBPLAN BATCH-2 GRAPH INSPECTION COMPLETE")
+print("\nBPLAN BATCH-2 READ-ONLY INSPECTION COMPLETE")
 PY

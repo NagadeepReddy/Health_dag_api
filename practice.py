@@ -1,41 +1,55 @@
-CTA=/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031/artifacts/v1.168-max/cta_native_batch2_release_candidate/maxserve_cta_extension
-BPLAN=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension
+DEV=/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev
 
-CTA="$CTA" BPLAN="$BPLAN" python3 - <<'PY'
-import os, ast
+DEV="$DEV" python3 - <<'PY'
+import os
+import ast
 from pathlib import Path
 
-source = Path(os.environ["CTA"])
-target = Path(os.environ["BPLAN"]) / "bplan_native_serve_dev"
+dev = Path(os.environ["DEV"])
+target = dev / "bplan_scheduler_factory.py"
 
-files = {
-    "cta_context.py": "bplan_context.py",
-    "cta_native_scheduler.py": "bplan_native_scheduler.py",
-}
+assert (dev / "bplan_native_scheduler.py").is_file()
+assert (dev / "bplan_context.py").is_file()
+assert not target.exists(), "STOP: factory already exists"
 
-assert all((source / f).is_file() for f in files), "STOP: source file missing"
-assert not target.exists(), "STOP: BPLAN native directory already exists"
+code = '''"""BPLAN scheduler factory for native Modular MAX Serve."""
 
-prepared = {}
-for old, new in files.items():
-    code = (source / old).read_text()
-    code = code.replace("CTA", "BPlan").replace("cta", "bplan")
-    if new == "bplan_native_scheduler.py":
-        code = code.replace(
-            "max_items_per_iteration=2",
-            "max_items_per_iteration=1"
-        )
-    ast.parse(code, filename=new)
-    prepared[new] = code
+from .bplan_native_scheduler import BPlanNativeScheduler
 
-target.mkdir(parents=True)
-(target / "__init__.py").write_text("")
 
-for name, code in prepared.items():
-    (target / name).write_text(code)
-    print("CREATED:", name)
+def create_bplan_scheduler(
+    adapter,
+    scheduler_zmq_configs,
+    max_items_per_iteration=1,
+):
+    if max_items_per_iteration != 1:
+        raise ValueError("BPLAN batching not yet validated")
 
-print("BPLAN ISOLATED SCHEDULER: CREATED")
-print("NATIVE SINGLE-REQUEST CAPACITY: 1")
+    request_queue, response_queue, cancel_queue = (
+        scheduler_zmq_configs.model_worker_queues()
+    )
+
+    return BPlanNativeScheduler(
+        adapter=adapter,
+        request_queue=request_queue,
+        response_queue=response_queue,
+        cancel_queue=cancel_queue,
+        max_items_per_iteration=1,
+    )
+'''
+
+ast.parse(code)
+target.write_text(code)
+
+for name in (
+    "bplan_context.py",
+    "bplan_native_scheduler.py",
+    "bplan_scheduler_factory.py",
+):
+    ast.parse((dev / name).read_text())
+
+print("BPLAN SCHEDULER FACTORY: CREATED")
+print("BPLAN SCHEDULER SYNTAX: PASS")
+print("NATIVE QUEUE WIRING: PREPARED")
 print("ORIGINAL DS AND CTA: UNCHANGED")
 PY

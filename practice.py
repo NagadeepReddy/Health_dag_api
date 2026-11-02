@@ -5,22 +5,23 @@ python3 - <<'PY'
 from pathlib import Path
 import os
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
-folder = root / "bplan_max_dev/main_context_weights"
+ext = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
+stage = ext / "bplan_helper_weights_stage/grecbase_aux_weights"
+link = ext / "bplan_max_dev/grecbase_aux_weights"
 
-if folder.is_symlink():
-    resolved = folder.resolve()
-    assert resolved.is_dir() and resolved.is_relative_to(root.resolve()), \
-        "STOP: unexpected main-context symlink target"
-    relative = os.path.relpath(resolved, folder.parent)
-    folder.unlink()
-    folder.symlink_to(relative)
-    print("MAIN CONTEXT SYMLINK: PORTABLE", flush=True)
+stage.mkdir(parents=True, exist_ok=True)
+if link.is_symlink():
+    assert link.resolve() == stage.resolve(), "STOP: unexpected existing symlink"
+    tmp = link.with_name(link.name + ".relative_tmp")
+    assert not tmp.exists() and not tmp.is_symlink()
+    tmp.symlink_to(os.path.relpath(stage, link.parent))
+    os.replace(tmp, link)
+elif not link.exists():
+    link.symlink_to(os.path.relpath(stage, link.parent))
 else:
-    folder.mkdir(parents=True, exist_ok=True)
+    assert link.is_dir(), "STOP: unexpected weight path"
 
-assert folder.is_dir()
-print("MAIN CONTEXT DESTINATION: READY", flush=True)
+print("BPLAN AUX WEIGHT DIRECTORY: READY", flush=True)
 PY
 
 if [ $? -eq 0 ]; then
@@ -28,7 +29,7 @@ podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
   run --rm -i --pull=never --network=none \
   -v "$ROOT:/workspace:ro" \
-  -v "$EXT/bplan_max_dev/main_context_weights:/export:rw" \
+  -v "$EXT/bplan_helper_weights_stage/grecbase_aux_weights:/export:rw" \
   -w /workspace \
   -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension \
   --entrypoint /opt/venv/bin/python \
@@ -37,35 +38,35 @@ import torch
 import numpy as np
 from pathlib import Path
 
-state = torch.load(
-    "/workspace/artifacts/v1.113/core-artifact/base_model.pt",
-    map_location="cpu",
-    weights_only=True
-)
+base = Path("/workspace/artifacts/v1.113/core-artifact/base_model.pt")
+state = torch.load(base, map_location="cpu", weights_only=True)
 state = state.get("state_dict", state)
 
+prefixes = ("task_embedding.", "ihq_", "jet_", "task_")
 weights = {
     k: v.detach().cpu().numpy()
     for k, v in state.items()
-    if k.startswith("context_head.") and isinstance(v, torch.Tensor)
+    if isinstance(v, torch.Tensor) and k.startswith(prefixes)
 }
-assert "context_head.deep_embedding.0.weight" in weights
+
+required = "task_embedding.0.weight"
+assert required in weights, f"STOP: {required} absent from checkpoint"
 
 for name, values in weights.items():
     target = Path("/export") / (name + ".npy")
     if target.exists():
         assert np.array_equal(np.load(target), values), \
-            f"STOP: differing existing weight: {name}"
+            f"STOP: differing weight: {name}"
     else:
         with target.open("xb") as f:
             np.save(f, values)
 
-print("BPLAN MAIN CONTEXT WEIGHTS: PASS", len(weights), flush=True)
+print("BPLAN AUX WEIGHTS: PASS", len(weights), flush=True)
 
 from bplan_max_dev.bplan_max_model_adapter import BPlanMAXModel
 model = BPlanMAXModel()
-
 assert model.base is not None and model.head is not None
+
 print("BPLAN REAL MAX INITIALIZATION: PASS", flush=True)
 print("ORIGINAL DS AND CTA: UNCHANGED", flush=True)
 PY

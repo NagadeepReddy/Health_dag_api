@@ -1,39 +1,37 @@
 python3 - <<'PY'
 from pathlib import Path
-import hashlib
-import difflib
+import shutil
 
 root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max")
-name = "grecbase_fusion_full_head_72_max.py"
+source = root / "maxserve_bplan_extension/bplan_max_dev"
+target = root / "bplan_batch2_graph_dev"
 
-original = root / "maxserve_bplan_extension/bplan_max_dev" / name
-staged = root / "bplan_batch2_graph_dev" / name
+graph = target / "grecbase_fusion_full_head_72_max.py"
 
-for p in (original, staged):
-    if not p.is_file():
-        raise SystemExit(f"STOP: Missing {p}")
+if not source.is_dir() or not graph.is_file():
+    raise SystemExit("STOP: Source directory or isolated graph missing")
 
-a = original.read_bytes()
-b = staged.read_bytes()
+copied = []
+preserved = []
 
-print("ORIGINAL SHA256:", hashlib.sha256(a).hexdigest())
-print("ISOLATED SHA256:", hashlib.sha256(b).hexdigest())
-print("FILES IDENTICAL:", a == b)
+for src in sorted(source.glob("*.py")):
+    dst = target / src.name
+    if dst.exists():
+        preserved.append(src.name)
+    else:
+        shutil.copy2(src, dst)
+        copied.append(src.name)
 
-if a != b:
-    print("\n=== EXISTING DIFFERENCES ===")
-    changes = list(difflib.unified_diff(
-        original.read_text().splitlines(),
-        staged.read_text().splitlines(),
-        fromfile="original",
-        tofile="isolated",
-        lineterm=""
-    ))
-    print("\n".join(changes[:100]))
+print("=== BPLAN BATCH-2 ISOLATION ===")
+print("COPIED:", len(copied))
+for name in copied:
+    print(" +", name)
 
-print("\n=== ISOLATED GRAPH SOURCE ===")
-for n, line in enumerate(staged.read_text().splitlines(), 1):
-    print(f"{n:3}: {line}")
+print("PRESERVED:", len(preserved))
+for name in preserved:
+    print(" =", name)
 
-print("\nREAD-ONLY VERIFICATION COMPLETE")
+print("ORIGINAL SOURCES: UNCHANGED")
+print("ISOLATED BATCH-2 FILES:", len(list(target.glob("*.py"))))
+print("BPLAN BATCH-2 DEPENDENCY STAGING: COMPLETE")
 PY

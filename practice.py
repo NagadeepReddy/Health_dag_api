@@ -1,13 +1,41 @@
 REPO=/application1/sajjna8/rt-pzai-bplan-v1
-PIPE="$REPO/artifacts/v1.113/core-artifact/pipeline.py"
-MODELS="$REPO/artifacts/v1.113/utils/dependency-utils/models.py"
 
-echo "=== BPLAN PREDICTION CALL ==="
-grep -n -B 12 -A 22 -m 2 'self.bplan_model(' "$PIPE"
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never \
+  --entrypoint python3 \
+  -v "$REPO:$REPO:ro" -w "$REPO" \
+  localhost/cta-max-faiss:local -B - <<'PY'
+from pathlib import Path
+import torch
 
-echo "=== TRAINED TRANSFER MODEL ARCHITECTURE ==="
-grep -n -A 110 'class GRecTransfer' "$MODELS" | head -115
+root = Path("artifacts/v1.113")
+checkpoint = torch.load(
+    root / "core-artifact/bplan_model.pt",
+    map_location="cpu",
+    weights_only=True
+)
 
-echo "=== BPLAN CHECKPOINTS ==="
-find "$REPO/artifacts/v1.113" -type f \
-  \( -name 'bplan_model.pt' -o -name 'base_model.pt' \) -print
+if "state_dict" in checkpoint:
+    checkpoint = checkpoint["state_dict"]
+
+print("=== BPLAN TRAINED PREDICTION HEAD ===")
+matches = [
+    (name, value)
+    for name, value in checkpoint.items()
+    if isinstance(value, torch.Tensor)
+    and (name == "dense1.weight" or name.endswith(".dense1.weight"))
+]
+
+for name, weight in matches:
+    print("WEIGHT:", name)
+    print("SHAPE:", tuple(weight.shape))
+    print("DTYPE:", weight.dtype)
+
+assert len(matches) == 1, "STOP: prediction head not uniquely identified"
+assert tuple(matches[0][1].shape) == (10438, 2048), \
+    "STOP: unexpected trained head dimensions"
+
+print("BPLAN TRAINED PREDICTION HEAD: PASS")
+print("ORIGINAL DS AND CTA: UNCHANGED")
+PY

@@ -1,25 +1,40 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
+import json
 
 r = Path("artifacts/v1.472")
-print("=== PZAAS TEST FIXTURES (EXCLUDING BPLAN) ===")
-for p in sorted(r.rglob("*")):
-    if (p.is_file() and p.suffix.lower() in
-        (".json", ".jsonl") and
-        "bplan" not in str(p).lower() and
-        any(x in str(p).lower() for x in
-            ("sample", "sanity", "test_input", "test_request"))):
-        print(p)
-
-print("\n=== BASE / SKU MODEL INITIALIZATION ===")
 s = (r/"core-artifact/pipeline.py").read_text().splitlines()
-for i, line in enumerate(s, 1):
-    if ("self.model_base =" in line or
-        "self.model_sku =" in line or
-        "self.task_item_weights_sku =" in line):
-        print(f"{i}: {line.strip()[:180]}")
 
-print("\n=== MODEL CHECKPOINTS ===")
-for p in sorted((r/"core-artifact").glob("model_0_*.pt")):
-    print(p.name)
+print("=== MODEL INITIALIZATION ===")
+for i in range(1185, 1261):
+    line = s[i-1].strip()
+    if any(k in line for k in ("self.model_", "loadModel(", "loadBaseModel(", "loadTransferModel(", "model_suffix", "task_item_weights")):
+        print(f"{i}: {line[:180]}")
+
+print("\n=== ORIGINAL PZAAS SAMPLES ===")
+for p in sorted((r/"samples").glob("*.json")):
+    if "output" in p.name:
+        continue
+    try:
+        d = json.loads(p.read_text())
+        print(f"\n{p.name}")
+        if not isinstance(d, dict):
+            print("JSON type:", type(d).__name__)
+            continue
+        print("Top-level keys:", list(d)[:15])
+        def inspect(x, depth=0):
+            if depth > 5:
+                return
+            if isinstance(x, dict):
+                for k,v in x.items():
+                    if k in ("category", "pageContext", "query_intent") and isinstance(v, (str, int, float)):
+                        print(f"  {k}: {str(v)[:100]}")
+                    elif isinstance(v, (dict, list)):
+                        inspect(v, depth+1)
+            elif isinstance(x, list):
+                for v in x[:2]:
+                    inspect(v, depth+1)
+        inspect(d)
+    except Exception as e:
+        print(p.name, type(e).__name__)
 PY

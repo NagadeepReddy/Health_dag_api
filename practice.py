@@ -3,44 +3,37 @@ import json
 from pathlib import Path
 
 root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
-baseline = root / "artifacts/v1.113-max/maxserve_bplan_extension/bplan_pytorch_baseline.json"
+base = root / "artifacts/v1.113-max/maxserve_bplan_extension/bplan_pytorch_baseline.json"
 native = Path("/tmp/bplan_response_trace.json")
 
-assert baseline.is_file(), f"Missing baseline: {baseline}"
-assert native.is_file(), f"Missing native response: {native}"
+a = json.loads(base.read_text())["jsonData"]["prediction"]["propositionList"]
+b = json.loads(native.read_text())["jsonData"]["prediction"]["ctalist"]
 
-a = json.loads(baseline.read_text())
-b = json.loads(native.read_text())
+def by_id(items):
+    return {str(x["propositionId"]): x for x in items if isinstance(x, dict) and "propositionId" in x}
 
-def collect(obj):
-    found = []
-    def walk(x):
-        if isinstance(x, dict):
-            if "propositionId" in x:
-                found.append(str(x["propositionId"]))
-            for value in x.values():
-                walk(value)
-        elif isinstance(x, list):
-            for value in x:
-                walk(value)
-    walk(obj)
-    return found
+pa, pb = by_id(a), by_id(b)
 
-pa, pb = collect(a), collect(b)
+print("PYTORCH:", len(a), "NATIVE:", len(b))
+print("\n=== NATIVE EXTRA RECOMMENDATIONS ===")
+for pid in sorted(pb.keys() - pa.keys()):
+    x = pb[pid]
+    print(pid, {k: x.get(k) for k in
+        ("propositionName", "rank", "order", "cat", "propensity", "pplan_cd_basic", "pplan_cd_smartphone")
+        if k in x})
 
-print("PYTORCH RECOMMENDATIONS:", len(pa))
-print("NATIVE RECOMMENDATIONS:", len(pb))
-print("SAME IDS:", sorted(pa) == sorted(pb))
-print("SAME ORDER:", pa == pb)
-print("PYTORCH ONLY:", sorted(set(pa)-set(pb))[:30])
-print("NATIVE ONLY:", sorted(set(pb)-set(pa))[:30])
+print("\n=== COMMON RECOMMENDATION DIFFERENCES ===")
+differences = 0
+for pid in sorted(pa.keys() & pb.keys()):
+    shared = set(pa[pid]) & set(pb[pid])
+    changed = {k: (pa[pid][k], pb[pid][k])
+               for k in shared if pa[pid][k] != pb[pid][k]}
+    if changed:
+        differences += 1
+        print(pid, str(changed)[:350])
 
-if not pa or not pb:
-    print("RESULT: BLOCKED — need correct business ID mapping")
-elif pa == pb:
-    print("ID AND ORDER PARITY: PASS")
-elif sorted(pa) == sorted(pb):
-    print("ID PARITY: PASS; ORDER DIFFERS")
-else:
-    print("BUSINESS ID PARITY: DIFFERENT")
+print("COMMON IDS:", len(pa.keys() & pb.keys()))
+print("COMMON IDS WITH DIFFERENT SHARED FIELDS:", differences)
+print("PYTORCH ONLY:", sorted(pa.keys() - pb.keys()))
+print("NATIVE ONLY:", sorted(pb.keys() - pa.keys()))
 PY

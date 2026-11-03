@@ -6,14 +6,32 @@ p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/
 lines = p.read_text().splitlines()
 tree = ast.parse("\n".join(lines))
 
+found = False
 for node in ast.walk(tree):
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "predict_raw":
-        print(f"\n=== ORIGINAL DS predict_raw(): {node.lineno}-{node.end_lineno} ===")
-        for i in range(max(node.lineno, node.end_lineno - 100), node.end_lineno + 1):
-            print(f"{i}: {lines[i-1]}")
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "inference_router":
+        found = True
+        print(f"=== ORIGINAL DS inference_router: lines {node.lineno}-{node.end_lineno} ===")
+        for i in range(node.lineno, node.end_lineno + 1):
+            s = lines[i-1]
+            if any(x in s.lower() for x in (
+                "sourcesystem", "networktype", "devicecategory",
+                "ctalist", "propositionlist", "return ",
+                "if ", "elif ", "else:", "router"
+            )):
+                print(f"{i}: {s[:220]}")
         break
-else:
-    print("predict_raw not found in pipeline.py")
 
-print("\nORIGINAL DS FILE UNCHANGED")
+if not found:
+    print("Router method not in pipeline.py; searching original DS files...")
+    root = p.parent
+    for f in root.rglob("*.py"):
+        if f == p or ".ipynb_checkpoints" in str(f):
+            continue
+        for i, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+            if "def inference_router(" in line:
+                print(f"{f}:{i}: {line.strip()}")
+                found = True
+
+print("ROUTER FOUND:", found)
+print("ORIGINAL DS UNCHANGED")
 PY

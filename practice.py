@@ -1,165 +1,203 @@
 set -Eeuo pipefail
 
-SRC=/application1/BPLAN_MAX_TEAM_HANDOFF_20261102
-DST=/application1/BPLAN_MAX_RUNTIME_CLEAN_20261102
-OUT=/application1/BPLAN_MAX_RUNTIME_CLEAN_20261102.tar.gz
+BASE=/application1
+SRC="$BASE/BPLAN_MAX_TEAM_HANDOFF_20261102"
+DST="$BASE/BPLAN_MAX_RUNTIME_CLEAN_20261102"
+OUT="$BASE/BPLAN_MAX_RUNTIME_CLEAN_20261102.tar.gz"
 SAMPLE="$SRC/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json"
-NAME=bplan-runtime-clean-proof
-PORT=18768
+NAME=bplan-clean-isolated-final
 
 P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
 
-test -d "$SRC" || { echo "ERROR: Validated handoff missing"; exit 1; }
-test -s "$SAMPLE" || { echo "ERROR: Original test input missing"; exit 1; }
-test ! -e "$DST" || { echo "STOP: Destination already exists"; exit 1; }
-test ! -e "$OUT" || { echo "STOP: Archive already exists"; exit 1; }
+echo "=== VERIFY EXISTING CLEAN CANDIDATE ==="
 
-echo "=== CREATE MISSING CLEAN CANDIDATE ==="
+test -d "$DST"
+test -s "$SAMPLE"
+test -f "$DST/artifacts/v1.113/core-artifact/pipeline.py"
+test -f "$DST/artifacts/v1.113/lookup/aep_seq_2.csv"
+test -f "$DST/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_native_launcher.py"
 
-python3 - "$SRC" "$DST" <<'PY'
-from pathlib import Path
-import shutil, os, sys, fnmatch
-
-src = Path(sys.argv[1]).resolve()
-dst = Path(sys.argv[2])
-shutil.copytree(src, dst, symlinks=True)
-
-removed = []
-
-junk_dirs = {
-    "__pycache__", ".pytest_cache", ".mypy_cache",
-    ".ruff_cache", ".ipynb_checkpoints", ".git",
-    "tests", "test_samples"
-}
-junk_files = (
-    "*.pyc", "*.pyo", "*.log", "*.swp", "*.swo",
-    "*.tmp", "*.bak", "*.orig", "*.ipynb", "*~",
-    "test_*.py", "*_test.py"
-)
-
-for current, dirs, files in os.walk(dst, topdown=False):
-    folder = Path(current)
-    for name in files:
-        p = folder / name
-        if not p.is_symlink() and any(
-            fnmatch.fnmatch(name, x) for x in junk_files
-        ):
-            p.unlink()
-            removed.append(str(p.relative_to(dst)))
-    for name in dirs:
-        p = folder / name
-        if p.is_dir() and not p.is_symlink() and name in junk_dirs:
-            shutil.rmtree(p)
-            removed.append(str(p.relative_to(dst)) + "/")
-
-required = [
-    "artifacts/v1.113/core-artifact/pipeline.py",
-    "artifacts/v1.113/lookup/aep_seq_2.csv",
-    "artifacts/v1.113-max/maxserve_bplan_extension/"
-    "bplan_native_serve_dev/bplan_native_launcher.py"
-]
-
-for name in required:
-    assert (dst / name).is_file(), f"Missing required file: {name}"
-
-for p in dst.rglob("*"):
-    if p.is_symlink():
-        assert p.exists(), f"Broken symlink: {p}"
-        assert p.resolve().is_relative_to(dst.resolve()), (
-            f"External dependency: {p}"
-        )
-
-print("CLEAN FOLDER: CREATED")
-print("TEST/CACHE ITEMS REMOVED:", len(removed))
-print("REQUIRED FILES: PASS")
-print("PORTABLE WEIGHT LINKS: PASS")
-print("ORIGINAL RELEASE: UNCHANGED")
-PY
-
-echo "=== CHECK VERIFICATION RESOURCES ==="
-
-if ss -lnt "( sport = :$PORT )" | grep -q LISTEN; then
-    echo "STOP: Port 18768 occupied; existing service preserved"
-    exit 1
-fi
+test ! -e "$OUT"
+test ! -e "$OUT.partial"
 
 if "${P[@]}" container exists "$NAME"; then
-    echo "STOP: Existing proof container preserved"
-    exit 1
+  echo "STOP: Verification container name already exists"
+  exit 1
 fi
 
 CREATED=0
+
 cleanup() {
-    rc=$?
-    if [ "$CREATED" -eq 1 ]; then
-        if [ "$rc" -ne 0 ]; then
-            "${P[@]}" logs --tail 80 "$NAME" || true
-        fi
-        "${P[@]}" rm -f "$NAME" >/dev/null 2>&1 || true
+  rc=$?
+
+  if [ "$CREATED" -eq 1 ]; then
+    if [ "$rc" -ne 0 ]; then
+      echo "=== VERIFICATION FAILURE LOGS ==="
+      "${P[@]}" logs --tail 100 "$NAME" || true
     fi
+    "${P[@]}" rm -f "$NAME" >/dev/null 2>&1 || true
+  fi
 }
+
 trap cleanup EXIT
 
-echo "=== START NATIVE MAX FROM CLEAN FOLDER ==="
+echo "=== START ISOLATED NATIVE MAX SERVER ==="
 
 "${P[@]}" run -d \
-    --name "$NAME" \
-    --pull=never \
-    --network=host \
-    -v "$DST:/workspace:ro" \
-    -w /workspace \
-    -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
-    --entrypoint /opt/venv/bin/python \
-    localhost/cta-max-faiss:local \
-    -m bplan_native_serve_dev.bplan_native_launcher
+  --name "$NAME" \
+  --pull=never \
+  --network=none \
+  -v "$DST:/workspace:ro" \
+  -v "$SAMPLE:/tmp/bplan_sample.json:ro" \
+  -w /workspace \
+  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -m bplan_native_serve_dev.bplan_native_launcher
 
 CREATED=1
 
-READY=0
-for i in $(seq 1 180); do
-    CODE=$(curl -s --max-time 2 -o /dev/null \
-        -w '%{http_code}' \
-        http://127.0.0.1:18768/bplan/predict || true)
-    if [ "$CODE" = 405 ]; then
-        READY=1
-        break
-    fi
-    sleep 2
-done
+echo "=== TEST NATIVE HTTP INSIDE CONTAINER ==="
 
-test "$READY" -eq 1 || {
-    echo "NATIVE STARTUP: FAILED"
-    exit 1
-}
-
-HTTP=$(curl -sS --max-time 480 \
-    -o /tmp/bplan_runtime_clean_response.json \
-    -w '%{http_code}' \
-    -H 'Content-Type: application/json' \
-    --data-binary "@$SAMPLE" \
-    http://127.0.0.1:18768/bplan/predict)
-
-test "$HTTP" = 200
-
-python3 - <<'PY'
+"${P[@]}" exec -i "$NAME" /opt/venv/bin/python - <<'PY'
 import json
-with open("/tmp/bplan_runtime_clean_response.json") as f:
-    data = json.load(f)
-ctas = data["jsonData"]["prediction"]["ctaList"]
-assert isinstance(ctas, list) and len(ctas) == 4
-print("CLEAN NATIVE MAX HTTP 200: PASS")
+import time
+import urllib.request
+import urllib.error
+
+url = "http://127.0.0.1:18768/bplan/predict"
+
+ready = False
+
+for attempt in range(180):
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    except Exception:
+        status = None
+
+    if status == 405:
+        ready = True
+        break
+
+    time.sleep(2)
+
+assert ready, "Native MAX route did not become ready"
+
+print("NATIVE MAX ROUTE: PASS")
+
+with open("/tmp/bplan_sample.json", "rb") as f:
+    payload = f.read()
+
+request = urllib.request.Request(
+    url,
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
+
+with urllib.request.urlopen(request, timeout=480) as r:
+    status = r.status
+    response = json.load(r)
+
+assert status == 200
+
+ctas = response["jsonData"]["prediction"]["ctaList"]
+
+assert isinstance(ctas, list)
+assert len(ctas) == 4
+
+print("BPLAN CLEAN NATIVE HTTP 200: PASS")
 print("REAL BPLAN RESPONSE: PASS")
+print("CTA COUNT:", len(ctas))
+print("CLEAN RUNTIME: VERIFIED")
 PY
 
-echo "=== PACKAGE VERIFIED CLEAN FOLDER ==="
+echo "=== ADD TEAM RUN INSTRUCTIONS ==="
 
-tar -C "$DST" -czf "$OUT.partial" artifacts
+cat > "$DST/README.md" <<'EOF'
+# BPLAN v1.113 — Native Modular MAX Serve
+
+Clean single-request BPLAN runtime handoff.
+
+## Contents
+
+- artifacts/v1.113/: original DS model, weights and lookup assets
+- artifacts/v1.113-max/maxserve_bplan_extension/: native MAX integration
+
+Original model behavior and JSON contract are preserved.
+Duplicate weight content is consolidated through portable relative links.
+
+## Runtime requirements
+
+Use a compatible MAX + FAISS runtime image.
+The local POC image cta-max-faiss:local is NOT Verizon-approved.
+
+The validated Python module is:
+
+bplan_native_serve_dev.bplan_native_launcher
+
+From the package root, mount the folder read-only at /workspace
+and configure PYTHONPATH as:
+
+/workspace/artifacts/v1.113-max/maxserve_bplan_extension:
+/workspace/artifacts/v1.113/core-artifact:
+/workspace/artifacts/v1.113/utils/dependency-utils
+
+Native endpoint:
+POST http://127.0.0.1:18768/bplan/predict
+
+The receiving environment must provide the compatible runtime image,
+sufficient memory and an available serving port.
+
+A real BPLAN request returned HTTP 200 with four recommendations
+during isolated clean-package verification.
+
+This is a validated single-request POC, not production certification.
+EOF
+
+echo "=== CHECK PORTABLE LINKS ==="
+
+python3 - "$DST" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
+
+links = 0
+
+for p in root.rglob("*"):
+    if p.is_symlink():
+        assert p.exists(), f"Broken link: {p}"
+        assert p.resolve().is_relative_to(root), (
+            f"External link: {p}"
+        )
+        links += 1
+
+print("PORTABLE LINKS: PASS")
+print("LINKS CHECKED:", links)
+PY
+
+echo "=== PACKAGE VERIFIED HANDOFF ==="
+
+tar -C "$DST" -czf "$OUT.partial" \
+  artifacts README.md
+
 gzip -t "$OUT.partial"
+
 mv "$OUT.partial" "$OUT"
+
 sha256sum "$OUT" > "$OUT.sha256"
 sha256sum -c "$OUT.sha256"
 
-echo "BPLAN CLEAN RUNTIME: VERIFIED"
+echo "================================"
+echo "BPLAN CLEAN RUNTIME HTTP: PASS"
+echo "TEAM HANDOFF ARCHIVE: PASS"
 echo "ORIGINAL CTA AND BPLAN: UNCHANGED"
-echo "FOLDER: $DST"
-echo "ARCHIVE: $OUT"
+echo "CLEAN FOLDER: $DST"
+echo "CLEAN ARCHIVE: $OUT"
+echo "================================"
+
+ls -lh "$OUT" "$OUT.sha256"

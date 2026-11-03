@@ -1,32 +1,75 @@
-set -euo pipefail
+python3 - <<'PY'
+from pathlib import Path
+import tarfile, zipfile, hashlib, shutil
 
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1
-STAGE=/application1/BPLAN_MAX_FRESH_HANDOFF_TEST_20261102
-REL=artifacts/v1.113/lookup/page_seq_2.csv
+stage = Path("/application1/BPLAN_MAX_FRESH_HANDOFF_TEST_20261102")
+dest = stage / "artifacts/v1.113/lookup/page_seq_2.csv"
+suffix = "v1.113/lookup/page_seq_2.csv"
 
-echo "=== RECOVER EXACT BPLAN LOOKUP FROM GIT ==="
+matches = []
+checked = 0
 
-FOUND=0
+for base in (Path("/application1"), Path("/vzhome")):
+    if not base.exists():
+        continue
 
-while IFS= read -r REV; do
-  if git -C "$ROOT" cat-file -e "${REV}:${REL}" 2>/dev/null; then
-    mkdir -p "$STAGE/artifacts/v1.113/lookup"
+    for p in base.rglob("*"):
+        if "/podman/" in str(p) or not p.is_file():
+            continue
 
-    git -C "$ROOT" show "${REV}:${REL}" \
-      > "$STAGE/$REL"
+        name = p.name.lower()
+        if not name.endswith((".tar.gz", ".tgz", ".tar", ".zip")):
+            continue
 
-    if [ -s "$STAGE/$REL" ]; then
-      echo "BPLAN LOOKUP RECOVERED: PASS"
-      echo "SOURCE COMMIT: $REV"
-      ls -lh "$STAGE/$REL"
-      FOUND=1
-      break
-    fi
-  fi
-done < <(git -C "$ROOT" log --all --format=%H -- "$REL")
+        # Already-created handoff packages are known to lack this file.
+        if name.startswith("bplan_max_single_request_handoff_"):
+            continue
 
-if [ "$FOUND" -eq 0 ]; then
-  echo "BPLAN LOOKUP RECOVERY: BLOCKED"
-  echo "Required: $REL"
-  echo "Obtain the original v1.113 lookup artifact from the model owner."
-fi
+        checked += 1
+        try:
+            if zipfile.is_zipfile(p):
+                with zipfile.ZipFile(p) as z:
+                    for n in z.namelist():
+                        if n.endswith(suffix):
+                            matches.append((p, n, "zip"))
+            elif tarfile.is_tarfile(p):
+                with tarfile.open(p, "r:*") as t:
+                    for m in t:
+                        if m.isfile() and m.name.endswith(suffix):
+                            matches.append((p, m.name, "tar"))
+        except (OSError, tarfile.TarError, zipfile.BadZipFile) as e:
+            print("SKIPPED:", p, str(e)[:100])
+
+print("ARCHIVES CHECKED:", checked)
+print("EXACT V1.113 MATCHES:", len(matches))
+
+contents = {}
+
+for path, member, kind in matches:
+    if kind == "zip":
+        with zipfile.ZipFile(path) as z:
+            data = z.read(member)
+    else:
+        with tarfile.open(path, "r:*") as t:
+            data = t.extractfile(member).read()
+
+    if data:
+        digest = hashlib.sha256(data).hexdigest()
+        contents[digest] = data
+        print("FOUND:", path, member, "SHA256:", digest)
+
+if len(contents) == 1:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        assert hashlib.sha256(dest.read_bytes()).hexdigest() in contents, \
+            "STOP: Existing lookup differs"
+    else:
+        dest.write_bytes(next(iter(contents.values())))
+    print("BPLAN ORIGINAL LOOKUP RECOVERED: PASS")
+    print("DESTINATION:", dest)
+elif len(contents) > 1:
+    print("STOP: Conflicting versions. No file written.")
+else:
+    print("BPLAN LOOKUP NOT FOUND IN LOCAL ARCHIVES")
+    print("Original v1.113 model artifact storage is needed.")
+PY

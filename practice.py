@@ -1,6 +1,6 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
+import ast
 from pathlib import Path
-import ast, hashlib
 
 roots = {
     "PZAAS": Path("artifacts/v1.472"),
@@ -8,17 +8,21 @@ roots = {
 }
 
 for name, root in roots.items():
-    p = root/"utils/dependency-utils/models.py"
-    print(f"\n=== {name} GRec ARCHITECTURE ===")
-    if not p.is_file():
-        print("Missing:", p)
-        continue
-    tree = ast.parse(p.read_text())
-    for n in ast.walk(tree):
-        if isinstance(n, ast.ClassDef) and n.name in ("GRecBase", "GRecTransfer", "GRec"):
-            code = ast.dump(n, include_attributes=False)
-            print(n.name, "line:", n.lineno,
-                  "SHA:", hashlib.sha256(code.encode()).hexdigest()[:16])
-            print("Methods:", [x.name for x in n.body
-                  if isinstance(x, (ast.FunctionDef, ast.AsyncFunctionDef))][:25])
+    print(f"\n=== {name} GREC ARCHITECTURE ===")
+    for p in root.rglob("models.py"):
+        if "dependency-utils" not in str(p):
+            continue
+        tree = ast.parse(p.read_text())
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name in ("GRecBase", "GRecTransfer", "GRec"):
+                print(f"\nCLASS: {node.name}")
+                for method in node.body:
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        print(f"  {method.name}: line {method.lineno}")
+                for call in ast.walk(node):
+                    if isinstance(call, ast.Call):
+                        fn = call.func
+                        if isinstance(fn, ast.Attribute) and fn.attr in ("Linear", "Embedding", "MultiheadAttention", "TransformerEncoder"):
+                            print(f"  LAYER: {fn.attr} at line {call.lineno}")
+                break
 PY

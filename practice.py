@@ -1,28 +1,34 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-import ast
+import ast, hashlib
 from pathlib import Path
 
 roots = {
-    "PZAAS": Path("artifacts/v1.472"),
-    "CTA": Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168")
+    "PZAAS": Path("artifacts/v1.472/utils/dependency-utils/models.py"),
+    "CTA": Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168/utils/dependency-utils/models.py")
 }
+results = {}
+for name, path in roots.items():
+    tree = ast.parse(path.read_text())
+    results[name] = {
+        n.name: n for n in ast.walk(tree)
+        if isinstance(n, ast.ClassDef)
+        and n.name in ("GRecBase", "GRecTransfer")
+    }
 
-for name, root in roots.items():
-    print(f"\n=== {name} GREC ARCHITECTURE ===")
-    for p in root.rglob("models.py"):
-        if "dependency-utils" not in str(p):
-            continue
-        tree = ast.parse(p.read_text())
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef) and node.name in ("GRecBase", "GRecTransfer", "GRec"):
-                print(f"\nCLASS: {node.name}")
-                for method in node.body:
-                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        print(f"  {method.name}: line {method.lineno}")
-                for call in ast.walk(node):
-                    if isinstance(call, ast.Call):
-                        fn = call.func
-                        if isinstance(fn, ast.Attribute) and fn.attr in ("Linear", "Embedding", "MultiheadAttention", "TransformerEncoder"):
-                            print(f"  LAYER: {fn.attr} at line {call.lineno}")
-                break
+for cls in ("GRecBase", "GRecTransfer"):
+    print(f"\n=== {cls} ===")
+    a = results["PZAAS"].get(cls)
+    b = results["CTA"].get(cls)
+    if not a or not b:
+        print("Missing:", "PZAAS" if not a else "CTA")
+        continue
+    for name, node in (("PZAAS", a), ("CTA", b)):
+        methods = [x for x in node.body if isinstance(x, ast.FunctionDef)]
+        print(name, "bases:", [ast.unparse(x) for x in node.bases])
+        print(name, "methods:", [x.name for x in methods])
+    for method in ("__init__", "forward"):
+        def digest(node):
+            fn = next((x for x in node.body if isinstance(x, ast.FunctionDef) and x.name == method), None)
+            return hashlib.sha256(ast.dump(fn, include_attributes=False).encode()).hexdigest()[:12] if fn else "missing"
+        print(method, "MATCH" if digest(a) == digest(b) else "DIFFERENT")
 PY

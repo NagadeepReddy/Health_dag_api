@@ -1,30 +1,19 @@
 python3 - <<'PY'
+import ast
 from pathlib import Path
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
-folders = [
-    root / "artifacts/v1.113/core-artifact",
-    root / "artifacts/v1.113-max/maxserve_bplan_extension",
-]
-terms = ("ctalist", "serviceWidget", "propositionList",
-         "postprocess(", "process_scores(", "predict_raw(")
+p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/pipeline.py")
+lines = p.read_text().splitlines()
+tree = ast.parse("\n".join(lines))
 
-for folder in folders:
-    print(f"\n=== {folder} ===")
-    for file in sorted(folder.rglob("*.py")):
-        if "__pycache__" in file.parts:
-            continue
-        lines = file.read_text(errors="replace").splitlines()
-        matches = [
-            i for i, line in enumerate(lines)
-            if any(t.lower() in line.lower() for t in terms)
-        ]
-        if not matches:
-            continue
-        print(f"\nFILE: {file.relative_to(root)}")
-        for i in matches[:18]:
-            print(f"{i+1}: {lines[i].strip()[:220]}")
-        if len(matches) > 18:
-            print(f"... {len(matches)-18} more matches")
-print("\nREAD-ONLY POSTPROCESSING INSPECTION COMPLETE")
+for node in ast.walk(tree):
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "predict_raw":
+        print(f"\n=== ORIGINAL DS predict_raw(): {node.lineno}-{node.end_lineno} ===")
+        for i in range(max(node.lineno, node.end_lineno - 100), node.end_lineno + 1):
+            print(f"{i}: {lines[i-1]}")
+        break
+else:
+    print("predict_raw not found in pipeline.py")
+
+print("\nORIGINAL DS FILE UNCHANGED")
 PY

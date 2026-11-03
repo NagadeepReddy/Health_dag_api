@@ -1,76 +1,45 @@
-python3 - <<'PY'
+set -euo pipefail
+
+ARCHIVE=/application1/BPLAN_MAX_SINGLE_REQUEST_HANDOFF_20261102_PORTABLE.tar.gz
+STAGE=/application1/BPLAN_MAX_FRESH_HANDOFF_TEST_20261102
+
+cd /application1
+sha256sum -c "$(basename "$ARCHIVE").sha256"
+
+if [ -e "$STAGE" ]; then
+  echo "STOP: Fresh test directory already exists: $STAGE"
+  exit 1
+fi
+
+mkdir "$STAGE"
+tar -xzf "$ARCHIVE" -C "$STAGE"
+
+STAGE="$STAGE" python3 - <<'PY'
+import os
 from pathlib import Path
-import tarfile, posixpath, copy, hashlib, os
 
-src = Path("/application1/BPLAN_MAX_SINGLE_REQUEST_HANDOFF_20261102.tar.gz")
-dst = Path("/application1/BPLAN_MAX_SINGLE_REQUEST_HANDOFF_20261102_PORTABLE.tar.gz")
-tmp = Path(str(dst) + ".partial")
-root = "/application1/sajjna8/rt-pzai-bplan-v1/"
+root = Path(os.environ["STAGE"])
+required = [
+    "artifacts/v1.113/core-artifact/pipeline.py",
+    "artifacts/v1.113/core-artifact/base_model.pt",
+    "artifacts/v1.113/core-artifact/bplan_model.pt",
+    "artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_native_launcher.py",
+]
 
-assert src.is_file(), "Original archive missing"
-fixes = {}
+for name in required:
+    assert (root / name).is_file(), f"MISSING: {name}"
 
-try:
-    with tarfile.open(src, "r:gz") as reader:
-        members = reader.getmembers()
-        names = {posixpath.normpath(m.name) for m in members}
+links = [p for p in root.rglob("*") if p.is_symlink()]
+for link in links:
+    assert not os.path.isabs(os.readlink(link)), f"ABSOLUTE LINK: {link}"
+    assert link.resolve(strict=True).is_relative_to(root.resolve()), f"UNSAFE LINK: {link}"
 
-        for m in members:
-            if not m.issym():
-                continue
+weights = list(root.rglob("max_weights/*.npy"))
 
-            link = m.linkname
-            if link.startswith("/"):
-                assert link.startswith(root), f"External link: {link}"
-                link = posixpath.relpath(
-                    link[len(root):],
-                    posixpath.dirname(m.name)
-                )
-                fixes[m.name] = link
-
-            resolved = posixpath.normpath(
-                posixpath.join(posixpath.dirname(m.name), link)
-            )
-            assert not resolved.startswith("../")
-            assert resolved in names or any(
-                n.startswith(resolved + "/") for n in names
-            ), f"Missing symlink target: {m.name}"
-
-        assert len(fixes) == 1, f"Expected one fix, found {len(fixes)}"
-
-        print("REPAIRING:", fixes, flush=True)
-
-        with tarfile.open(tmp, "w:gz", compresslevel=3) as writer:
-            for m in members:
-                item = copy.copy(m)
-                if item.name in fixes:
-                    item.linkname = fixes[item.name]
-                writer.addfile(
-                    item,
-                    reader.extractfile(m) if m.isfile() else None
-                )
-
-    with tarfile.open(tmp, "r:gz") as check:
-        assert len(check.getmembers()) == len(members)
-        assert all(not m.linkname.startswith("/")
-                   for m in check if m.issym())
-
-    os.replace(tmp, dst)
-
-    h = hashlib.sha256()
-    with dst.open("rb") as f:
-        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
-            h.update(chunk)
-
-    Path(str(dst) + ".sha256").write_text(
-        f"{h.hexdigest()}  {dst.name}\n"
-    )
-
-    print("BPLAN PORTABLE ARCHIVE: PASS")
-    print("ORIGINAL ARCHIVE: UNCHANGED")
-    print("NEW ARCHIVE:", dst)
-    print("SIZE MB:", round(dst.stat().st_size / 1048576))
-
-finally:
-    tmp.unlink(missing_ok=True)
+print("FRESH EXTRACTION: PASS")
+print("REQUIRED FILES: PASS")
+print("SYMLINK TARGETS: PASS", len(links))
+print("MAX NPY WEIGHTS:", len(weights))
+print("ISOLATED STAGE:", root)
+print("READY FOR FRESH-CONTAINER NATIVE HTTP TEST")
 PY

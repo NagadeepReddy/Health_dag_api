@@ -1,57 +1,59 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && \
-OUT="$PWD/artifacts/v1.472-max/pzaas_max/pzaas_base_weights" && \
-mkdir -p "$OUT" && \
-podman --root /application1/podman/storage \
---runroot /run/containers/storage run --rm -i \
---network none --read-only --memory 3g \
--e PYTHONDONTWRITEBYTECODE=1 \
--v "$PWD/artifacts/v1.472/core-artifact:/model:ro" \
--v "$OUT:/out:rw" \
---entrypoint python3 localhost/cta-max-faiss:local - <<'PY'
-import torch, numpy as np, os, shutil, json
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
+import json
 
-out = Path("/out")
-if any(out.iterdir()):
-    raise SystemExit("STOP: Output directory not empty")
+root = Path("artifacts/v1.472-max/pzaas_max")
+weights = root / "pzaas_base_weights"
+manifest = json.loads((weights / "manifest.json").read_text())
+target = root / "pzaas_weight_loader.py"
 
-available = 0
-for line in Path("/proc/meminfo").read_text().splitlines():
-    if line.startswith("MemAvailable:"):
-        available = int(line.split()[1]) * 1024
+if target.exists():
+    raise SystemExit("STOP: Loader already exists")
 
-if available < 4 * 1024**3:
-    raise SystemExit("RAM GUARD: Need 4 GiB available")
+if len(manifest) != 208:
+    raise SystemExit("STOP: Unexpected tensor count")
 
-if shutil.disk_usage(out).free < 1024**3:
-    raise SystemExit("DISK GUARD: Need 1 GiB free")
+missing = [
+    k for k, v in manifest.items()
+    if not (weights / v["file"]).is_file()
+]
+if missing:
+    raise SystemExit(f"Missing weights: {missing[:5]}")
 
-state = torch.load(
-    "/model/model_0_base.pt",
-    map_location="cpu",
-    weights_only=True,
-    mmap=True
-)
-if isinstance(state, dict) and isinstance(state.get("state_dict"), dict):
-    state = state["state_dict"]
+code = '''
+from pathlib import Path
+import json
+import numpy as np
 
-manifest = {}
-for name, tensor in state.items():
-    if not isinstance(tensor, torch.Tensor):
-        continue
-    filename = name.replace("/", "__") + ".npy"
-    array = tensor.detach().cpu().contiguous().numpy()
-    np.save(out / filename, array, allow_pickle=False)
-    manifest[name] = {
-        "file": filename,
-        "shape": list(array.shape),
-        "dtype": str(array.dtype)
-    }
+WEIGHTS = Path(__file__).resolve().parent / "pzaas_base_weights"
+MANIFEST = json.loads((WEIGHTS / "manifest.json").read_text())
 
-(out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+def load_weight(name, expected_shape=None):
+    if name not in MANIFEST:
+        raise KeyError(f"PZAAS weight missing: {name}")
 
-print("PZAAS WEIGHT EXPORT: PASS")
-print("EXPORTED TENSORS:", len(manifest))
-print("MODEL:", "v1.472 / model_0_base.pt")
+    entry = MANIFEST[name]
+    path = (WEIGHTS / entry["file"]).resolve()
+
+    if path.parent != WEIGHTS.resolve():
+        raise ValueError("Invalid weight path")
+
+    array = np.load(path, mmap_mode="r", allow_pickle=False)
+
+    if expected_shape is not None:
+        if tuple(array.shape) != tuple(expected_shape):
+            raise ValueError(
+                f"{name}: expected {expected_shape}, got {array.shape}"
+            )
+
+    return array
+'''
+
+compile(code, str(target), "exec")
+target.write_text(code)
+
+print("PZAAS WEIGHT LOADER: CREATED")
+print("EXPORTED WEIGHTS VERIFIED:", len(manifest))
+print("MAX GRAPH WIRING: PENDING")
 print("ORIGINAL DS: UNCHANGED")
 PY

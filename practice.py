@@ -1,7 +1,7 @@
 ROOT=/application1/sajjna8/rt-pzai-bplan-v1
 
 podman --root /application1/podman/storage \
-  --runroot /run/containers/storage run --rm \
+  --runroot /run/containers/storage run --rm -i \
   --pull=never --network=host \
   -v "$ROOT:/workspace:ro" \
   -v /tmp:/results \
@@ -13,19 +13,20 @@ import json
 from pathlib import Path
 from pipeline import pipeline
 
-sample = Path("test_samples/test_sample_1.json")
-body = json.loads(sample.read_text())
+print("PYTORCH BASELINE: START", flush=True)
 
-print("PYTORCH SAME-REQUEST BASELINE: START", flush=True)
+body = json.loads(Path("test_samples/test_sample_1.json").read_text())
 p = pipeline()
+print("LOADING ORIGINAL PYTORCH MODEL", flush=True)
 p.load()
+print("RUNNING ORIGINAL PREDICTION", flush=True)
 response = p.predict_raw(body)
 
 output = Path("/results/bplan_pytorch_final_same_request.json")
 output.write_text(json.dumps(response, default=str))
 
-prediction = response.get("jsonData", {}).get("prediction", {})
-print("PREDICTION KEYS:", list(prediction))
-print("FINAL RESPONSE SAVED:", output)
-print("PYTORCH SAME-REQUEST BASELINE: PASS")
+print("FINAL PREDICTION KEYS:",
+      list(response.get("jsonData", {}).get("prediction", {})))
+print("PYTORCH BASELINE SAVED:", output)
+print("PYTORCH SAME-REQUEST BASELINE: PASS", flush=True)
 PY

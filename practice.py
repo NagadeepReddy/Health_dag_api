@@ -1,141 +1,82 @@
 python3 - <<'PY'
 from pathlib import Path
-from collections import defaultdict
-import hashlib, re
+import ast
+import re
 
-ROOT = Path("/application1/BPLAN_MAX_RUNTIME_CLEAN_20261102")
-EXT = ROOT / "artifacts/v1.113-max/maxserve_bplan_extension"
+root = Path("/application1/BPLAN_MAX_RUNTIME_CLEAN_20261102")
+ext = root / "artifacts/v1.113-max/maxserve_bplan_extension"
 
-assert ROOT.is_dir(), "Clean handoff missing"
-assert EXT.is_dir(), "MAX integration missing"
-
-required = [
-    "artifacts/v1.113/core-artifact/pipeline.py",
-    "artifacts/v1.113/lookup/aep_seq_2.csv",
-    "artifacts/v1.113-max/maxserve_bplan_extension/"
-    "bplan_native_serve_dev/bplan_native_launcher.py",
+targets = [
+    "bplan_weights.py",
+    "live_cta_pipeline_bridge.py",
+    "run_batch2_contract.py",
+    "bplan_max_projection_parity.py",
+    "cta_reference/cta_worker_adapter.py",
 ]
 
-print("=== REQUIRED RUNTIME FILES ===")
-for name in required:
-    p = ROOT / name
-    assert p.is_file(), f"MISSING: {name}"
-print("PASS")
-
-files = [p for p in ROOT.rglob("*") if p.is_file()]
-code = [p for p in files if p.suffix == ".py"]
-
-texts = {}
-for p in files:
-    if p.suffix in {
-        ".py", ".sh", ".json", ".yaml", ".yml",
-        ".toml", ".cfg", ".txt", ".pbtxt"
-    } and p.stat().st_size < 2_000_000:
-        texts[p] = p.read_text(errors="replace")
-
-print("\n=== LEFTOVER TEST/DEBUG ARTIFACTS ===")
-
-patterns = re.compile(
-    r"(^test_|_test\.py$|parity|benchmark|diagnostic|"
-    r"debug|probe|inspect|audit|experiment|backup|"
-    r"\.bak$|\.orig$|\.pyc$|\.log$)",
-    re.I
-)
-
-suspects = [
-    p for p in files
-    if patterns.search(p.name)
-    and p.name != "bplan_native_launcher.py"
+sources = [
+    p for p in root.rglob("*")
+    if p.is_file()
+    and p.suffix in {".py", ".sh", ".json", ".yaml", ".yml", ".toml"}
+    and p.stat().st_size < 2000000
 ]
 
-for p in suspects:
-    print("REVIEW:", p.relative_to(ROOT))
-print("SUSPECT FILES:", len(suspects))
+for name in targets:
+    p = ext / name
+    print("\n=== MODULE:", name, "===")
 
-print("\n=== POSSIBLY UNUSED MAX PYTHON MODULES ===")
-
-unused = []
-
-for p in sorted(EXT.rglob("*.py")):
-    if p.name == "__init__.py":
-        continue
-    if "launcher" in p.stem.lower():
+    if not p.is_file():
+        print("MISSING")
         continue
 
-    stem = p.stem
-    references = [
-        q for q, content in texts.items()
-        if q != p and re.search(
-            rf"\b{re.escape(stem)}\b", content
-        )
-    ]
+    content = p.read_text(errors="replace")
 
-    if not references:
-        unused.append(p)
-        print("REVIEW:", p.relative_to(ROOT))
+    print("LINES:", len(content.splitlines()))
+    print("SIZE:", p.stat().st_size)
 
-print("POSSIBLY UNREFERENCED MODULES:", len(unused))
-print("(Dynamic imports and standalone entrypoints require review.)")
+    try:
+        tree = ast.parse(content)
+        definitions = [
+            n.name for n in tree.body
+            if isinstance(
+                n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+        ]
+        imports = [
+            n.module for n in ast.walk(tree)
+            if isinstance(n, ast.ImportFrom) and n.module
+        ]
+        imports += [
+            alias.name
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Import)
+            for alias in n.names
+        ]
+        print("DEFINITIONS:", definitions[:15])
+        print("IMPORTS:", imports[:20])
+    except SyntaxError as e:
+        print("SYNTAX ERROR:", e)
 
-def sha(path):
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024*1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    references = []
+    for q in sources:
+        if q == p:
+            continue
+        text = q.read_text(errors="replace")
+        if re.search(r"\b" + re.escape(p.stem) + r"\b", text):
+            references.append(str(q.relative_to(root)))
 
-print("\n=== DUPLICATE PYTHON SOURCE CONTENT ===")
+    print("REFERENCED BY:", len(references))
+    for ref in references[:20]:
+        print("  ", ref)
 
-groups = defaultdict(list)
-for p in code:
-    groups[sha(p)].append(p)
+    print("FIRST 12 LINES:")
+    for line in content.splitlines()[:12]:
+        print("  ", line[:150])
 
-duplicates = [v for v in groups.values() if len(v) > 1]
-for group in duplicates:
-    print("DUPLICATE GROUP:")
-    for p in group:
-        print(" ", p.relative_to(ROOT))
+print("\n=== DEVELOPMENT ARTIFACT ===")
+p = ext / "bplan_max_full_dependency_audit.json"
+print("EXISTS:", p.is_file())
+print("SIZE:", p.stat().st_size if p.is_file() else 0)
 
-print("DUPLICATE PYTHON GROUPS:", len(duplicates))
-
-print("\n=== DUPLICATE PHYSICAL MAX WEIGHTS ===")
-
-weights = defaultdict(list)
-for p in EXT.rglob("*.npy"):
-    if p.is_file() and not p.is_symlink():
-        weights[sha(p)].append(p)
-
-duplicates = [v for v in weights.values() if len(v) > 1]
-for group in duplicates:
-    print("DUPLICATE WEIGHTS:")
-    for p in group:
-        print(" ", p.relative_to(ROOT))
-
-print("DUPLICATE PHYSICAL WEIGHT GROUPS:", len(duplicates))
-
-print("\n=== PORTABILITY ===")
-
-links = [p for p in ROOT.rglob("*") if p.is_symlink()]
-bad = [
-    p for p in links
-    if not p.exists()
-    or not p.resolve().is_relative_to(ROOT.resolve())
-]
-
-for p in bad:
-    print("BROKEN/EXTERNAL:", p.relative_to(ROOT))
-
-print("SYMLINKS CHECKED:", len(links))
-print("UNSAFE LINKS:", len(bad))
-
-print("\n=== AUDIT SUMMARY ===")
-print("PYTHON FILES:", len(code))
-print("TOTAL FILES:", len(files))
-print("SUSPECT ARTIFACTS:", len(suspects))
-print("POSSIBLY UNUSED MODULES:", len(unused))
-print("DUPLICATE SOURCE GROUPS:",
-      len([v for v in groups.values() if len(v) > 1]))
-print("DUPLICATE PHYSICAL WEIGHT GROUPS:", len(duplicates))
-print("UNSAFE LINKS:", len(bad))
-print("ORIGINAL VALIDATED RELEASES: UNCHANGED")
+print("\nINSPECTION COMPLETE — NO FILES CHANGED")
 PY

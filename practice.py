@@ -1,34 +1,32 @@
+set -euo pipefail
+
 ROOT=/application1/sajjna8/rt-pzai-bplan-v1
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+STAGE=/application1/BPLAN_MAX_FRESH_HANDOFF_TEST_20261102
+REL=artifacts/v1.113/lookup/page_seq_2.csv
 
-echo "=== FIND ORIGINAL BPLAN LOOKUP DATA ==="
+echo "=== RECOVER EXACT BPLAN LOOKUP FROM GIT ==="
 
-find /application1 \
-  -path /application1/podman -prune -o \
-  -type f \( -name 'page_seq_2.csv' -o -name 'page_seq_2.csv.gz' \) \
-  -print 2>/dev/null
+FOUND=0
 
-echo "=== FIND LOOKUP REFERENCES ==="
+while IFS= read -r REV; do
+  if git -C "$ROOT" cat-file -e "${REV}:${REL}" 2>/dev/null; then
+    mkdir -p "$STAGE/artifacts/v1.113/lookup"
 
-grep -Rn --include='*.py' \
-  'page_seq_2.csv' \
-  "$ROOT/artifacts/v1.113" \
-  2>/dev/null | head -20
+    git -C "$ROOT" show "${REV}:${REL}" \
+      > "$STAGE/$REL"
 
-echo "=== EXISTING BPLAN CONTAINERS ==="
-
-"${P[@]}" ps -a --format '{{.Names}} | {{.Status}}' \
-  | grep -i bplan || true
-
-echo "=== PREVIOUS CONTAINER MOUNTS ==="
-
-for NAME in bplan-debug bplan-fresh-handoff-proof; do
-  if "${P[@]}" container exists "$NAME"; then
-    echo "CONTAINER: $NAME"
-    "${P[@]}" inspect --format \
-      '{{range .Mounts}}{{println .Source "=>" .Destination}}{{end}}' \
-      "$NAME"
+    if [ -s "$STAGE/$REL" ]; then
+      echo "BPLAN LOOKUP RECOVERED: PASS"
+      echo "SOURCE COMMIT: $REV"
+      ls -lh "$STAGE/$REL"
+      FOUND=1
+      break
+    fi
   fi
-done
+done < <(git -C "$ROOT" log --all --format=%H -- "$REL")
 
-echo "BPLAN LOOKUP SOURCE INVESTIGATION COMPLETE"
+if [ "$FOUND" -eq 0 ]; then
+  echo "BPLAN LOOKUP RECOVERY: BLOCKED"
+  echo "Required: $REL"
+  echo "Obtain the original v1.113 lookup artifact from the model owner."
+fi

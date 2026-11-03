@@ -1,56 +1,38 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+python3 - <<'PY'
+import json
+from pathlib import Path
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "STOP: Use the authorized ROOT shell, not sajjna8."
-else
-  echo "=== RECREATE ONLY BPLAN DEBUG CONTAINER ==="
-  "${P[@]}" rm -f --ignore bplan-debug
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
+actual = Path("/tmp/bplan_response_trace.json")
 
-  if "${P[@]}" run -d \
-    --name bplan-debug \
-    --pull=never \
-    --network=host \
-    -v "$ROOT:/workspace:ro" \
-    -w /workspace \
-    -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
-    --entrypoint /opt/venv/bin/python \
-    localhost/cta-max-faiss:local \
-    -m bplan_native_serve_dev.bplan_native_launcher
-  then
-    READY=0
+refs = list(root.glob("**/bplan_pytorch_baseline.json"))
+refs += list(Path("/tmp").glob("bplan_pytorch_baseline.json"))
 
-    for i in $(seq 1 90); do
-      CODE=$(curl -s --max-time 2 -o /dev/null \
-        -w '%{http_code}' http://127.0.0.1:18768/bplan/predict)
-      if [ "$CODE" = "405" ]; then
-        READY=1
-        break
-      fi
-      sleep 2
-    done
+assert actual.is_file(), "HTTP response file missing"
+assert refs, "Saved PyTorch baseline not found"
 
-    if [ "$READY" = 1 ]; then
-      echo "=== REAL BPLAN HTTP REQUEST ==="
-      curl -sS --max-time 150 \
-        -o /tmp/bplan_response_trace.json \
-        -w 'HTTP STATUS: %{http_code}; TIME: %{time_total}s\n' \
-        -X POST http://127.0.0.1:18768/bplan/predict \
-        -H 'Content-Type: application/json' \
-        --data-binary @"$ROOT/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json"
+baseline = json.loads(refs[0].read_text())
+native = json.loads(actual.read_text())
 
-      echo "=== HTTP RESPONSE ==="
-      head -c 500 /tmp/bplan_response_trace.json 2>/dev/null
-      echo
-    else
-      echo "BPLAN ROUTE NOT READY"
-    fi
-  else
-    echo "BPLAN CONTAINER CREATION FAILED"
-  fi
+def prediction(obj):
+    return obj.get("jsonData", {}).get("prediction", {})
 
-  echo "=== BPLAN RESPONSE DELIVERY ==="
-  "${P[@]}" logs --tail 250 bplan-debug 2>&1 |
-    grep -E 'BPLAN TRACE|BPLAN REAL MAX|BPLAN RESPONSE SEND|Traceback|Error|ERROR' |
-    tail -45
-fi
+a, b = prediction(baseline), prediction(native)
+
+print("PYTORCH REFERENCE:", refs[0])
+print("NATIVE HTTP RESPONSE:", actual)
+print("PYTORCH PREDICTION KEYS:", sorted(a))
+print("NATIVE PREDICTION KEYS:", sorted(b))
+
+if not a or not b:
+    print("PARITY: BLOCKED - prediction structure missing")
+elif a == b:
+    print("BUSINESS PARITY: EXACT PASS")
+else:
+    print("BUSINESS PARITY: DIFFERENCES FOUND")
+    for key in sorted(set(a) | set(b)):
+        if a.get(key) != b.get(key):
+            print("DIFFERENT FIELD:", key)
+            print("PYTORCH:", str(a.get(key))[:500])
+            print("NATIVE:", str(b.get(key))[:500])
+PY

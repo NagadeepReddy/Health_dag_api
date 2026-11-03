@@ -2,81 +2,30 @@ cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 import ast, json
 
-root = Path("artifacts/v1.472-max/pzaas_max")
-manifest = json.loads(
-    (root/"pzaas_base_weights/manifest.json").read_text()
-)
+r = Path("artifacts/v1.472-max/pzaas_max")
+m = json.loads((r/"pzaas_base_weights/manifest.json").read_text())
 
-modules = {
-    "grecbase_aux_branches_max.py": "",
-    "main_context_max.py": "context_head.",
-    "sibling_context_max.py": "sibling_context_head.",
-}
+for name in ("grecbase_get_path_max.py", "nlp_bert_in_graph.py"):
+    p = r/name
+    print(f"\n=== {name} ===")
+    lines = p.read_text().splitlines()
 
-updates = {}
+    for i, line in enumerate(lines, 1):
+        if i <= 85:
+            print(f"{i}: {line[:150]}")
 
-for filename, prefix in modules.items():
-    p = root / filename
-    source = p.read_text()
-    tree = ast.parse(source)
+print("\n=== RELEVANT PZAAS WEIGHTS ===")
+for prefix in ("remove_tasks_", "nlp_encoder.", "nlp_dense_", "moe_"):
+    keys = [k for k in m if k.startswith(prefix)]
+    print(prefix, "COUNT:", len(keys))
+    for key in keys[:8]:
+        print(" ", key, m[key]["shape"])
 
-    if prefix and not any(k.startswith(prefix) for k in manifest):
-        raise SystemExit(f"STOP: Missing weight group {prefix}")
+print("\n=== GRAPH REFERENCES ===")
+p = r/"grecbase_fusion_full_head_72_max.py"
+for i, line in enumerate(p.read_text().splitlines(), 1):
+    if "get_path" in line or "nlp_bert" in line:
+        print(f"{i}: {line[:160]}")
 
-    loads = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and isinstance(n.func.value, ast.Name)
-        and n.func.value.id == "np"
-        and n.func.attr == "load"
-    ]
-
-    if not loads and "load_weight(" in source:
-        print("ALREADY WIRED:", filename)
-        continue
-
-    if len(loads) != 1:
-        raise SystemExit(f"STOP: Unexpected load count in {filename}")
-
-    old = ast.get_source_segment(source, loads[0])
-    if "WDIR" not in old or "name" not in old:
-        raise SystemExit(f"STOP: Unexpected load in {filename}")
-
-    new = (
-        f'load_weight("{prefix}" + name)'
-        if prefix else 'load_weight(name)'
-    )
-
-    if source.count(old) != 1:
-        raise SystemExit(f"STOP: Non-unique load in {filename}")
-
-    source = source.replace(old, new, 1)
-
-    imp = "from pzaas_max.pzaas_weight_loader import load_weight\n"
-    if imp not in source:
-        parsed = ast.parse(source)
-        lines = source.splitlines(keepends=True)
-        pos = 0
-        if parsed.body and isinstance(parsed.body[0], ast.Expr):
-            value = parsed.body[0].value
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                pos = parsed.body[0].end_lineno
-        for n in parsed.body:
-            if isinstance(n, ast.ImportFrom) and n.module == "__future__":
-                pos = max(pos, n.end_lineno)
-        lines.insert(pos, imp)
-        source = "".join(lines)
-
-    compile(source, str(p), "exec")
-    updates[p] = source
-
-for p, source in updates.items():
-    p.write_text(source)
-    print("WIRED:", p.name)
-
-print("\nPZAAS THREE-MODULE WEIGHT WIRING: PASS")
-print("SYNTAX: PASS")
-print("GET_PATH / NLP / DIMENSIONS: PENDING")
-print("ORIGINAL DS: UNCHANGED")
+print("\nREAD-ONLY INSPECTION: COMPLETE")
 PY

@@ -1,203 +1,141 @@
-set -Eeuo pipefail
+python3 - <<'PY'
+from pathlib import Path
+from collections import defaultdict
+import hashlib, re
 
-BASE=/application1
-SRC="$BASE/BPLAN_MAX_TEAM_HANDOFF_20261102"
-DST="$BASE/BPLAN_MAX_RUNTIME_CLEAN_20261102"
-OUT="$BASE/BPLAN_MAX_RUNTIME_CLEAN_20261102.tar.gz"
-SAMPLE="$SRC/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json"
-NAME=bplan-clean-isolated-final
+ROOT = Path("/application1/BPLAN_MAX_RUNTIME_CLEAN_20261102")
+EXT = ROOT / "artifacts/v1.113-max/maxserve_bplan_extension"
 
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+assert ROOT.is_dir(), "Clean handoff missing"
+assert EXT.is_dir(), "MAX integration missing"
 
-echo "=== VERIFY EXISTING CLEAN CANDIDATE ==="
+required = [
+    "artifacts/v1.113/core-artifact/pipeline.py",
+    "artifacts/v1.113/lookup/aep_seq_2.csv",
+    "artifacts/v1.113-max/maxserve_bplan_extension/"
+    "bplan_native_serve_dev/bplan_native_launcher.py",
+]
 
-test -d "$DST"
-test -s "$SAMPLE"
-test -f "$DST/artifacts/v1.113/core-artifact/pipeline.py"
-test -f "$DST/artifacts/v1.113/lookup/aep_seq_2.csv"
-test -f "$DST/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev/bplan_native_launcher.py"
+print("=== REQUIRED RUNTIME FILES ===")
+for name in required:
+    p = ROOT / name
+    assert p.is_file(), f"MISSING: {name}"
+print("PASS")
 
-test ! -e "$OUT"
-test ! -e "$OUT.partial"
+files = [p for p in ROOT.rglob("*") if p.is_file()]
+code = [p for p in files if p.suffix == ".py"]
 
-if "${P[@]}" container exists "$NAME"; then
-  echo "STOP: Verification container name already exists"
-  exit 1
-fi
+texts = {}
+for p in files:
+    if p.suffix in {
+        ".py", ".sh", ".json", ".yaml", ".yml",
+        ".toml", ".cfg", ".txt", ".pbtxt"
+    } and p.stat().st_size < 2_000_000:
+        texts[p] = p.read_text(errors="replace")
 
-CREATED=0
+print("\n=== LEFTOVER TEST/DEBUG ARTIFACTS ===")
 
-cleanup() {
-  rc=$?
-
-  if [ "$CREATED" -eq 1 ]; then
-    if [ "$rc" -ne 0 ]; then
-      echo "=== VERIFICATION FAILURE LOGS ==="
-      "${P[@]}" logs --tail 100 "$NAME" || true
-    fi
-    "${P[@]}" rm -f "$NAME" >/dev/null 2>&1 || true
-  fi
-}
-
-trap cleanup EXIT
-
-echo "=== START ISOLATED NATIVE MAX SERVER ==="
-
-"${P[@]}" run -d \
-  --name "$NAME" \
-  --pull=never \
-  --network=none \
-  -v "$DST:/workspace:ro" \
-  -v "$SAMPLE:/tmp/bplan_sample.json:ro" \
-  -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local \
-  -m bplan_native_serve_dev.bplan_native_launcher
-
-CREATED=1
-
-echo "=== TEST NATIVE HTTP INSIDE CONTAINER ==="
-
-"${P[@]}" exec -i "$NAME" /opt/venv/bin/python - <<'PY'
-import json
-import time
-import urllib.request
-import urllib.error
-
-url = "http://127.0.0.1:18768/bplan/predict"
-
-ready = False
-
-for attempt in range(180):
-    try:
-        with urllib.request.urlopen(url, timeout=2) as r:
-            status = r.status
-    except urllib.error.HTTPError as e:
-        status = e.code
-    except Exception:
-        status = None
-
-    if status == 405:
-        ready = True
-        break
-
-    time.sleep(2)
-
-assert ready, "Native MAX route did not become ready"
-
-print("NATIVE MAX ROUTE: PASS")
-
-with open("/tmp/bplan_sample.json", "rb") as f:
-    payload = f.read()
-
-request = urllib.request.Request(
-    url,
-    data=payload,
-    headers={"Content-Type": "application/json"},
-    method="POST"
+patterns = re.compile(
+    r"(^test_|_test\.py$|parity|benchmark|diagnostic|"
+    r"debug|probe|inspect|audit|experiment|backup|"
+    r"\.bak$|\.orig$|\.pyc$|\.log$)",
+    re.I
 )
 
-with urllib.request.urlopen(request, timeout=480) as r:
-    status = r.status
-    response = json.load(r)
+suspects = [
+    p for p in files
+    if patterns.search(p.name)
+    and p.name != "bplan_native_launcher.py"
+]
 
-assert status == 200
+for p in suspects:
+    print("REVIEW:", p.relative_to(ROOT))
+print("SUSPECT FILES:", len(suspects))
 
-ctas = response["jsonData"]["prediction"]["ctaList"]
+print("\n=== POSSIBLY UNUSED MAX PYTHON MODULES ===")
 
-assert isinstance(ctas, list)
-assert len(ctas) == 4
+unused = []
 
-print("BPLAN CLEAN NATIVE HTTP 200: PASS")
-print("REAL BPLAN RESPONSE: PASS")
-print("CTA COUNT:", len(ctas))
-print("CLEAN RUNTIME: VERIFIED")
-PY
+for p in sorted(EXT.rglob("*.py")):
+    if p.name == "__init__.py":
+        continue
+    if "launcher" in p.stem.lower():
+        continue
 
-echo "=== ADD TEAM RUN INSTRUCTIONS ==="
-
-cat > "$DST/README.md" <<'EOF'
-# BPLAN v1.113 — Native Modular MAX Serve
-
-Clean single-request BPLAN runtime handoff.
-
-## Contents
-
-- artifacts/v1.113/: original DS model, weights and lookup assets
-- artifacts/v1.113-max/maxserve_bplan_extension/: native MAX integration
-
-Original model behavior and JSON contract are preserved.
-Duplicate weight content is consolidated through portable relative links.
-
-## Runtime requirements
-
-Use a compatible MAX + FAISS runtime image.
-The local POC image cta-max-faiss:local is NOT Verizon-approved.
-
-The validated Python module is:
-
-bplan_native_serve_dev.bplan_native_launcher
-
-From the package root, mount the folder read-only at /workspace
-and configure PYTHONPATH as:
-
-/workspace/artifacts/v1.113-max/maxserve_bplan_extension:
-/workspace/artifacts/v1.113/core-artifact:
-/workspace/artifacts/v1.113/utils/dependency-utils
-
-Native endpoint:
-POST http://127.0.0.1:18768/bplan/predict
-
-The receiving environment must provide the compatible runtime image,
-sufficient memory and an available serving port.
-
-A real BPLAN request returned HTTP 200 with four recommendations
-during isolated clean-package verification.
-
-This is a validated single-request POC, not production certification.
-EOF
-
-echo "=== CHECK PORTABLE LINKS ==="
-
-python3 - "$DST" <<'PY'
-from pathlib import Path
-import sys
-
-root = Path(sys.argv[1]).resolve()
-
-links = 0
-
-for p in root.rglob("*"):
-    if p.is_symlink():
-        assert p.exists(), f"Broken link: {p}"
-        assert p.resolve().is_relative_to(root), (
-            f"External link: {p}"
+    stem = p.stem
+    references = [
+        q for q, content in texts.items()
+        if q != p and re.search(
+            rf"\b{re.escape(stem)}\b", content
         )
-        links += 1
+    ]
 
-print("PORTABLE LINKS: PASS")
-print("LINKS CHECKED:", links)
+    if not references:
+        unused.append(p)
+        print("REVIEW:", p.relative_to(ROOT))
+
+print("POSSIBLY UNREFERENCED MODULES:", len(unused))
+print("(Dynamic imports and standalone entrypoints require review.)")
+
+def sha(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024*1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+print("\n=== DUPLICATE PYTHON SOURCE CONTENT ===")
+
+groups = defaultdict(list)
+for p in code:
+    groups[sha(p)].append(p)
+
+duplicates = [v for v in groups.values() if len(v) > 1]
+for group in duplicates:
+    print("DUPLICATE GROUP:")
+    for p in group:
+        print(" ", p.relative_to(ROOT))
+
+print("DUPLICATE PYTHON GROUPS:", len(duplicates))
+
+print("\n=== DUPLICATE PHYSICAL MAX WEIGHTS ===")
+
+weights = defaultdict(list)
+for p in EXT.rglob("*.npy"):
+    if p.is_file() and not p.is_symlink():
+        weights[sha(p)].append(p)
+
+duplicates = [v for v in weights.values() if len(v) > 1]
+for group in duplicates:
+    print("DUPLICATE WEIGHTS:")
+    for p in group:
+        print(" ", p.relative_to(ROOT))
+
+print("DUPLICATE PHYSICAL WEIGHT GROUPS:", len(duplicates))
+
+print("\n=== PORTABILITY ===")
+
+links = [p for p in ROOT.rglob("*") if p.is_symlink()]
+bad = [
+    p for p in links
+    if not p.exists()
+    or not p.resolve().is_relative_to(ROOT.resolve())
+]
+
+for p in bad:
+    print("BROKEN/EXTERNAL:", p.relative_to(ROOT))
+
+print("SYMLINKS CHECKED:", len(links))
+print("UNSAFE LINKS:", len(bad))
+
+print("\n=== AUDIT SUMMARY ===")
+print("PYTHON FILES:", len(code))
+print("TOTAL FILES:", len(files))
+print("SUSPECT ARTIFACTS:", len(suspects))
+print("POSSIBLY UNUSED MODULES:", len(unused))
+print("DUPLICATE SOURCE GROUPS:",
+      len([v for v in groups.values() if len(v) > 1]))
+print("DUPLICATE PHYSICAL WEIGHT GROUPS:", len(duplicates))
+print("UNSAFE LINKS:", len(bad))
+print("ORIGINAL VALIDATED RELEASES: UNCHANGED")
 PY
-
-echo "=== PACKAGE VERIFIED HANDOFF ==="
-
-tar -C "$DST" -czf "$OUT.partial" \
-  artifacts README.md
-
-gzip -t "$OUT.partial"
-
-mv "$OUT.partial" "$OUT"
-
-sha256sum "$OUT" > "$OUT.sha256"
-sha256sum -c "$OUT.sha256"
-
-echo "================================"
-echo "BPLAN CLEAN RUNTIME HTTP: PASS"
-echo "TEAM HANDOFF ARCHIVE: PASS"
-echo "ORIGINAL CTA AND BPLAN: UNCHANGED"
-echo "CLEAN FOLDER: $DST"
-echo "CLEAN ARCHIVE: $OUT"
-echo "================================"
-
-ls -lh "$OUT" "$OUT.sha256"

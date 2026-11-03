@@ -1,35 +1,24 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-import json
 from pathlib import Path
+import ast, hashlib
 
-models = {
+roots = {
     "PZAAS": Path("artifacts/v1.472"),
     "CTA": Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168")
 }
 
-configs = {}
-for name, root in models.items():
-    matches = sorted(root.rglob("torch_model_params_base.json"))
-    print(f"\n=== {name} BASE CONFIG ===")
-    if not matches:
-        print("Base config not found")
+for name, root in roots.items():
+    p = root/"utils/dependency-utils/models.py"
+    print(f"\n=== {name} GRec ARCHITECTURE ===")
+    if not p.is_file():
+        print("Missing:", p)
         continue
-    p = matches[0]
-    data = json.loads(p.read_text())
-    if isinstance(data, list):
-        data = data[0]
-    configs[name] = data
-    print("Path:", p)
-    print("Keys:", sorted(data))
-
-if len(configs) == 2:
-    a, b = configs["PZAAS"], configs["CTA"]
-    print("\n=== CONFIG DIFFERENCES ===")
-    diff = 0
-    for key in sorted(set(a) | set(b)):
-        if a.get(key) != b.get(key):
-            diff += 1
-            if diff <= 35:
-                print(f"{key}: PZAAS={str(a.get(key))[:90]} | CTA={str(b.get(key))[:90]}")
-    print("Total differing parameters:", diff)
+    tree = ast.parse(p.read_text())
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ClassDef) and n.name in ("GRecBase", "GRecTransfer", "GRec"):
+            code = ast.dump(n, include_attributes=False)
+            print(n.name, "line:", n.lineno,
+                  "SHA:", hashlib.sha256(code.encode()).hexdigest()[:16])
+            print("Methods:", [x.name for x in n.body
+                  if isinstance(x, (ast.FunctionDef, ast.AsyncFunctionDef))][:25])
 PY

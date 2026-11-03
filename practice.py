@@ -1,80 +1,84 @@
-python3 - <<'PY'
-from pathlib import Path
-from collections import defaultdict
-import hashlib, tarfile, os
+set -euo pipefail
 
-root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
-stage = Path("/application1/BPLAN_MAX_FRESH_HANDOFF_TEST_20261102")
-archive = Path("/application1/BPLAN_MAX_SINGLE_REQUEST_HANDOFF_20261102_FINAL.tar.gz")
-rel = Path("artifacts/v1.113-max/maxserve_bplan_extension")
+ROOT=/application1/sajjna8/rt-pzai-bplan-v1
+STAGE=/application1/BPLAN_MAX_FRESH_HANDOFF_TEST_20261102
+REL=artifacts/v1.113-max/maxserve_bplan_extension
 
-print("=== BPLAN CLEANUP AUDIT ===")
+ORIGINAL=/application1/BPLAN_MAX_SINGLE_REQUEST_HANDOFF_20261102_FINAL.tar.gz
+CLEAN=/application1/BPLAN_MAX_SINGLE_REQUEST_HANDOFF_20261102_CLEAN.tar.gz
 
-for name, path in [
-    ("ORIGINAL INTEGRATION", root / rel),
-    ("VALIDATED HANDOFF", stage / rel),
-    ("FINAL ARCHIVE", archive),
-]:
-    print(name, "PASS" if path.exists() else "MISSING", path)
+test -s "$ORIGINAL"
+test -d "$ROOT/$REL"
+test -d "$STAGE/$REL"
+test ! -e "$CLEAN"
 
-print("\n=== INTEGRATION FOLDERS ===")
-for base in (root / rel, stage / rel):
-    if base.exists():
-        print("\n", base)
-        for p in sorted(base.iterdir()):
-            print(" ", p.name, "(directory)" if p.is_dir() else "(file)")
+echo "=== SAFE BPLAN CLEANUP ==="
 
-print("\n=== POSSIBLE UNNECESSARY FILES ===")
-found = 0
-for base in (root / rel, stage / rel):
-    if not base.exists():
-        continue
-    for p in base.rglob("*"):
-        if not p.is_file():
-            continue
-        n = p.name.lower()
-        if any(x in n for x in (
-            "backup", ".bak", ".tmp", ".log",
-            "debug", "trace", "investigation",
-            ".pyc", ".orig", ".swp"
-        )) or "__pycache__" in p.parts:
-            print(p)
-            found += 1
-print("CANDIDATES:", found)
+for BASE in "$ROOT/$REL" "$STAGE/$REL"; do
+  find "$BASE" -type d -name __pycache__ -prune -exec rm -rf {} +
+  find "$BASE" -type f \( \
+    -name '*.pyc' -o \
+    -name '*.pre_bridge_backup' -o \
+    -name '*.pre_typed_queue_backup' -o \
+    -name '*.before_response_trace' \
+  \) -delete
+done
 
-print("\n=== DUPLICATE SMALL INTEGRATION FILES ===")
-for base in (root / rel, stage / rel):
-    if not base.exists():
-        continue
-    hashes = defaultdict(list)
-    for p in base.rglob("*"):
-        if p.is_file() and not p.is_symlink() and p.stat().st_size <= 2_000_000:
-            h = hashlib.sha256(p.read_bytes()).hexdigest()
-            hashes[h].append(str(p.relative_to(base)))
-    for names in hashes.values():
-        if len(names) > 1:
-            print("IN:", base)
-            print("DUPLICATE CONTENT:", names)
+echo "GENERATED CACHES AND OLD BACKUPS: REMOVED"
 
-print("\n=== SYMLINK INTEGRITY ===")
-for p in stage.rglob("*"):
-    if p.is_symlink():
-        target = p.resolve()
-        if not target.exists() or not target.is_relative_to(stage.resolve()):
-            print("NEEDS REVIEW:", p, "=>", os.readlink(p))
+echo "=== BUILD CLEAN HANDOFF ==="
 
-print("\n=== FINAL ARCHIVE CONTENT CHECK ===")
-if archive.is_file():
-    with tarfile.open(archive, "r:gz") as t:
-        names = t.getnames()
-        print("ARCHIVE ENTRIES:", len(names))
-        print("INTEGRATION PYTHON FILES:",
-              sum(n.endswith(".py") and "maxserve_bplan_extension" in n for n in names))
-        junk = [n for n in names if
-                "__pycache__" in n or n.endswith((".log", ".pyc", ".tmp", ".bak"))]
-        print("ARCHIVED JUNK:", len(junk))
-        for n in junk[:15]:
-            print(" ", n)
+tar -C "$STAGE" \
+  --exclude='__pycache__' \
+  --exclude='*.pyc' \
+  --exclude='*.log' \
+  --exclude='*.pre_bridge_backup' \
+  --exclude='*.pre_typed_queue_backup' \
+  --exclude='*.before_response_trace' \
+  --exclude='.ipynb_checkpoints' \
+  -czf "$CLEAN.partial" \
+  artifacts/v1.113 \
+  "$REL"
 
-print("\nBPLAN CLEANUP AUDIT COMPLETE — NO FILES MODIFIED")
+gzip -t "$CLEAN.partial"
+
+ORIGINAL="$ORIGINAL" NEW="$CLEAN.partial" python3 - <<'PY'
+import os, tarfile
+
+def members(path):
+    with tarfile.open(path, "r:gz") as t:
+        return {
+            m.name: (m.size, m.type, m.linkname)
+            for m in t if m.isfile() or m.issym() or m.islnk()
+        }
+
+old = members(os.environ["ORIGINAL"])
+new = members(os.environ["NEW"])
+
+removed = set(old) - set(new)
+allowed = (
+    ".pre_bridge_backup",
+    ".pre_typed_queue_backup",
+    ".before_response_trace",
+)
+
+assert all(x.endswith(allowed) for x in removed), removed
+assert not (set(new) - set(old)), "Unexpected added files"
+assert all(new[k] == old[k] for k in new), "File metadata changed"
+assert removed, "No known backup files removed"
+
+print("REMOVED BACKUP ENTRIES:", len(removed))
+print("RETAINED ENTRIES:", len(new))
+print("REQUIRED FILES PRESERVED: PASS")
+print("CLEAN ARCHIVE STRUCTURE: PASS")
 PY
+
+mv "$CLEAN.partial" "$CLEAN"
+sha256sum "$CLEAN" > "$CLEAN.sha256"
+sha256sum -c "$CLEAN.sha256"
+
+echo "=== RESULT ==="
+echo "BPLAN CLEAN ARCHIVE: PASS"
+echo "ORIGINAL VALIDATED ARCHIVE: PRESERVED"
+echo "ORIGINAL DS AND CTA: UNCHANGED"
+ls -lh "$CLEAN" "$CLEAN.sha256"

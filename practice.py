@@ -1,33 +1,34 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import shutil, ast
+import ast
 
-src = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
-dst = Path("artifacts/v1.472-max/pzaas_max/cta_reference")
+root = Path("artifacts/v1.472-max/pzaas_max/cta_reference")
 
-names = [
+for name in [
     "grecbase_fusion_full_head_72_max.py",
-    "live_cta_pipeline_bridge.py",
-]
+    "live_cta_pipeline_bridge.py"
+]:
+    p = root/name
+    print(f"\n=== {name} ===")
+    s = p.read_text().splitlines()
+    tree = ast.parse("\n".join(s))
 
-for name in names:
-    if not (src/name).is_file():
-        raise SystemExit(f"MISSING SOURCE: {name}")
-    if (dst/name).exists():
-        raise SystemExit(f"ALREADY EXISTS: {dst/name}")
+    print("FUNCTIONS / CLASSES:")
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.ClassDef)):
+            print(f"  {n.lineno}: {n.name}")
 
-dst.mkdir(parents=True, exist_ok=True)
-
-for name in names:
-    target = dst/name
-    shutil.copy2(src/name, target)
-    tree = ast.parse(target.read_text())
-    print(f"\nCOPIED REFERENCE: {name}")
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            print("IMPORT:", node.module)
-
-print("\nPZAAS GRAPH REFERENCE: READY")
-print("PZAAS GRAPH CONVERSION: PENDING")
-print("ORIGINAL DS: UNCHANGED")
+    print("\nGRAPH / WEIGHT DEPENDENCIES:")
+    count = 0
+    for i, line in enumerate(s, 1):
+        if any(x in line.lower() for x in [
+            "weight_dir", "weight_path", ".npy",
+            "2048", "10819", "72_input",
+            "graph(", "tensor(", "shape=",
+            "cta_max", "grecbase_integration"
+        ]):
+            print(f"{i}: {line.strip()[:160]}")
+            count += 1
+            if count >= 45:
+                break
 PY

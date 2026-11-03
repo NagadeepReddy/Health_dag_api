@@ -1,17 +1,36 @@
-ROOT=/application1/sajjna8/rt-pzai-bplan-v1
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+python3 - <<'PY'
+from pathlib import Path
 
-echo "=== REAL BPLAN HTTP REQUEST ==="
-curl -sS --max-time 30 \
-  -o /tmp/bplan_http_result.json \
-  -w 'HTTP STATUS: %{http_code}\nTIME: %{time_total}s\n' \
-  -X POST http://127.0.0.1:18768/bplan/predict \
-  -H 'Content-Type: application/json' \
-  --data-binary @"$ROOT/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json"
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113-max/maxserve_bplan_extension")
 
-echo "=== RESPONSE ==="
-head -c 1200 /tmp/bplan_http_result.json 2>/dev/null
-echo
+names = [
+    "bplan_native_scheduler.py",
+    "bplan_http_pipeline.py",
+    "bplan_native_worker_registration.py",
+    "bplan_context.py",
+    "bplan_router.py",
+]
 
-echo "=== ACTUAL BPLAN CONTAINER LOGS ==="
-"${P[@]}" logs --tail 120 bplan-debug 2>&1 | tail -100
+terms = (
+    "response_queue", "queue_response", "SchedulerResult",
+    "RequestID", "request_id", "wire_request_id",
+    "ZmqPullSocket", "receive_response", "BPlanSerializableOutput",
+    "is_done", "asyncio.timeout"
+)
+
+for name in names:
+    paths = list(root.rglob(name))
+    print(f"\n=== {name} ===")
+    if not paths:
+        print("NOT FOUND")
+        continue
+    p = paths[0]
+    lines = p.read_text().splitlines()
+    hits = [i for i, line in enumerate(lines)
+            if any(term in line for term in terms)]
+    show = set()
+    for i in hits:
+        show.update(range(max(0, i - 4), min(len(lines), i + 7)))
+    for i in sorted(show):
+        print(f"{i+1}: {lines[i]}")
+PY

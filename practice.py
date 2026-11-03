@@ -1,32 +1,33 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import ast
+import shutil, ast
 
-cta = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
-dst = Path("artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev")
+src = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
+dst = Path("artifacts/v1.472-max/pzaas_max/cta_reference")
 
-print("=== MAX GRAPH ENTRY POINTS ===")
-for name in ["grecbase_fusion_full_head_72_max.py", "live_cta_pipeline_bridge.py"]:
-    p = cta/name
-    print("\nFILE:", name)
-    if not p.exists():
-        print("MISSING")
-        continue
-    tree = ast.parse(p.read_text())
-    for n in ast.walk(tree):
-        if isinstance(n, (ast.ClassDef, ast.FunctionDef)):
-            if any(k in n.name.lower() for k in
-                   ("grec", "build", "load", "weight", "predict", "execute", "bridge", "forward")):
-                print(n.lineno, n.name)
+names = [
+    "grecbase_fusion_full_head_72_max.py",
+    "live_cta_pipeline_bridge.py",
+]
 
-print("\n=== PZAAS SCAFFOLD CHECK ===")
-for p in sorted(dst.glob("*.py")):
-    text = p.read_text()
-    leftovers = [x for x in ("bplan", "BPlan", "BPLAN", "v1.113")
-                 if x in text]
-    if leftovers:
-        print(p.name, "LEFTOVER:", leftovers)
+for name in names:
+    if not (src/name).is_file():
+        raise SystemExit(f"MISSING SOURCE: {name}")
+    if (dst/name).exists():
+        raise SystemExit(f"ALREADY EXISTS: {dst/name}")
 
-print("FILES:", len(list(dst.glob("*.py"))))
+dst.mkdir(parents=True, exist_ok=True)
+
+for name in names:
+    target = dst/name
+    shutil.copy2(src/name, target)
+    tree = ast.parse(target.read_text())
+    print(f"\nCOPIED REFERENCE: {name}")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            print("IMPORT:", node.module)
+
+print("\nPZAAS GRAPH REFERENCE: READY")
+print("PZAAS GRAPH CONVERSION: PENDING")
 print("ORIGINAL DS: UNCHANGED")
 PY

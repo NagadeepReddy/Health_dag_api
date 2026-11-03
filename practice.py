@@ -3,77 +3,92 @@ from pathlib import Path
 import ast, json
 
 root = Path("artifacts/v1.472-max/pzaas_max")
-p = root / "att_pooling_max.py"
-manifest = json.loads((root / "pzaas_base_weights/manifest.json").read_text())
+p = root / "sequence_postprocess_max.py"
+manifest = json.loads(
+    (root / "pzaas_base_weights/manifest.json").read_text()
+)
+
+mapping = {
+    "out_norm1_g.npy": "sequence_transformer.out_norm1.g",
+    "out_norm2_g.npy": "sequence_transformer.out_norm2.g",
+}
+
 source = p.read_text()
 tree = ast.parse(source)
-
-names = ("att_pooling.norm1.g", "att_pooling.norm2.g")
-
-for name in names:
-    entry = manifest.get(name)
-    if not entry:
-        raise SystemExit(f"STOP: Missing PZAAS tensor {name}")
-    if not (root / "pzaas_base_weights" / entry["file"]).is_file():
-        raise SystemExit(f"STOP: Missing exported file {name}")
-
 changes = []
-for node in ast.walk(tree):
-    if not isinstance(node, ast.Call):
-        continue
-    f = node.func
-    if not (isinstance(f, ast.Attribute) and f.attr == "load"
-            and isinstance(f.value, ast.Name) and f.value.id == "np"):
-        continue
-    if not node.args or not isinstance(node.args[0], ast.Constant):
-        continue
-    path = node.args[0].value
-    if not isinstance(path, str):
-        continue
-    for name in names:
-        if path.endswith("/" + name + ".npy"):
-            if "v1.168-max/cta_max/" not in path:
-                raise SystemExit("STOP: Unexpected weight source")
-            old = ast.get_source_segment(source, node)
-            shape = tuple(manifest[name]["shape"])
-            changes.append((old, f'load_weight("{name}", {shape})', name))
 
-if len(changes) == 0 and all(
-    f'load_weight("{n}"' in source for n in names
-):
-    print("PZAAS ATTENTION WIRING: ALREADY DONE")
-    raise SystemExit(0)
+for filename, key in mapping.items():
+    entry = manifest.get(key)
+    if not entry:
+        raise SystemExit(f"STOP: Missing weight {key}")
 
-if len(changes) != 2 or {x[2] for x in changes} != set(names):
-    raise SystemExit("STOP: Expected exactly two CTA attention loads")
+    if tuple(entry["shape"]) != (256,):
+        raise SystemExit(f"STOP: Shape mismatch {key}")
 
-for old, new, _ in changes:
+    if not (root / "pzaas_base_weights" / entry["file"]).is_file():
+        raise SystemExit(f"STOP: Missing file {key}")
+
+    matches = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        if not (
+            isinstance(n.func, ast.Attribute)
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "np"
+            and n.func.attr == "load"
+        ):
+            continue
+        if not n.args:
+            continue
+        arg = n.args[0]
+        if (
+            isinstance(arg, ast.BinOp)
+            and isinstance(arg.op, ast.Add)
+            and isinstance(arg.left, ast.Name)
+            and arg.left.id == "base"
+            and isinstance(arg.right, ast.Constant)
+            and arg.right.value == filename
+        ):
+            matches.append(n)
+
+    if len(matches) != 1:
+        raise SystemExit(f"STOP: Unexpected load count for {filename}")
+
+    old = ast.get_source_segment(source, matches[0])
+    new = f'load_weight("{key}", (256,))'
     if source.count(old) != 1:
-        raise SystemExit("STOP: Non-unique load expression")
+        raise SystemExit(f"STOP: Non-unique expression {filename}")
+    changes.append((old, new))
+
+for old, new in changes:
     source = source.replace(old, new, 1)
 
 import_line = "from pzaas_max.pzaas_weight_loader import load_weight\n"
 if import_line not in source:
+    parsed = ast.parse(source)
     lines = source.splitlines(keepends=True)
-    first = tree.body[0] if tree.body else None
-    pos = first.end_lineno if (
-        isinstance(first, ast.Expr) and
-        isinstance(first.value, ast.Constant) and
-        isinstance(first.value.value, str)
-    ) else 0
-    for node in tree.body:
-        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
-            pos = max(pos, node.end_lineno)
+    pos = 0
+    for n in parsed.body:
+        if (
+            isinstance(n, ast.Expr)
+            and isinstance(n.value, ast.Constant)
+            and isinstance(n.value.value, str)
+            and n is parsed.body[0]
+        ):
+            pos = n.end_lineno
+        elif isinstance(n, ast.ImportFrom) and n.module == "__future__":
+            pos = n.end_lineno
     lines.insert(pos, import_line)
     source = "".join(lines)
 
 compile(source, str(p), "exec")
 p.write_text(source)
 
-print("PZAAS ATTENTION WEIGHT WIRING: PASS")
-print("norm1.g: PZAAS")
-print("norm2.g: PZAAS")
+print("PZAAS SEQUENCE POSTPROCESS WIRING: PASS")
+print("out_norm1.g: PZAAS")
+print("out_norm2.g: PZAAS")
 print("SYNTAX: PASS")
-print("OTHER MODULES: PENDING")
+print("OTHER GRAPH MODULES: PENDING")
 print("ORIGINAL DS: UNCHANGED")
 PY

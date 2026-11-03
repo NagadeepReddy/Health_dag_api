@@ -1,20 +1,25 @@
 ROOT=/application1/sajjna8/rt-pzai-bplan-v1
+STAGE=/application1/BPLAN_MAX_FRESH_HANDOFF_TEST_20261102
 
-echo "=== EXACT V1.113 LOOKUP CONFIGURATION ==="
+echo "=== RESTORE ORIGINAL V1.113 LOOKUPS ==="
+mkdir -p "$STAGE/artifacts/v1.113/lookup"
+cp -an "$ROOT/artifacts/v1.113/lookup/." \
+  "$STAGE/artifacts/v1.113/lookup/"
 
-grep -n -C 5 -E \
-  'lookup_path|model_dir|page_seq_2|file_name|table_path' \
-  "$ROOT/artifacts/v1.113/core-artifact/pipeline.py" \
-  | head -110
+echo "=== VERIFY CORRECT SOURCE FILE ==="
+ls -lh \
+  "$ROOT/artifacts/v1.113/lookup/aep_seq_2.csv" \
+  "$STAGE/artifacts/v1.113/lookup/aep_seq_2.csv"
 
-echo "=== V1.113 MODEL CONFIG AND METADATA ==="
+echo "=== FIND INCORRECT FILENAME REFERENCES ==="
+grep -RnF 'page_seq_2.csv' \
+  "$ROOT/artifacts/v1.113/core-artifact" \
+  "$ROOT/artifacts/v1.113-max/maxserve_bplan_extension" \
+  "$STAGE/artifacts/v1.113-max/maxserve_bplan_extension" \
+  --include='*.py' 2>/dev/null | head -30 || true
 
-find "$ROOT/artifacts/v1.113" \
-  -type f \
-  \( -name 'init.json' -o -name '*config*.json' -o -name '*lookup*.json' \) \
-  ! -path '*/.ipynb_checkpoints/*' \
-  -print | head -30
+echo "=== VERIFY ORIGINAL CONFIGURATION ==="
+grep -n -C 3 'aep_seq_2.csv' \
+  "$ROOT/artifacts/v1.113/core-artifact/pipeline.py" | head -30
 
-echo "=== ACTUAL V1.113 LOOKUP DIRECTORY ==="
-
-ls -lah "$ROOT/artifacts/v1.113/lookup" 2>&1 || true
+echo "BPLAN LOOKUP STAGING COMPLETE"

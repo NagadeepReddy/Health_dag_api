@@ -1,64 +1,44 @@
 python3 - <<'PY'
 import json
 from pathlib import Path
-from collections import Counter
 
 root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
-files = {
-    "PYTORCH": root / "artifacts/v1.113-max/maxserve_bplan_extension/bplan_pytorch_baseline.json",
-    "NATIVE": Path("/tmp/bplan_response_trace.json"),
-}
+base = json.loads((root / "artifacts/v1.113-max/maxserve_bplan_extension/bplan_pytorch_baseline.json").read_text())
+native = json.loads(Path("/tmp/bplan_response_trace.json").read_text())
 
-def records(obj, path="$"):
-    out = []
-    if isinstance(obj, dict):
-        if "propositionId" in obj:
-            out.append((path, str(obj["propositionId"]), obj))
-        for k, v in obj.items():
-            out.extend(records(v, f"{path}.{k}"))
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            out.extend(records(v, f"{path}[{i}]"))
-    return out
+def find_ids(x):
+    ids = []
+    if isinstance(x, dict):
+        if "propositionId" in x:
+            ids.append(str(x["propositionId"]))
+        for v in x.values():
+            ids.extend(find_ids(v))
+    elif isinstance(x, list):
+        for v in x:
+            ids.extend(find_ids(v))
+    return ids
 
-result = {}
-for name, file in files.items():
-    assert file.is_file(), f"Missing {name}: {file}"
-    data = json.loads(file.read_text())
-    rows = records(data)
-    result[name] = {pid: item for _, pid, item in rows}
+expected = set(find_ids(base))
+prediction = native["jsonData"]["prediction"]
+extras = set(find_ids(native)) - expected
 
-    print(f"\n=== {name} ===")
-    print("FILE:", file)
-    print("TOP LEVEL:", list(data) if isinstance(data, dict) else type(data).__name__)
-    prediction = data.get("jsonData", {}).get("prediction", {}) if isinstance(data, dict) else {}
-    print("PREDICTION KEYS:", list(prediction) if isinstance(prediction, dict) else type(prediction).__name__)
-    print("RECORDS:", len(rows))
-    print("UNIQUE IDS:", len(result[name]))
-    print("SAMPLE PATHS:", [p for p, _, _ in rows[:3]])
+print("EXTRA IDS:", sorted(extras))
+print("\n=== NATIVE GROUP LOCATIONS ===")
 
-a, b = result["PYTORCH"], result["NATIVE"]
-common = set(a) & set(b)
+for key, value in prediction.items():
+    if isinstance(value, list):
+        for i, group in enumerate(value):
+            group_extra = sorted(set(find_ids(group)) & extras)
+            if group_extra:
+                print("GROUP:", key, "INDEX:", i)
+                print("EXTRA IDS:", group_extra)
+                if isinstance(group, dict):
+                    print("GROUP KEYS:", list(group.keys()))
+    elif isinstance(value, dict):
+        group_extra = sorted(set(find_ids(value)) & extras)
+        if group_extra:
+            print("GROUP:", key, "EXTRA IDS:", group_extra)
 
-print("\n=== BUSINESS COMPARISON ===")
-print("COMMON IDS:", len(common))
-print("PYTORCH ONLY:", sorted(set(a)-set(b)))
-print("NATIVE ONLY:", sorted(set(b)-set(a)))
-
-changes = []
-for pid in sorted(common):
-    for key in sorted(a[pid].keys() & b[pid].keys()):
-        if a[pid][key] != b[pid][key]:
-            changes.append((pid, key, str(a[pid][key])[:100], str(b[pid][key])[:100]))
-
-print("SHARED FIELD DIFFERENCES:", len(changes))
-for row in changes[:20]:
-    print("DIFFERENCE:", row)
-
-if not a or not b:
-    print("RESULT: RESPONSE STRUCTURE NEEDS REVIEW")
-elif len(a) == len(b) and set(a) == set(b) and not changes:
-    print("RECOMMENDATION ID/FIELD PARITY: PASS")
-else:
-    print("RECOMMENDATION ID/FIELD PARITY: NOT YET PASS")
+print("\nEXTRA IDS ACCOUNTED FOR:",
+      set(find_ids(prediction)) & extras == extras)
 PY

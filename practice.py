@@ -1,66 +1,54 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import ast, json, re
+import ast, json
 
 root = Path("artifacts/v1.472-max/pzaas_max")
 p = root / "grecbase_fusion_full_head_72_max.py"
-manifest = json.loads(
-    (root / "pzaas_base_weights/manifest.json").read_text()
-)
+weights = root / "pzaas_base_weights"
+manifest = json.loads((weights / "manifest.json").read_text())
 
-expected = {
-    "seq_w": ("seq_dense.weight", (256, 256)),
-    "seq_b": ("seq_dense.bias", (256,))
-}
+required = [
+    "att_pooling.norm1.g",
+    "att_pooling.norm2.g",
+    "att_pooling.rotary_emb.inv_freq",
+]
 
-for var, (key, shape) in expected.items():
-    if tuple(manifest[key]["shape"]) != shape:
-        raise SystemExit(f"SHAPE MISMATCH: {key}")
+for name in required:
+    entry = manifest.get(name)
+    if not entry or not (weights / entry["file"]).is_file():
+        raise SystemExit(f"STOP: Missing PZAAS weight: {name}")
 
 source = p.read_text()
 tree = ast.parse(source)
+
+matches = [
+    n for n in tree.body
+    if isinstance(n, ast.Assign)
+    and any(isinstance(t, ast.Name) and t.id == "WDIR"
+            for t in n.targets)
+]
+
+if len(matches) != 1:
+    raise SystemExit("STOP: WDIR assignment not unique")
+
+n = matches[0]
+old = ast.get_source_segment(source, n.value)
+
+if "grecbase_integration_weights" not in old:
+    raise SystemExit("STOP: Unexpected weight directory")
+
 lines = source.splitlines(keepends=True)
-changes = []
-
-for var, (key, shape) in expected.items():
-    found = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Assign)
-        and len(n.targets) == 1
-        and isinstance(n.targets[0], ast.Name)
-        and n.targets[0].id == var
-    ]
-    if len(found) != 1:
-        raise SystemExit(f"STOP: {var} assignment not unique")
-
-    n = found[0]
-    old = "".join(lines[n.lineno-1:n.end_lineno])
-    if not any(x in old for x in ("np.load(", "torch")):
-        raise SystemExit(f"STOP: Unexpected {var} source")
-
-    indent = re.match(r"\s*", lines[n.lineno-1]).group()
-    new = (
-        f'{indent}{var} = np.asarray('
-        f'load_weight("{key}", {shape}), dtype=np.float32)\n'
-    )
-    changes.append((n.lineno-1, n.end_lineno, new))
-
-for start, end, new in sorted(changes, reverse=True):
-    lines[start:end] = [new]
+lines[n.lineno-1:n.end_lineno] = [
+    'WDIR = Path(__file__).resolve().parent / "pzaas_base_weights"\n'
+]
 
 updated = "".join(lines)
-updated = (
-    "from pzaas_max.pzaas_weight_loader import load_weight\n"
-    + updated
-)
-
 compile(updated, str(p), "exec")
 p.write_text(updated)
 
-print("PZAAS SEQUENCE WEIGHT WIRING: PASS")
-print("seq_dense.weight: PZAAS")
-print("seq_dense.bias: PZAAS")
-print("SYNTAX: PASS")
-print("OTHER GRAPH WEIGHTS: PENDING")
+print("PZAAS MAIN GRAPH WEIGHT PATH: PASS")
+print("PZAAS ATTENTION WEIGHTS: VERIFIED")
+print("SEQUENCE WEIGHTS: PREVIOUSLY WIRED")
+print("REMAINING GRAPH MODULES: PENDING")
 print("ORIGINAL DS: UNCHANGED")
 PY

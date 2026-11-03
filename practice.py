@@ -1,37 +1,44 @@
 python3 - <<'PY'
-import ast
+import json
 from pathlib import Path
 
-p = Path("/application1/sajjna8/rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/pipeline.py")
-lines = p.read_text().splitlines()
-tree = ast.parse("\n".join(lines))
+root = Path("/application1/sajjna8/rt-pzai-bplan-v1")
+files = {
+    "REQUEST": root / "artifacts/v1.113/core-artifact/test_samples/test_sample_1.json",
+    "PYTORCH": root / "artifacts/v1.113-max/maxserve_bplan_extension/bplan_pytorch_baseline.json",
+    "NATIVE MAX": Path("/tmp/bplan_response_trace.json"),
+}
 
-found = False
-for node in ast.walk(tree):
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "inference_router":
-        found = True
-        print(f"=== ORIGINAL DS inference_router: lines {node.lineno}-{node.end_lineno} ===")
-        for i in range(node.lineno, node.end_lineno + 1):
-            s = lines[i-1]
-            if any(x in s.lower() for x in (
-                "sourcesystem", "networktype", "devicecategory",
-                "ctalist", "propositionlist", "return ",
-                "if ", "elif ", "else:", "router"
-            )):
-                print(f"{i}: {s[:220]}")
-        break
+terms = (
+    "category", "sourceSystem", "networkType",
+    "deviceCategory", "customerInterests",
+    "orderIntent", "passOnePlan", "isNewCustomer"
+)
 
-if not found:
-    print("Router method not in pipeline.py; searching original DS files...")
-    root = p.parent
-    for f in root.rglob("*.py"):
-        if f == p or ".ipynb_checkpoints" in str(f):
-            continue
-        for i, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
-            if "def inference_router(" in line:
-                print(f"{f}:{i}: {line.strip()}")
-                found = True
+def inspect(obj, path="$", depth=0):
+    if depth > 12:
+        return
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if any(term.lower() in key.lower() for term in terms):
+                if not isinstance(value, (dict, list)):
+                    print(f"{path}.{key} = {str(value)[:150]}")
+            inspect(value, f"{path}.{key}", depth+1)
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj[:3]):
+            inspect(value, f"{path}[{i}]", depth+1)
 
-print("ROUTER FOUND:", found)
-print("ORIGINAL DS UNCHANGED")
+for name, file in files.items():
+    print(f"\n=== {name} ===")
+    if not file.is_file():
+        print("MISSING:", file)
+        continue
+    data = json.loads(file.read_text())
+    print("FILE:", file)
+    print("TOP KEYS:", list(data) if isinstance(data, dict) else type(data).__name__)
+    prediction = data.get("jsonData", {}).get("prediction", {}) if isinstance(data, dict) else {}
+    print("PREDICTION KEYS:", list(prediction) if isinstance(prediction, dict) else "N/A")
+    inspect(data)
+
+print("\nBPLAN ROUTING INPUT COMPARISON COMPLETE")
 PY

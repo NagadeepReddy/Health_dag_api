@@ -1,34 +1,33 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-from pathlib import Path
-import sys
+cd /application1/sajjna8/rt-pzaas-v1.0 && \
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage run --rm \
+--network none --read-only \
+-e PYTHONDONTWRITEBYTECODE=1 \
+-v "$PWD/artifacts/v1.472/core-artifact:/model:ro" \
+--entrypoint python3 localhost/cta-max-faiss:local - <<'PY'
+import torch
 
-p = Path("artifacts/v1.472/core-artifact/model_0_base.pt")
-try:
-    import torch
-except ImportError:
-    sys.exit("PyTorch unavailable on host; container inspection needed")
+p = "/model/model_0_base.pt"
+print("PyTorch:", torch.__version__)
 
 try:
     state = torch.load(
-        p,
-        map_location="meta",
-        weights_only=True,
-        mmap=True
+        p, map_location="meta",
+        weights_only=True, mmap=True
     )
 except Exception as e:
-    sys.exit(f"METADATA LOAD FAILED: {type(e).__name__}: {e}")
+    raise SystemExit(f"METADATA LOAD FAILED: {e}")
 
 if isinstance(state, dict) and isinstance(state.get("state_dict"), dict):
     state = state["state_dict"]
 
-print("=== PZAAS TRAINED WEIGHT SHAPES ===")
-print("Total entries:", len(state))
+print("TOTAL ENTRIES:", len(state))
 for k, v in state.items():
     if hasattr(v, "shape") and any(
-        x in k.lower() for x in ("seq", "dense", "nlp", "sibling", "task")
+        x in k.lower()
+        for x in ("seq", "dense", "nlp", "sibling", "task")
     ):
         print(k, tuple(v.shape))
 
-print("PZAAS METADATA INSPECTION: COMPLETE")
-print("NO FILES MODIFIED")
+print("PZAAS CHECKPOINT METADATA: PASS")
 PY

@@ -1,17 +1,39 @@
-python3 - <<'PY'
-from pathlib import Path
-import ast
-import re
+set -Eeuo pipefail
 
-root = Path("/application1/BPLAN_MAX_RUNTIME_CLEAN_20261102")
+BASE=/application1
+SRC="$BASE/BPLAN_MAX_RUNTIME_CLEAN_20261102"
+DST="$BASE/BPLAN_MAX_FINAL_TEAM_HANDOFF_20261102"
+OUT="$BASE/BPLAN_MAX_FINAL_TEAM_HANDOFF_20261102.tar.gz"
+SAMPLE="$BASE/BPLAN_MAX_TEAM_HANDOFF_20261102/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json"
+NAME=bplan-final-handoff-proof
+
+P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+
+test -d "$SRC"
+test -s "$SAMPLE"
+test ! -e "$DST"
+test ! -e "$OUT"
+test ! -e "$OUT.partial"
+
+if "${P[@]}" container exists "$NAME"; then
+  echo "STOP: Verification container already exists"
+  exit 1
+fi
+
+echo "=== CREATE FINAL ISOLATED COPY ==="
+
+cp -a --reflink=auto "$SRC" "$DST"
+
+python3 - "$DST" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1]).resolve()
 ext = root / "artifacts/v1.113-max/maxserve_bplan_extension"
 
-targets = [
-    "bplan_weights.py",
-    "live_cta_pipeline_bridge.py",
-    "run_batch2_contract.py",
-    "bplan_max_projection_parity.py",
-    "cta_reference/cta_worker_adapter.py",
+candidates = [
+    ext / "bplan_max_projection_parity.py",
+    ext / "cta_reference/cta_worker_adapter.py",
 ]
 
 sources = [
@@ -21,62 +43,159 @@ sources = [
     and p.stat().st_size < 2000000
 ]
 
-for name in targets:
-    p = ext / name
-    print("\n=== MODULE:", name, "===")
+contents = {
+    p: p.read_text(errors="replace")
+    for p in sources
+}
 
-    if not p.is_file():
-        print("MISSING")
-        continue
+for p in candidates:
+    assert p.is_file(), f"Expected cleanup candidate missing: {p}"
 
-    content = p.read_text(errors="replace")
+    names = [p.stem]
+    if p.name == "cta_worker_adapter.py":
+        names += ["CTAWorkerAdapter", "cta_reference"]
 
-    print("LINES:", len(content.splitlines()))
-    print("SIZE:", p.stat().st_size)
+    refs = [
+        str(q.relative_to(root))
+        for q, content in contents.items()
+        if q != p and any(name in content for name in names)
+    ]
 
-    try:
-        tree = ast.parse(content)
-        definitions = [
-            n.name for n in tree.body
-            if isinstance(
-                n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-            )
-        ]
-        imports = [
-            n.module for n in ast.walk(tree)
-            if isinstance(n, ast.ImportFrom) and n.module
-        ]
-        imports += [
-            alias.name
-            for n in ast.walk(tree)
-            if isinstance(n, ast.Import)
-            for alias in n.names
-        ]
-        print("DEFINITIONS:", definitions[:15])
-        print("IMPORTS:", imports[:20])
-    except SyntaxError as e:
-        print("SYNTAX ERROR:", e)
+    assert not refs, f"Referenced module {p.name}: {refs}"
 
-    references = []
-    for q in sources:
-        if q == p:
-            continue
-        text = q.read_text(errors="replace")
-        if re.search(r"\b" + re.escape(p.stem) + r"\b", text):
-            references.append(str(q.relative_to(root)))
+for p in candidates:
+    p.unlink()
+    print("REMOVED:", p.relative_to(root))
 
-    print("REFERENCED BY:", len(references))
-    for ref in references[:20]:
-        print("  ", ref)
+refdir = ext / "cta_reference"
+if refdir.is_dir():
+    remaining = list(refdir.iterdir())
+    if all(p.name == "__init__.py" for p in remaining):
+        for p in remaining:
+            p.unlink()
+        refdir.rmdir()
+        print("REMOVED: unused CTA reference package")
 
-    print("FIRST 12 LINES:")
-    for line in content.splitlines()[:12]:
-        print("  ", line[:150])
+audit = ext / "bplan_max_full_dependency_audit.json"
+if audit.exists():
+    audit.unlink()
+    print("REMOVED: development audit report")
 
-print("\n=== DEVELOPMENT ARTIFACT ===")
-p = ext / "bplan_max_full_dependency_audit.json"
-print("EXISTS:", p.is_file())
-print("SIZE:", p.stat().st_size if p.is_file() else 0)
+required = [
+    root / "artifacts/v1.113/core-artifact/pipeline.py",
+    root / "artifacts/v1.113/lookup/aep_seq_2.csv",
+    ext / "bplan_native_serve_dev/bplan_native_launcher.py",
+]
 
-print("\nINSPECTION COMPLETE — NO FILES CHANGED")
+for p in required:
+    assert p.is_file(), f"Required file missing: {p}"
+
+for p in root.rglob("*"):
+    if p.is_symlink():
+        assert p.exists(), f"Broken symlink: {p}"
+        assert p.resolve().is_relative_to(root), (
+            f"External dependency: {p}"
+        )
+
+print("REQUIRED FILES: PASS")
+print("WEIGHT LINKS: PASS")
+print("TARGETED DEVELOPMENT CLEANUP: PASS")
+print("ORIGINAL RELEASES: UNCHANGED")
 PY
+
+CREATED=0
+
+cleanup() {
+  rc=$?
+  if [ "$CREATED" -eq 1 ]; then
+    if [ "$rc" -ne 0 ]; then
+      "${P[@]}" logs --tail 80 "$NAME" || true
+    fi
+    "${P[@]}" rm -f "$NAME" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup EXIT
+
+echo "=== VERIFY NATIVE MAX IN ISOLATED CONTAINER ==="
+
+"${P[@]}" run -d \
+  --name "$NAME" \
+  --pull=never \
+  --network=none \
+  -v "$DST:/workspace:ro" \
+  -v "$SAMPLE:/tmp/bplan_sample.json:ro" \
+  -w /workspace \
+  -e PYTHONPATH=/workspace/artifacts/v1.113-max/maxserve_bplan_extension:/workspace/artifacts/v1.113/core-artifact:/workspace/artifacts/v1.113/utils/dependency-utils \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local \
+  -m bplan_native_serve_dev.bplan_native_launcher
+
+CREATED=1
+
+"${P[@]}" exec -i "$NAME" /opt/venv/bin/python - <<'PY'
+import json
+import time
+import urllib.request
+import urllib.error
+
+url = "http://127.0.0.1:18768/bplan/predict"
+
+ready = False
+
+for _ in range(180):
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    except Exception:
+        status = None
+
+    if status == 405:
+        ready = True
+        break
+
+    time.sleep(2)
+
+assert ready, "Native route failed to start"
+
+with open("/tmp/bplan_sample.json", "rb") as f:
+    payload = f.read()
+
+request = urllib.request.Request(
+    url,
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST"
+)
+
+with urllib.request.urlopen(request, timeout=480) as r:
+    assert r.status == 200
+    response = json.load(r)
+
+ctas = response["jsonData"]["prediction"]["ctaList"]
+assert isinstance(ctas, list) and len(ctas) == 4
+
+print("FINAL NATIVE MAX HTTP 200: PASS")
+print("REAL BPLAN RESPONSE: PASS")
+print("CTA COUNT:", len(ctas))
+PY
+
+echo "=== PACKAGE FINAL HANDOFF ==="
+
+tar -C "$DST" -czf "$OUT.partial" artifacts README.md
+gzip -t "$OUT.partial"
+mv "$OUT.partial" "$OUT"
+
+sha256sum "$OUT" > "$OUT.sha256"
+sha256sum -c "$OUT.sha256"
+
+echo "=============================="
+echo "BPLAN FINAL CLEANUP: PASS"
+echo "NATIVE MAX HTTP 200: PASS"
+echo "TEAM HANDOFF: VERIFIED"
+echo "ORIGINAL CTA/BPLAN: UNCHANGED"
+echo "FINAL FOLDER: $DST"
+echo "FINAL ARCHIVE: $OUT"
+echo "=============================="

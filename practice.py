@@ -1,85 +1,53 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && \
-podman --root /application1/podman/storage \
---runroot /run/containers/storage run --rm -i \
---network none --memory 10g \
---tmpfs /tmp:rw,size=1g \
--e PYTHONDONTWRITEBYTECODE=1 \
--e PYTHONPATH=/workspace/artifacts/v1.472-max \
--v "$PWD:/workspace:ro" \
--w /workspace \
---entrypoint python3 localhost/cta-max-faiss:local -u - <<'PY'
-import json, re, traceback
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import numpy as np
-from max.graph import DeviceRef
-from max.driver import CPU
-from max.engine import InferenceSession
+import ast, json
 
-try:
-    from pzaas_max.grecbase_fusion_full_head_72_max import (
-        build_grecbase_fusion_graph_order_correct
-    )
+r = Path("artifacts/v1.472")
+g = Path("artifacts/v1.472-max/pzaas_max")
 
-    print("=== PZAAS REAL MAX CPU COMPILATION ===", flush=True)
+print("=== MAX GRAPH INPUT CONTRACT ===")
+p = g / "grecbase_fusion_full_head_72_max.py"
+lines = p.read_text().splitlines()
 
-    graph = build_grecbase_fusion_graph_order_correct(DeviceRef.CPU())
-    print("GRAPH BUILD: PASS", flush=True)
+for i, line in enumerate(lines, 1):
+    if any(x in line for x in (
+        "def build_grecbase",
+        "Graph(",
+        "input_types=",
+        "TensorType(",
+        "graph.inputs",
+        "graph.output",
+        "ops.reshape"
+    )):
+        print(f"{i}: {line.strip()[:170]}")
 
-    root = Path("/workspace/artifacts/v1.472-max/pzaas_max/pzaas_base_weights")
-    manifest = json.loads((root / "manifest.json").read_text())
+print("\n=== ORIGINAL DS PREPROCESSING ===")
+p = r / "core-artifact/pipeline.py"
+tree = ast.parse(p.read_text())
 
-    registry = {}
-    missing = []
+for node in ast.walk(tree):
+    if isinstance(node, ast.FunctionDef) and node.name in (
+        "preprocess", "inference", "loadModel"
+    ):
+        print(f"{node.name}: line {node.lineno}")
+        if node.name == "preprocess":
+            text = p.read_text().splitlines()
+            for i in range(node.lineno-1, node.end_lineno):
+                line = text[i]
+                if "model_in" in line or "return " in line:
+                    print(f"  {i+1}: {line.strip()[:150]}")
 
-    for name in graph._weights:
-        candidates = [name, name + ".weight"]
+print("\n=== REAL PZAAS REQUEST SAMPLES ===")
+for p in sorted((r / "samples").glob("*.json")):
+    try:
+        data = json.loads(p.read_text())
+        print(p.name, "keys:",
+              list(data)[:12] if isinstance(data, dict)
+              else type(data).__name__)
+    except Exception as e:
+        print(p.name, type(e).__name__)
 
-        match = re.fullmatch(
-            r"(sequence_transformer\.ptransformer\.[01])\."
-            r"(fused_attn_ff_proj|attn_out|ff_out\.1)\.weight",
-            name
-        )
-        if match:
-            candidates.insert(
-                0, match.group(1) + ".fn." + match.group(2) + ".weight"
-            )
-
-        key = next((k for k in candidates if k in manifest), None)
-
-        if key is None:
-            missing.append(name)
-            continue
-
-        entry = manifest[key]
-        arr = np.array(
-            np.load(root / entry["file"], mmap_mode="r", allow_pickle=False),
-            copy=True, order="C"
-        )
-
-        if list(arr.shape) != entry["shape"]:
-            raise ValueError(f"Shape mismatch: {key}")
-
-        registry[name] = arr
-
-        if name != key:
-            print("MAPPED:", name, "=>", key, flush=True)
-
-    if missing:
-        raise ValueError(f"UNMAPPED WEIGHTS: {missing}")
-
-    print("WEIGHTS REGISTRY: PASS", len(registry), flush=True)
-    print("STARTING MAX CPU COMPILATION", flush=True)
-
-    session = InferenceSession(devices=[CPU()])
-    model = session.load(graph, weights_registry=registry)
-
-    print("PZAAS MAX CPU COMPILATION: PASS", flush=True)
-    print("MODEL TYPE:", type(model).__name__)
-    print("ORIGINAL DS: UNCHANGED")
-    print("INFERENCE / PARITY: PENDING")
-    print("NATIVE MAX SERVE: PENDING")
-
-except Exception:
-    traceback.print_exc()
-    raise SystemExit("PZAAS MAX CPU COMPILATION: FAILED")
+print("\nREAL INPUT DISCOVERY: COMPLETE")
+print("ORIGINAL DS: NO FILES MODIFIED")
+print("MAX INFERENCE / PARITY: PENDING")
 PY

@@ -1,91 +1,155 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
-V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
+M="$PWD/artifacts/v1.472-max" && \
+V="$M/pzaas_max/validation" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never --network none \
---memory 3g \
--e PYTHONDONTWRITEBYTECODE=1 \
--v "$PWD:/workspace:ro" \
--v "$V:/validation:rw" \
+--memory 10g --tmpfs /tmp:rw,size=1g \
+-e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+-e PYTHONPATH=/models \
+-v "$M:/models:ro" \
+-v "$V:/validation:ro" \
+-w /models \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
+import traceback
 from pathlib import Path
 import numpy as np
-import ast
-import os
+import torch
 
-os.umask(0o077)
+from max.driver import CPU
+from max.dtype import DType
+from max.engine import InferenceSession
+from max.graph import DeviceRef, Graph, TensorType, ops
 
-print("=== PZAAS EIGHT BRANCH ALIGNMENT ===")
+from pzaas_max import grecbase_fusion_full_head_72_max as m
 
-fusion = np.load(
-    "/validation/pzaas_fusion_input.npy",
-    allow_pickle=False
-)
+print("=== PZAAS REAL MAX AUX BRANCH PARITY ===", flush=True)
 
-assert fusion.shape == (1, 8, 256)
+try:
+    ref = torch.load(
+        "/validation/ppa_pytorch_reference_01.pt",
+        map_location="cpu",
+        weights_only=True
+    )
+    model_in = ref["model_in"]
 
-names = [
-    "sequence", "context", "search0", "search1",
-    "jet", "ihq", "sibling", "task"
-]
+    with np.load(
+        "/validation/pzaas_eight_branch_targets.npz",
+        allow_pickle=False
+    ) as data:
+        names = ["task", "ihq", "jet"]
+        expected = np.stack(
+            [data[name] for name in names],
+            axis=1
+        ).astype(np.float32)
 
-targets = {
-    name: fusion[:, i, :].copy()
-    for i, name in enumerate(names)
-}
+    assert expected.shape == (1, 3, 256)
 
-assert np.array_equal(
-    np.stack(list(targets.values()), axis=1),
-    fusion
-)
+    def to_numpy(t):
+        return np.ascontiguousarray(
+            t.detach().cpu().numpy().astype(np.int64)
+        )
 
-target = "/validation/pzaas_eight_branch_targets.npz"
-np.savez_compressed(target, **targets)
-os.chmod(target, 0o600)
+    inputs = [
+        to_numpy(model_in["task_in"][0]),
+        to_numpy(model_in["task_in"][1]),
+        to_numpy(model_in["ihq_in"]),
+        to_numpy(model_in["jet_name_in"]),
+        to_numpy(model_in["jet_status_in"])
+    ]
 
-for name, value in targets.items():
-    print("BRANCH:", name, value.shape)
+    shapes = [
+        [1], [1], [1, 50], [1, 50], [1, 50]
+    ]
 
-print("EIGHT BRANCH TARGETS: PASS")
+    for value, shape in zip(inputs, shapes):
+        assert list(value.shape) == shape
 
-p = Path(
-    "/workspace/artifacts/v1.472/"
-    "utils/dependency-utils/models.py"
-)
+    print("PYTORCH AUX INPUTS: PASS", flush=True)
 
-tree = ast.parse(p.read_text())
-lines = p.read_text().splitlines()
+    device = DeviceRef.CPU()
 
-classes = [
-    n for n in ast.walk(tree)
-    if isinstance(n, ast.ClassDef)
-    and n.name == "GRecBase"
-]
+    with Graph(
+        "pzaas_aux_branches_real",
+        input_types=[
+            TensorType(DType.int64, shape, device=device)
+            for shape in shapes
+        ]
+    ) as graph:
 
-assert classes, "Original GRecBase class missing"
+        task0, task1, ihq_ids, jet_name, jet_status = graph.inputs
 
-forward = next(
-    n for n in classes[0].body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "forward"
-)
+        task, ihq, jet = m.grecbase_aux_features(
+            task0, task1, ihq_ids,
+            jet_name, jet_status, device
+        )
 
-print("\n=== ORIGINAL GRECBASE FUSION WIRING ===")
+        packed = ops.concat(
+            [
+                ops.reshape(x, [1, 1, 256])
+                for x in (task, ihq, jet)
+            ],
+            axis=1
+        )
 
-matches = [
-    i for i in range(forward.lineno, forward.end_lineno + 1)
-    if "moe_norm1(" in lines[i - 1]
-]
+        graph.output(packed)
 
-assert matches, "Fusion boundary not found"
+    print("MAX AUX GRAPH BUILD: PASS", flush=True)
 
-for i in matches:
-    for j in range(max(forward.lineno, i - 12), i + 1):
-        print(f"{j}: {lines[j-1]}")
+    weights = {}
+    for path in sorted(Path(m.WDIR).glob("*.npy")):
+        weights[path.stem] = np.ascontiguousarray(
+            np.load(path, allow_pickle=False)
+        )
 
-print("\nPZAAS BRANCH REFERENCES: PASS")
-print("ORIGINAL DS: UNCHANGED")
-print("CTA / BPLAN: UNCHANGED")
-print("NEXT: NATIVE MAX BRANCH IMPLEMENTATION")
+    print("AVAILABLE MAX WEIGHTS:", len(weights), flush=True)
+
+    session = InferenceSession(devices=[CPU()])
+    model = session.load(
+        graph,
+        weights_registry=weights
+    )
+
+    print("REAL MAX AUX CPU COMPILATION: PASS", flush=True)
+
+    actual = model.execute(*inputs)[0].to_numpy()
+
+    assert actual.shape == expected.shape
+    assert np.isfinite(actual).all()
+
+    all_pass = True
+
+    for i, name in enumerate(names):
+        diff = np.abs(actual[:, i] - expected[:, i])
+        ok = np.allclose(
+            actual[:, i],
+            expected[:, i],
+            atol=1e-3,
+            rtol=1e-3
+        )
+        all_pass &= ok
+
+        print(
+            name.upper(),
+            "MAX ABS DIFF:", float(diff.max()),
+            "PARITY:", "PASS" if ok else "FAILED",
+            flush=True
+        )
+
+    print(
+        "PZAAS THREE BRANCH PARITY:",
+        "PASS" if all_pass else "FAILED"
+    )
+    print("ORIGINAL DS: UNCHANGED")
+    print("CTA / BPLAN: UNCHANGED")
+
+    if not all_pass:
+        raise SystemExit(1)
+
+    print("REMAINING FIVE BRANCHES: NEXT")
+
+except Exception:
+    traceback.print_exc()
+    raise SystemExit("PZAAS AUX BRANCH TEST: BLOCKED")
 PY

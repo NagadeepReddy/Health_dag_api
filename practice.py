@@ -5,59 +5,72 @@ run --rm -i --pull=never --network=none \
 -v "$PWD:/workspace" -w /workspace \
 --entrypoint python \
 localhost/cta-max-faiss:local - <<'PY'
+import sys, inspect, importlib.util, re, torch
 from pathlib import Path
-import torch, re
 
-root = Path("artifacts/v1.472-max/pzaas_max/validation")
-files = [
-    "ppa_model_base_reference.pt",
-    "ppa_pytorch_reference_01.pt",
-    "ppa_model_input_exact.pt"
+base = Path("/workspace")
+src = base / "artifacts/v1.472/core-artifact"
+sys.path[:0] = [str(src), str(src.parent)]
+
+spec = importlib.util.spec_from_file_location(
+    "pzaas_original_capture", src / "pipeline.py"
+)
+mod = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = mod
+spec.loader.exec_module(mod)
+
+classes = [
+    c for c in vars(mod).values()
+    if inspect.isclass(c)
+    and c.__module__ == mod.__name__
+    and callable(getattr(c, "loadBaseModel", None))
+    and callable(getattr(c, "load", None))
 ]
 
-found = {}
+assert len(classes) == 1, "Original loader class not uniquely found"
+cls = classes[0]
+original = cls.loadBaseModel
+captured = []
 
-def scan(obj, prefix=""):
-    if isinstance(obj, torch.nn.Module):
-        scan(obj.state_dict(), prefix)
-    elif isinstance(obj, dict):
-        for k, v in obj.items():
-            key = f"{prefix}.{k}" if prefix else str(k)
-            if torch.is_tensor(v):
-                match = re.search(r"ptransformer\.(\d+)\.", key)
-                if match and int(match.group(1)) in range(2, 6):
-                    found[key] = v.detach().cpu()
-            elif isinstance(v, (dict, torch.nn.Module)):
-                scan(v, key)
+def capture(self, *args, **kwargs):
+    result = original(self, *args, **kwargs)
+    model = result[0] if isinstance(result, tuple) else result
+    state = model.state_dict()
+    layers = sorted({
+        int(m.group(1))
+        for key in state
+        if (m := re.search(r"ptransformer\.(\d+)\.", key))
+    })
+    print("ACTUAL INITIALIZED LAYERS:", layers)
+    captured.extend(layers)
 
-print("=== PZAAS RUNTIME WEIGHT RECOVERY ===")
+    missing = {
+        k: v.detach().cpu()
+        for k, v in state.items()
+        if (m := re.search(r"ptransformer\.(\d+)\.", k))
+        and int(m.group(1)) in (2, 3, 4, 5)
+    }
 
-for name in files:
-    path = root / name
-    if not path.is_file():
-        continue
-    data = torch.load(path, map_location="cpu", weights_only=False)
-    scan(data)
-    print("REFERENCE:", name, "READ")
+    if missing:
+        dst = base / "artifacts/v1.472-max/pzaas_max/validation/runtime_initialized_layers_2_5.pt"
+        assert not dst.exists(), "Snapshot already exists; refusing overwrite"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(missing, dst)
+        print("RUNTIME SNAPSHOT SAVED:", dst)
+        print("TENSORS:", len(missing))
+        print("NOTE: Initialized does not mean trained")
+    return result
 
-layers = sorted({
-    int(re.search(r"ptransformer\.(\d+)\.", k).group(1))
-    for k in found
-})
+cls.loadBaseModel = capture
 
-print("RECOVERED LAYERS:", layers)
-print("RECOVERED TENSORS:", len(found))
+print("=== PZAAS ORIGINAL RUNTIME CAPTURE ===")
+try:
+    cls().load()
+except Exception as exc:
+    print("LOADER EXIT:", type(exc).__name__, str(exc)[:200])
 
-if layers == [2, 3, 4, 5]:
-    target = root / "runtime_layers_2_to_5.pt"
-    torch.save(found, target)
-    print("RUNTIME LAYERS: RECOVERED")
-    print("SAVED:", target)
-    print("NEXT: ALIGN MAX WEIGHTS AND TEST PARITY")
-else:
-    print("RUNTIME LAYERS: NOT PRESENT IN SAVED REFERENCES")
-    print("NEXT: CAPTURE INITIALIZED LAYERS FROM ORIGINAL DS LOADER")
-
-print("ORIGINAL DS: UNCHANGED")
+print("RUNTIME CAPTURE:", "PASS" if captured else "BLOCKED")
+print("ORIGINAL DS FILES: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
+print("NEXT: VALIDATE REAL MODEL DEPTH AND NUMERICAL PARITY")
 PY

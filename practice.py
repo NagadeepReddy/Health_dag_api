@@ -2,37 +2,38 @@ cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 import json
 
-r = Path("artifacts/v1.472")
-g = Path("artifacts/v1.472-max/pzaas_max")
-m = json.loads((g/"pzaas_base_weights/manifest.json").read_text())
-cfg = json.loads((r/"config/torch_model_params_base.json").read_text())
+root = Path("artifacts/v1.472-max/pzaas_max")
+p = root / "sequence_transformer_max.py"
+
+manifest = json.loads(
+    (root / "pzaas_base_weights/manifest.json").read_text()
+)
+cfg = json.loads(
+    Path("artifacts/v1.472/config/torch_model_params_base.json").read_text()
+)
 if isinstance(cfg, list):
     cfg = cfg[0]
 
-print("=== PZAAS CONFIG ===")
-for k in ("seq_dim", "item_meta_dim", "item_embed_dim"):
-    print(k, cfg.get(k))
+size = manifest["sequence_transformer.item_meta_embedding.weight"]["shape"][0]
+assert size == cfg["item_meta_dim"] == 522
 
-print("\n=== TRAINED EMBEDDING SHAPES ===")
-for k in ("sequence_transformer.item_embedding.weight",
-          "sequence_transformer.item_meta_embedding.weight",
-          "sequence_transformer.seq_dense.weight"):
-    print(k, m[k]["shape"])
+source = p.read_text()
 
-print("\n=== ORIGINAL DS EMBEDDING LOGIC ===")
-p = r/"utils/dependency-utils/models.py"
-s = p.read_text().splitlines()
-for i, line in enumerate(s, 1):
-    if "item_meta_embedding" in line or "item_meta_dim" in line:
-        print(f"{i}: {line.strip()[:180]}")
+if source.count("vocab_size=523") == 1:
+    updated = source.replace("vocab_size=523", "vocab_size=522", 1)
+    compile(updated, str(p), "exec")
+    p.write_text(updated)
+    print("PZAAS ITEM META DIMENSION: UPDATED")
+elif source.count("vocab_size=522") == 1:
+    print("PZAAS ITEM META DIMENSION: ALREADY CORRECT")
+else:
+    raise SystemExit("STOP: Unexpected vocabulary definition")
 
-print("\n=== MAX GRAPH EMBEDDING LOGIC ===")
-p = g/"sequence_transformer_max.py"
-s = p.read_text().splitlines()
-for i, line in enumerate(s, 1):
-    if "vocab_size" in line or "item_meta_embedding" in line:
-        print(f"{i}: {line.strip()[:180]}")
+for f in root.glob("*.py"):
+    compile(f.read_text(), str(f), "exec")
 
-print("\nDIMENSION VERIFICATION: INSPECTED")
-print("NO FILES MODIFIED")
+print("ITEM META DIMENSION:", size)
+print("GRAPH PYTHON SYNTAX: PASS")
+print("ORIGINAL DS: UNCHANGED")
+print("MAX GRAPH COMPILATION: PENDING")
 PY

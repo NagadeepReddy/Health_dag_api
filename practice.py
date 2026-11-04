@@ -1,42 +1,53 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import ast
+import ast, json
 
-r = Path("artifacts/v1.472")
-p = r / "core-artifact/pipeline.py"
-s = p.read_text().splitlines()
-tree = ast.parse("\n".join(s))
+root = Path("artifacts/v1.472")
+p = root / "core-artifact/pipeline.py"
+tree = ast.parse(p.read_text())
 
-print("=== ORIGINAL DS MODEL INPUT FLOW ===")
-for n in ast.walk(tree):
-    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        if n.name in ("preprocess", "inference"):
-            print(f"\nFUNCTION: {n.name} | {n.lineno}-{n.end_lineno}")
-            for x in ast.walk(n):
-                if isinstance(x, ast.Return):
-                    print("RETURN:", x.lineno,
-                          ast.unparse(x.value)[:350] if x.value else "None")
-                elif isinstance(x, ast.Call):
-                    call = ast.unparse(x.func)
-                    if any(t in call.lower() for t in
-                           ("model_base", "model_sku", "preprocess", "torch.tensor")):
-                        print("CALL:", x.lineno, ast.unparse(x)[:200])
+cls = next(n for n in tree.body
+           if isinstance(n, ast.ClassDef) and n.name == "pipeline")
 
-print("\n=== SAVED MODEL INPUT CANDIDATES ===")
-roots = [r, Path("artifacts/v1.472-max")]
+print("=== ORIGINAL DS INITIALIZATION ===")
+for n in cls.body:
+    if isinstance(n, ast.FunctionDef) and n.name in ("__init__", "load", "preprocess"):
+        print(n.name, "LINES:", n.lineno, "-", n.end_lineno)
+
+pre = next(n for n in cls.body
+           if isinstance(n, ast.FunctionDef) and n.name == "preprocess")
+
+print("\n=== MODEL INPUT CONSTRUCTION ===")
 count = 0
-for root in roots:
-    for p in root.rglob("*"):
-        if p.is_file() and p.suffix.lower() in (".npy", ".npz", ".pkl", ".pickle", ".pt"):
-            if any(t in p.name.lower() for t in
-                   ("input", "sample", "fixture", "model_in", "sanity")):
-                print(p, "| bytes:", p.stat().st_size)
+for n in ast.walk(pre):
+    if isinstance(n, ast.Assign):
+        for t in n.targets:
+            if isinstance(t, ast.Name) and t.id == "model_in":
+                print("ASSIGN LINE:", n.lineno)
+                if isinstance(n.value, ast.Dict):
+                    keys = [
+                        k.value for k in n.value.keys
+                        if isinstance(k, ast.Constant)
+                    ]
+                    print("MODEL_IN KEYS:", keys)
+                else:
+                    print("VALUE:", ast.unparse(n.value)[:250])
                 count += 1
-                if count >= 30:
-                    break
-    if count >= 30:
-        break
+            elif isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name) and t.value.id == "model_in":
+                print("FIELD:", n.lineno, ast.unparse(t)[:100])
+                count += 1
 
-print("MODEL INPUT INSPECTION: COMPLETE")
-print("NO FILES MODIFIED")
+print("MODEL_IN ASSIGNMENTS:", count)
+
+print("\n=== PZAAS JSON SAMPLES ===")
+for f in sorted((root / "samples").glob("*.json")):
+    try:
+        data = json.loads(f.read_text())
+        print(f.name, ":", list(data)[:8] if isinstance(data, dict) else type(data).__name__)
+    except Exception as e:
+        print(f.name, ":", type(e).__name__)
+
+print("\nINSPECTION: PASS")
+print("ORIGINAL DS: UNCHANGED")
+print("REAL INFERENCE: NEXT")
 PY

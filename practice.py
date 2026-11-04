@@ -1,121 +1,88 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && \
-V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-run --rm -i --pull=never --network none \
---memory 3g \
--e PYTHONDONTWRITEBYTECODE=1 \
--v "$PWD:/workspace:ro" \
--v "$V:/validation:rw" \
--w /workspace \
---entrypoint /opt/venv/bin/python \
-localhost/cta-max-faiss:local -u - <<'PY'
-import ast, json, os, importlib.util
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import torch
+import tarfile
+import ast
+import io
 
-os.umask(0o077)
-print("=== PZAAS NATIVE MAX INPUT ADAPTER ===")
+root = Path.cwd()
+maxdir = root / "artifacts/v1.472-max/pzaas_max"
+validation = maxdir / "validation"
+validation.mkdir(parents=True, exist_ok=True)
 
-ref = torch.load(
-    "/validation/ppa_pytorch_reference_01.pt",
-    map_location="cpu",
-    weights_only=True
-)
-model_in = ref["model_in"]
+archive = validation / "PZAAS_MAX_SOURCE_REVIEW.tar.gz"
 
-source = Path(
-    "artifacts/v1.472/utils/dependency-utils/models.py"
-).read_text()
+ds = root / "artifacts/v1.472/utils/dependency-utils/models.py"
+pipeline = root / "artifacts/v1.472/core-artifact/pipeline.py"
 
-tree = ast.parse(source)
-cls = next(
-    n for n in tree.body
-    if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
-)
-forward = next(
-    n for n in cls.body
-    if isinstance(n, ast.FunctionDef) and n.name == "forward"
-)
+assert ds.is_file()
+assert pipeline.is_file()
+assert maxdir.is_dir()
 
-args = [a.arg for a in forward.args.args if a.arg != "self"]
-records = []
+with tarfile.open(archive, "w:gz") as tar:
 
-def flatten(key, value, indices=()):
-    if isinstance(value, torch.Tensor):
-        records.append({
-            "key": key,
-            "indices": list(indices),
-            "shape": list(value.shape),
-            "dtype": str(value.dtype)
-        })
-    elif isinstance(value, (list, tuple)):
-        for i, item in enumerate(value):
-            flatten(key, item, indices + (i,))
-    else:
-        raise TypeError(f"Unexpected input type: {key}")
+    # Only PZAAS MAX integration Python source.
+    count = 0
+    for p in sorted(maxdir.rglob("*.py")):
+        if "__pycache__" in p.parts:
+            continue
+        tar.add(p, arcname=str(p.relative_to(root)))
+        count += 1
 
-for arg in args:
-    key = "task_in" if arg == "tasks_in" else arg
-    assert key in model_in, f"Missing DS input: {key}"
-    flatten(key, model_in[key])
+    # Original GRecBase implementation, read-only.
+    source = ds.read_text()
+    tree = ast.parse(source)
 
-assert len(args) == 16
-assert len(records) == 159, (
-    f"Unexpected active tensor count: {len(records)}"
-)
+    classes = [
+        n for n in tree.body
+        if isinstance(n, ast.ClassDef)
+        and n.name == "GRecBase"
+    ]
+    assert len(classes) == 1
 
-schema = Path("/validation/pzaas_forward_schema.json")
-schema.write_text(json.dumps({
-    "model": "GRecBase",
-    "forward_arguments": args,
-    "tensors": records
-}, indent=2))
-schema.chmod(0o600)
+    code = ast.get_source_segment(source, classes[0])
+    assert code
 
-adapter = Path("/validation/pzaas_forward_input_adapter.py")
-adapter.write_text('''
-import json
-from pathlib import Path
-import torch
+    data = code.encode()
+    info = tarfile.TarInfo("reference/GRecBase_original.py.txt")
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data))
 
-SCHEMA = json.loads(
-    Path(__file__).with_name(
-        "pzaas_forward_schema.json"
-    ).read_text()
-)
+    # Existing verified input mapping metadata.
+    for name in (
+        "pzaas_alignment_manifest.json",
+        "pzaas_forward_schema.json",
+    ):
+        p = validation / name
+        assert p.is_file(), f"Missing: {name}"
+        tar.add(p, arcname="reference/" + name)
 
-def pack(model_in):
-    result = []
-    for spec in SCHEMA["tensors"]:
-        value = model_in[spec["key"]]
-        for index in spec["indices"]:
-            value = value[index]
-        assert isinstance(value, torch.Tensor)
-        assert list(value.shape) == spec["shape"]
-        assert str(value.dtype) == spec["dtype"]
-        result.append(
-            value.detach().cpu().contiguous().numpy()
+    # Original loader and model selection.
+    src = pipeline.read_text()
+    lines = src.splitlines()
+    selected = "\n".join(
+        f"{i+1}: {line}"
+        for i, line in enumerate(lines)
+        if (
+            "self.model_base =" in line
+            or "def loadBaseModel(" in line
+            or "model_suffix=" in line
         )
-    return result
-''')
-adapter.chmod(0o600)
+    )
 
-spec = importlib.util.spec_from_file_location(
-    "pzaas_adapter", adapter
-)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+    data = selected.encode()
+    info = tarfile.TarInfo("reference/model_loader.txt")
+    info.size = len(data)
+    tar.addfile(info, io.BytesIO(data))
 
-packed = module.pack(model_in)
-assert len(packed) == len(records)
+archive.chmod(0o600)
 
-print("MODEL: GRecBase")
-print("FORWARD ARGUMENTS:", len(args))
-print("ACTIVE INPUT TENSORS:", len(packed))
-print("INPUT SHAPES / DTYPES: VERIFIED")
-print("PZAAS INPUT ADAPTER: PASS")
+print("=== PZAAS MAX SOURCE PACKAGE ===")
+print("MAX PYTHON FILES:", count)
+print("ORIGINAL GRE CBASE: INCLUDED AS REFERENCE")
+print("INPUT MAPPING: INCLUDED")
+print("MODEL WEIGHTS: NOT INCLUDED")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("PZAAS MAX GRAPH ALIGNMENT: NEXT")
+print("PACKAGE: PASS")
+print("FILE:", archive)
 PY

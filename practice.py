@@ -1,70 +1,37 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && \
-M="$PWD/artifacts/v1.472-max" && \
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-run --rm -i --pull=never --network none \
--e PYTHONDONTWRITEBYTECODE=1 \
--v "$M:/models:ro" \
--w /models \
---entrypoint /opt/venv/bin/python \
-localhost/cta-max-faiss:local -u - <<'PY'
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 import ast
-import numpy as np
 
-root = Path("/models/pzaas_max")
+root = Path("artifacts/v1.472-max/pzaas_max")
 
-print("=== PZAAS FINAL TWO BRANCHES ===")
+print("=== PZAAS SEQUENCE + CONTEXT IMPLEMENTATION ===")
 
-target = root / "validation/pzaas_eight_branch_targets.npz"
+p = root / "main_context_max.py"
+lines = p.read_text().splitlines()
 
-with np.load(target, allow_pickle=False) as data:
-    print("\nPYTORCH BRANCH TARGETS:")
-    for key in data.files:
-        print(key, data[key].shape)
+print("\n=== CONTEXT FORWARD ===")
+for i in range(9, min(68, len(lines))):
+    print(f"{i+1}: {lines[i]}")
 
-for name in [
-    "main_context_max.py",
-    "parallel_transformer_block_2layers.py",
-    "grecbase_fusion_full_head_72_max.py"
-]:
-    p = root / name
-    print("\nFILE:", name)
+p = root / "grecbase_fusion_full_head_72_max.py"
+lines = p.read_text().splitlines()
 
-    if not p.is_file():
-        print("NOT FOUND")
-        continue
+print("\n=== SEQUENCE GRAPH ===")
+for i in range(16, min(41, len(lines))):
+    print(f"{i+1}: {lines[i]}")
 
-    source = p.read_text()
-    tree = ast.parse(source)
-    lines = source.splitlines()
-
+print("\n=== SEQUENCE COMPONENT DEFINITIONS ===")
+for p in sorted(root.glob("*.py")):
+    tree = ast.parse(p.read_text())
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            if any(x in node.name.lower() for x in [
-                "context", "sequence", "fusion",
-                "transformer", "features"
-            ]):
-                print(
-                    "FUNCTION:", node.name,
-                    "LINES:", node.lineno, "-", node.end_lineno
-                )
+            if any(x in node.name.lower() for x in (
+                "postprocess", "features", "sequence"
+            )):
+                print(p.name, node.name,
+                      node.lineno, node.end_lineno)
 
-    if name == "grecbase_fusion_full_head_72_max.py":
-        print("\nSEQUENCE / CONTEXT WIRING:")
-        for i, line in enumerate(lines, 1):
-            if any(x in line for x in [
-                "main_context_forward",
-                "ParallelTransformer",
-                "features(",
-                "postprocess(",
-                "seq_dense",
-                "context_inputs",
-                "graph.output"
-            ]):
-                print(f"{i}: {line.strip()}")
-
-print("\nFINAL BRANCH INSPECTION: COMPLETE")
+print("\nSEQUENCE / CONTEXT SOURCE: COMPLETE")
 print("ORIGINAL DS: UNCHANGED")
-print("NEXT: SEQUENCE + CONTEXT REAL MAX PARITY")
+print("NEXT: REAL MAX PARITY")
 PY

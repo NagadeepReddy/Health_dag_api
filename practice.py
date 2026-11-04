@@ -1,21 +1,19 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && {
-  echo "=== APSCHEDULER USAGE ==="
-  grep -nE 'apscheduler|BackgroundScheduler|scheduler' \
-    artifacts/v1.472/core-artifact/pipeline.py | head -30 || true
+  echo "=== REQUIRED DEPENDENCIES ==="
+  grep -inE 'apscheduler|tzlocal|pytz|python' \
+    artifacts/baseimage/requirements.txt \
+    artifacts/bplanimage/Dockerfile || true
 
-  echo "=== DEPENDENCY FILES ==="
-  find . -maxdepth 5 -type f \
-    \( -name 'requirements*.txt' -o -name 'Dockerfile*' \) \
-    -print | head -30
+  echo "=== ORIGINAL DS SCHEDULER INITIALIZATION ==="
+  sed -n '565,590p' \
+    artifacts/v1.472/core-artifact/pipeline.py
 
-  echo "=== AVAILABLE CONTAINER IMAGES ==="
+  echo "=== CANDIDATE RUNTIME IMAGES ==="
   podman --root /application1/podman/storage \
     --runroot /run/containers/storage \
-    images --format '{{.Repository}}:{{.Tag}}' | head -30
+    images --format '{{.Repository}}:{{.Tag}}' \
+    | grep -Ei 'jarvis|base|pzaas|bplan|cta|max' \
+    | head -25
 
-  echo "=== LOCAL APSCHEDULER WHEELS ==="
-  find /application1/sajjna8 -maxdepth 5 -type f \
-    -iname '*apscheduler*.whl' -print | head -10
-
-  echo "DEPENDENCY INSPECTION: COMPLETE"
+  echo "DEPENDENCY CHECK: COMPLETE"
 }

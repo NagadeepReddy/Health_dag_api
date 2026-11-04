@@ -1,45 +1,46 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-from pathlib import Path
-import ast
+cd /application1/sajjna8/rt-pzaas-v1.0 && \
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage run --rm -i \
+--network none --memory 10g \
+--tmpfs /tmp:rw,size=512m \
+-e PYTHONDONTWRITEBYTECODE=1 \
+-e PYTHONPATH=/workspace/artifacts/v1.472-max \
+-v "$PWD:/workspace:ro" \
+-w /workspace \
+--entrypoint python3 localhost/cta-max-faiss:local - <<'PY'
+import importlib, inspect, traceback
 
-src = Path("/application1/sajjna8/rt-pzaas-cta-offers-v1/artifacts/v1.168-max/cta_max")
-dst = Path("artifacts/v1.472-max/pzaas_max")
+print("=== PZAAS MAX GRAPH BUILD ===", flush=True)
 
-for _ in range(10):
-    missing = set()
-    for p in dst.glob("*.py"):
-        tree = ast.parse(p.read_text())
-        for n in ast.walk(tree):
-            if isinstance(n, ast.ImportFrom):
-                if n.level == 1 and n.module:
-                    missing.add(n.module.split(".")[0])
-                elif n.module and n.module.startswith("pzaas_max."):
-                    missing.add(n.module.split(".")[1])
-                elif n.level == 1 and not n.module:
-                    missing.update(x.name for x in n.names)
-
-    needed = sorted(
-        name for name in missing
-        if not (dst / (name + ".py")).exists()
-        and not (dst / name / "__init__.py").exists()
+try:
+    mod = importlib.import_module(
+        "pzaas_max.grecbase_fusion_full_head_72_max"
     )
-    if not needed:
-        break
+    print("GRAPH IMPORT: PASS", flush=True)
 
-    for name in needed:
-        original = src / (name + ".py")
-        if not original.is_file():
-            raise SystemExit(f"STOP: Missing source dependency: {name}")
-        target = dst / (name + ".py")
-        code = original.read_text().replace("cta_max.", "pzaas_max.")
-        compile(code, str(target), "exec")
-        target.write_text(code)
-        print("RESTORED:", name)
+    fn = mod.build_grecbase_fusion_graph_order_correct
+    sig = inspect.signature(fn)
+    print("BUILD SIGNATURE:", sig, flush=True)
 
-for p in dst.glob("*.py"):
-    compile(p.read_text(), str(p), "exec")
+    required = [
+        p.name for p in sig.parameters.values()
+        if p.default is inspect.Parameter.empty
+        and p.kind not in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD
+        )
+    ]
 
-print("PZAAS LOCAL DEPENDENCIES: RESTORED")
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL DS: UNCHANGED")
+    if required:
+        print("BUILD REQUIRES ARGUMENTS:", required)
+    else:
+        graph = fn()
+        print("PZAAS MAX GRAPH BUILD: PASS", flush=True)
+        print("GRAPH TYPE:", type(graph).__name__)
+
+    print("MAX COMPILATION: PENDING")
+
+except Exception:
+    traceback.print_exc()
+    raise SystemExit("PZAAS MAX GRAPH BUILD: FAILED")
 PY

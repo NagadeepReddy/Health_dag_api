@@ -1,109 +1,140 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 || exit 1
-
-python3 - <<'PY'
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import ast
+import re, hashlib, shutil, datetime
 
-print("=== PZAAS ORIGINAL SEQUENCE SOURCE ===")
+root = Path.cwd()
+base = root / "artifacts/v1.472-max/pzaas_max"
+matches = list(base.rglob("grecbase_fusion_full_head_72_max.py"))
 
-roots = [
-    Path("artifacts/v1.472"),
-    Path("/workspace/artifacts/v1.472"),
+if len(matches) != 1:
+    raise SystemExit("BLOCKED: Exact MAX graph not found uniquely. No changes.")
+
+graph = matches[0]
+
+ds_files = [
+    root / "artifacts/v1.472/core-artifact/pipeline.py",
+    root / "artifacts/v1.472/utils/dependency-utils/models.py",
 ]
 
-seen = set()
-found = 0
+digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+before = {str(p): digest(p) for p in ds_files if p.is_file()}
 
-for root in roots:
-    if not root.is_dir():
-        print("PATH UNAVAILABLE:", root)
-        continue
+source = graph.read_text()
+print("=== PZAAS SIX-LAYER MAX ALIGNMENT ===")
+print("GRAPH:", graph)
 
-    for p in root.rglob("*.py"):
-        path = str(p.resolve())
-        if path in seen:
-            continue
-        seen.add(path)
+already = (
+    all(re.search(
+        rf"\bblock{i}\s*=\s*ParallelTransformerBlockMAX\(",
+        source
+    ) for i in range(6))
+    and re.search(
+        r"\bseq_raw\s*=\s*postprocess\(\s*sx6\s*\)",
+        source
+    )
+)
 
-        try:
-            source = p.read_text(errors="replace")
-        except OSError:
-            continue
+if not already:
+    if any(re.search(
+        rf"\bblock{i}\s*=\s*ParallelTransformerBlockMAX\(",
+        source
+    ) for i in range(2, 6)):
+        raise SystemExit("BLOCKED: Partial layer wiring exists. No changes.")
 
-        if not any(x in source for x in (
-            "class ParallelTransformerMAEP",
-            "page_full_out",
-            "item_full_out",
-        )):
-            continue
+    patterns = [
+        r"(?m)^(?P<pad>[ \t]*)block1[ \t]*=[ \t]*ParallelTransformerBlockMAX\((?P<args>[^\n]*)\)[ \t]*$",
+        r"(?m)^(?P<pad>[ \t]*)sx2\s*=\s*sx1\s*\+\s*block1\(\s*sx1\s*,\s*pos\s*,\s*valid_length\s*\)[ \t]*$",
+        r"(?m)^(?P<pad>[ \t]*)seq_raw\s*=\s*postprocess\(\s*sx2\s*\)[ \t]*$",
+    ]
 
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            continue
+    found = []
+    for pattern in patterns:
+        results = list(re.finditer(pattern, source))
+        if len(results) != 1:
+            raise SystemExit(
+                "BLOCKED: Graph layout differs from screenshots. No changes."
+            )
+        found.append(results[0])
 
-        lines = source.splitlines()
+    declaration, step, output = found
+    args = declaration.group("args")
 
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            if "ParallelTransformer" not in node.name:
-                continue
+    if len(re.findall(r"\blayer_idx\s*=\s*1\b", args)) != 1:
+        raise SystemExit("BLOCKED: Layer constructor differs. No changes.")
 
-            found += 1
-            print("\nFILE:", p)
-            print("CLASS:", node.name)
+    declarations = []
+    steps = []
 
-            methods = [
-                n for n in node.body
-                if isinstance(n, ast.FunctionDef)
-                and n.name in ("__init__", "forward")
-            ]
+    for i in range(2, 6):
+        new_args = re.sub(
+            r"layer_idx\s*=\s*1\b",
+            f"layer_idx={i}",
+            args
+        )
+        declarations.append(
+            f"{declaration['pad']}block{i} = "
+            f"ParallelTransformerBlockMAX({new_args})"
+        )
+        steps.append(
+            f"{step['pad']}sx{i+1} = sx{i} + "
+            f"block{i}(sx{i}, pos, valid_length)"
+        )
 
-            for method in methods:
-                print("\nMETHOD:", method.name)
-                print("LINES:", method.lineno, "-", method.end_lineno)
+    updated = source.replace(
+        declaration.group(0),
+        declaration.group(0) + "\n" + "\n".join(declarations),
+        1
+    )
 
-                if method.name == "__init__":
-                    keywords = (
-                        "num_layers", "transformer",
-                        "embedding", "seq_dense",
-                        "pooling", "page_meta",
-                    )
-                else:
-                    keywords = (
-                        "page_", "item_", "wide_",
-                        "torch.cat", "transformer",
-                        "pooling", "seq_dense",
-                        "return", "norm",
-                    )
+    updated = updated.replace(
+        step.group(0),
+        step.group(0) + "\n" + "\n".join(steps),
+        1
+    )
 
-                selected = [
-                    i for i in range(
-                        method.lineno,
-                        method.end_lineno + 1
-                    )
-                    if any(
-                        k in lines[i-1].lower()
-                        for k in keywords
-                    )
-                ]
+    updated = updated.replace(
+        output.group(0),
+        f"{output['pad']}seq_raw = postprocess(sx6)",
+        1
+    )
 
-                for i in selected[:65]:
-                    print(f"{i}: {lines[i-1].strip()[:170]}")
+    compile(updated, str(graph), "exec")
 
-                if len(selected) > 65:
-                    print("MORE MATCHING LINES:", len(selected)-65)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = graph.with_name(graph.name + ".backup_" + stamp)
+    shutil.copy2(graph, backup)
 
-print("\nMATCHING CLASSES:", found)
+    temp = graph.with_name(graph.name + ".temp_six_layers")
+    temp.write_text(updated)
+    temp.replace(graph)
 
-if found:
-    print("ORIGINAL SEQUENCE SOURCE: LOCATED")
-    print("NEXT: ALIGN FIRST DIVERGENT MAX OPERATION")
+    print("BACKUP:", backup)
+    print("SIX-LAYER GRAPH WIRING: APPLIED")
 else:
-    print("ORIGINAL SEQUENCE SOURCE: NOT LOCATED")
-    print("NEXT: RESOLVE ORIGINAL SOURCE PATH")
+    print("SIX-LAYER GRAPH WIRING: ALREADY PRESENT")
 
-print("FILES MODIFIED: 0")
-print("CTA / BPLAN: UNCHANGED")
+final = graph.read_text()
+compile(final, str(graph), "exec")
+
+for i in range(6):
+    assert re.search(
+        rf"\bblock{i}\s*=\s*ParallelTransformerBlockMAX\(",
+        final
+    ), f"Missing layer {i}"
+
+assert re.search(
+    r"\bseq_raw\s*=\s*postprocess\(\s*sx6\s*\)",
+    final
+)
+
+for path, expected in before.items():
+    assert digest(Path(path)) == expected
+
+print("SIX-LAYER STRUCTURE: PASS")
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL DS: UNCHANGED")
+print("CTA / BPLAN: UNTOUCHED")
+print("REAL MAX EXECUTION: PENDING")
+print("FULL NUMERICAL PARITY: PENDING")
+print("NATIVE HTTP: PENDING")
 PY

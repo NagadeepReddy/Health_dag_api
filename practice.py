@@ -8,36 +8,22 @@ podman --root /application1/podman/storage \
 -v "$PWD:/workspace:ro" \
 -w /workspace \
 --entrypoint python3 localhost/cta-max-faiss:local - <<'PY'
-import importlib, inspect, traceback
+import traceback
+from max.graph import DeviceRef
 
-print("=== PZAAS MAX GRAPH BUILD ===", flush=True)
+print("=== PZAAS REAL MAX GRAPH BUILD ===", flush=True)
 
 try:
-    mod = importlib.import_module(
-        "pzaas_max.grecbase_fusion_full_head_72_max"
+    from pzaas_max.grecbase_fusion_full_head_72_max import (
+        build_grecbase_fusion_graph_order_correct
     )
-    print("GRAPH IMPORT: PASS", flush=True)
 
-    fn = mod.build_grecbase_fusion_graph_order_correct
-    sig = inspect.signature(fn)
-    print("BUILD SIGNATURE:", sig, flush=True)
+    device = DeviceRef.CPU()
+    graph = build_grecbase_fusion_graph_order_correct(device)
 
-    required = [
-        p.name for p in sig.parameters.values()
-        if p.default is inspect.Parameter.empty
-        and p.kind not in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD
-        )
-    ]
-
-    if required:
-        print("BUILD REQUIRES ARGUMENTS:", required)
-    else:
-        graph = fn()
-        print("PZAAS MAX GRAPH BUILD: PASS", flush=True)
-        print("GRAPH TYPE:", type(graph).__name__)
-
+    print("PZAAS MAX GRAPH BUILD: PASS", flush=True)
+    print("DEVICE: CPU")
+    print("GRAPH TYPE:", type(graph).__name__)
     print("MAX COMPILATION: PENDING")
 
 except Exception:

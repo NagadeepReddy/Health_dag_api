@@ -3,9 +3,10 @@ V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never --network none \
---memory 4g \
+--memory 3g \
+-e HOME=/tmp \
 -e PYTHONDONTWRITEBYTECODE=1 \
--e PYTHONPATH=/validation/sklearn_161:/validation/python_deps:/workspace/artifacts/v1.472/core-artifact \
+--tmpfs /tmp:rw,size=256m \
 -v "$PWD:/workspace:ro" \
 -v "$V:/validation:ro" \
 -w /workspace \
@@ -14,56 +15,68 @@ localhost/cta-max-faiss:local -u - <<'PY'
 import torch
 from pathlib import Path
 
-print("=== PZAAS PYTORCH TO MAX INPUT CONTRACT ===")
+print("=== PZAAS MAX INPUT CONTRACT VALIDATION ===")
 
-p = "/validation/ppa_pytorch_reference_01.pt"
+ref = torch.load(
+    "/validation/ppa_pytorch_reference_01.pt",
+    map_location="cpu",
+    weights_only=False
+)
 
-# Reference generated locally by the previous DS validation.
-ref = torch.load(p, map_location="cpu", weights_only=False)
+model_in = ref["model_in"]
+output = ref["output"]
 
-assert "model_in" in ref and "output" in ref
+print("\n=== ORIGINAL PYTORCH INPUTS ===")
 
-def inspect_value(name, value):
+total = 0
+
+def inspect(name, value):
+    global total
     if isinstance(value, torch.Tensor):
-        print(name, "TENSOR", tuple(value.shape), value.dtype)
-    elif isinstance(value, dict):
-        print(name, "DICT", len(value))
-        for k, v in value.items():
-            inspect_value(name + "." + str(k), v)
-    elif isinstance(value, (list, tuple)):
-        print(name, type(value).__name__, len(value))
-        for i, v in enumerate(value[:3]):
-            inspect_value(name + "[" + str(i) + "]", v)
-    else:
-        print(name, type(value).__name__)
+        total += 1
+        return
+    if isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            inspect(f"{name}[{i}]", v)
 
-print("\n=== EXACT ORIGINAL MODEL INPUTS ===")
-inspect_value("model_in", ref["model_in"])
+for name, value in model_in.items():
+    before = total
+    inspect(name, value)
+    print(
+        name,
+        "| type:", type(value).__name__,
+        "| tensors:", total - before
+    )
 
-print("\n=== ORIGINAL PYTORCH OUTPUT ===")
-inspect_value("output", ref["output"])
+print("\nTOTAL INPUT FIELDS:", len(model_in))
+print("TOTAL LEAF TENSORS:", total)
+print("PYTORCH OUTPUT TYPE:", type(output).__name__)
+print("PYTORCH OUTPUT COUNT:",
+      len(output) if hasattr(output, "__len__") else "N/A")
 
-print("\n=== MAX GRAPH INPUT DECLARATIONS ===")
+print("\n=== MAX GRAPH DECLARATION ===")
 
 p = Path(
     "artifacts/v1.472-max/pzaas_max/"
     "grecbase_fusion_full_head_72_max.py"
 )
 
-assert p.is_file(), "MAX graph source missing"
+assert p.is_file(), "MAX graph file missing"
 
 lines = p.read_text().splitlines()
 
-for i, line in enumerate(lines, 1):
-    if any(x in line for x in (
-        "TensorType(",
-        "input_types",
-        "graph.inputs",
-        "def build_grecbase_fusion_graph_order_correct",
-    )):
-        print(f"{i}: {line.strip()[:180]}")
+for n in range(17, min(32, len(lines) + 1)):
+    print(f"{n}: {lines[n-1]}")
 
-print("\nPZAAS PYTORCH REFERENCE: VERIFIED")
-print("MAX INPUT MAPPING: INSPECTED")
+print("\n=== ORIGINAL DS INFERENCE MAPPING ===")
+
+p = Path("artifacts/v1.472/core-artifact/pipeline.py")
+lines = p.read_text().splitlines()
+
+for n in range(4730, 4790):
+    print(f"{n}: {lines[n-1][:180]}")
+
+print("\nINPUT CONTRACT INSPECTION: COMPLETE")
 print("ORIGINAL DS: UNCHANGED")
+print("NO FILES MODIFIED")
 PY

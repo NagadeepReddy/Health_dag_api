@@ -7,51 +7,50 @@ run --rm -i --network none \
 -e PYTHONPATH=/application1/sajjna8/rt-pzaas-v1.0/artifacts/v1.472-max \
 --entrypoint /bin/sh \
 localhost/cta-max-faiss:local -c 'exec python3 -' <<'PY'
+import inspect
+import ast
+import textwrap
 from pathlib import Path
-import numpy as np
-import torch
-from max.graph import DeviceRef
 from pzaas_max.grecbase_fusion_full_head_72_max import (
     build_grecbase_fusion_graph_order_correct
 )
 
-v = Path("artifacts/v1.472-max/pzaas_max/validation")
-p = torch.load(
-    v / "ppa_model_input_exact.pt",
-    map_location="cpu",
-    weights_only=True
+print("=== PZAAS EXACT 72-INPUT SOURCE MAPPING ===")
+
+src = textwrap.dedent(
+    inspect.getsource(build_grecbase_fusion_graph_order_correct)
 )
-g = build_grecbase_fusion_graph_order_correct(DeviceRef.CPU())
 
-def leaves(x):
-    if isinstance(x, dict):
-        for value in x.values():
-            yield from leaves(value)
-    elif isinstance(x, (list, tuple)):
-        for value in x:
-            yield from leaves(value)
-    elif isinstance(x, (torch.Tensor, np.ndarray)):
-        yield x
+for n, line in enumerate(src.splitlines(), 1):
+    if any(k in line for k in (
+        "remaining[", "graph.inputs", "input_types",
+        "deep =", "wide =", "sibling",
+        "sequence", "search", "context",
+        "input_ids", "attention_mask"
+    )):
+        print(f"{n}: {line.strip()}")
 
-print("=== PZAAS EXACT INPUT ALIGNMENT ===")
-print("GRAPH INPUTS:", len(g.inputs))
+print("\n=== ORDERED INPUT ASSIGNMENTS ===")
+tree = ast.parse(src)
+for node in ast.walk(tree):
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        statement = ast.unparse(node)
+        if "remaining[" in statement or "graph.inputs" in statement:
+            print(statement[:500])
 
-for name, value in p.items():
-    tensors = list(leaves(value))
-    shapes = [tuple(t.shape) for t in tensors]
-    print(f"{name}: count={len(tensors)}, shapes={shapes[:5]}")
+print("\n=== DERIVED SEQUENCE INPUT LOCATIONS ===")
+root = Path("artifacts/v1.472-max/pzaas_max")
+for path in sorted(root.glob("*.py")):
+    lines = path.read_text(errors="replace").splitlines()
+    for i, line in enumerate(lines, 1):
+        if any(k in line for k in (
+            "50, 256", "50,256",
+            "remaining[29]", "remaining[28]",
+            "ppa_tensor_inputs"
+        )):
+            print(f"{path.name}:{i}: {line.strip()[:200]}")
 
-print("=== GRAPH INPUT SIGNATURE ===")
-for i, value in enumerate(g.inputs):
-    print(i, str(value.type))
-
-print("=== SAVED NUMPY INPUT ARTIFACTS ===")
-for path in sorted(v.glob("*.npz")):
-    with np.load(path, allow_pickle=False) as data:
-        print(path.name, "arrays:", len(data.files))
-        print("Keys:", data.files[:20])
-
-print("ORIGINAL DS: UNCHANGED")
+print("\nORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: EXACT 72-INPUT PACKING AND NUMERICAL PARITY")
+print("NEXT: EXACT INPUT PACKING → FULL NUMERICAL PARITY")
 PY

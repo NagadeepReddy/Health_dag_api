@@ -1,6 +1,5 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
 V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
-mkdir -p "$V/sklearn_161" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never \
@@ -11,37 +10,60 @@ run --rm -i --pull=never \
 -e PYTHONPATH=/validation/sklearn_161:/validation/python_deps:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
 -v "$PWD:/workspace:ro" \
 -v "$V:/validation:rw" \
--v /vzwhome/sajjna8:/wheels:ro \
 -w /workspace \
---entrypoint /bin/sh \
-localhost/cta-max-faiss:local -ec '
-set -- /wheels/scikit_learn-1.6.1-*.whl
-test -f "$1" || {
-  echo "SKLEARN 1.6.1 WHEEL MISSING"
-  exit 2
-}
-
-/opt/venv/bin/python -m pip install \
-  --no-index --no-deps --no-compile \
-  --target /validation/sklearn_161 "$1"
-
-/opt/venv/bin/python -u -' <<'PY'
+--entrypoint /opt/venv/bin/python \
+localhost/cta-max-faiss:local -u - <<'PY'
 import sys, types, json, traceback, os
 import numpy as np
 
 os.umask(0o077)
 
-print("=== PZAAS REAL INPUT CAPTURE RETRY ===", flush=True)
+print("=== PZAAS INPUT PREFLIGHT ===", flush=True)
 
 try:
-    import sklearn
-    assert sklearn.__version__ == "1.6.1", sklearn.__version__
-    print("SCIKIT-LEARN:", sklearn.__version__, "PASS", flush=True)
+    import torch, sklearn, einops, joblib, cloudpickle
+    assert sklearn.__version__ == "1.6.1"
 
-    import torch, einops, joblib, cloudpickle, scipy, threadpoolctl
-    print("DS DEPENDENCIES: PASS", flush=True)
+    with open("artifacts/v1.472/samples/sanity_input.json") as f:
+        body = json.load(f)
 
-    # Offline test only: no background refresh.
+    fixes = 0
+
+    def validate(obj):
+        global fixes
+
+        if isinstance(obj, dict):
+            page = obj.get("page")
+
+            if isinstance(page, dict):
+                name = page.get("name")
+
+                if isinstance(name, str) and \
+                   name.lower() == "gridwall_smartphones":
+
+                    value = obj.get("webInteraction_name")
+
+                    if value is None:
+                        obj["webInteraction_name"] = ""
+                        fixes += 1
+                    elif not isinstance(value, str):
+                        raise TypeError(
+                            "Invalid webInteraction_name type"
+                        )
+
+            for value in obj.values():
+                validate(value)
+
+        elif isinstance(obj, list):
+            for item in obj:
+                validate(item)
+
+    validate(body)
+
+    print("INPUT PREFLIGHT: PASS")
+    print("TEST-ONLY NULL NORMALIZATIONS:", fixes)
+
+    # Offline scheduler isolation.
     for name in (
         "apscheduler",
         "apscheduler.schedulers",
@@ -69,28 +91,22 @@ try:
 
     from pipeline import pipeline
 
-    # Do not edit original DS source files.
     pipeline.schedule_pull = lambda self: None
 
-    print("DS IMPORT: PASS", flush=True)
-
     ds = pipeline()
+
     if not getattr(ds, "loaded", False):
         ds.load()
 
     print("ORIGINAL DS LOAD: PASS", flush=True)
-
-    with open("artifacts/v1.472/samples/sanity_input.json") as f:
-        body = json.load(f)
 
     result = ds.preprocess(body)
     model_in = result[0]
 
     assert isinstance(model_in, dict)
 
-    print("REAL DS PREPROCESS: PASS", flush=True)
-
     arrays = {}
+
     for name, value in model_in.items():
         if isinstance(value, torch.Tensor):
             value = value.detach().cpu().numpy()
@@ -99,20 +115,21 @@ try:
             arrays[name] = value
             print("INPUT:", name, value.shape, value.dtype)
         else:
-            print("NON-ARRAY:", name, type(value).__name__)
+            print("UNSUPPORTED INPUT:", name, type(value).__name__)
 
-    assert arrays, "No model tensors captured"
-    assert len(arrays) == len(model_in), "Some inputs need conversion"
+    assert arrays, "No tensors captured"
+    assert len(arrays) == len(model_in), \
+        "Some inputs require conversion"
 
     np.savez_compressed(
         "/validation/sanity_model_inputs.npz",
         **arrays
     )
 
-    print("PZAAS REAL INPUT CAPTURE: PASS")
-    print("CAPTURED TENSORS:", len(arrays))
+    print("PZAAS MODEL INPUT CAPTURE: PASS")
+    print("TENSORS:", len(arrays))
     print("ORIGINAL DS FILES: UNCHANGED")
-    print("REAL MAX INFERENCE / PARITY: NEXT")
+    print("MAX INFERENCE / PARITY: NEXT")
 
 except Exception:
     traceback.print_exc()

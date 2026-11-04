@@ -1,124 +1,161 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
-V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
+P="$PWD/artifacts/v1.472-max/pzaas_max" && \
+V="$P/validation" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never --network none \
---memory 10g --tmpfs /tmp:rw,size=1g \
--e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
--e PYTHONPATH=/validation/sklearn_161:/validation/python_deps:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
--v "$PWD:/workspace:ro" \
+--memory 10g \
+--tmpfs /tmp:rw,size=1g \
+-e HOME=/tmp \
+-e PYTHONDONTWRITEBYTECODE=1 \
+-v "$P:/pzaas:ro" \
 -v "$V:/validation:rw" \
--w /workspace \
+-w /pzaas \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
-import sys, types, inspect, traceback, os
-import torch
+import sys
+import traceback
+import importlib
 import numpy as np
 
-print("=== PZAAS FUSION CAPTURE ===", flush=True)
-torch.set_num_threads(4)
-os.umask(0o077)
+from max.driver import CPU
+from max.dtype import DType
+from max.engine import InferenceSession
+from max.graph import DeviceRef, Graph, TensorType, ops
+
+print("=== PZAAS REAL MAX FUSION PARITY ===", flush=True)
 
 try:
-    # Satisfy imports without starting a scheduler.
-    for name in (
-        "apscheduler",
-        "apscheduler.schedulers",
-        "apscheduler.schedulers.background",
-        "apscheduler.triggers",
-        "apscheduler.triggers.interval"
-    ):
-        m = types.ModuleType(name)
-        m.__path__ = []
-        sys.modules[name] = m
+    sys.path.insert(0, "/pzaas")
 
-    class BackgroundScheduler:
-        def __init__(self, *a, **k): pass
-
-    class IntervalTrigger:
-        def __init__(self, *a, **k): pass
-
-    sys.modules[
-        "apscheduler.schedulers.background"
-    ].BackgroundScheduler = BackgroundScheduler
-
-    sys.modules[
-        "apscheduler.triggers.interval"
-    ].IntervalTrigger = IntervalTrigger
-
-    from pipeline import pipeline
-
-    # Skip ONLY background scheduler initialization.
-    # No original DS files are modified.
-    pipeline.schedule_pull = lambda self: None
-
-    ds = pipeline()
-    ds.load()
-    print("ORIGINAL DS LOAD: PASS", flush=True)
-
-    model = ds.model_base
-    model.eval()
-
-    ref = torch.load(
-        "/validation/ppa_pytorch_reference_01.pt",
-        map_location="cpu",
-        weights_only=True
-    )
-    model_in = ref["model_in"]
-    captured = {}
-
-    def capture_fusion(module, args):
-        captured["fusion"] = args[0].detach().cpu().clone()
-
-    hook = model.moe_norm1.register_forward_pre_hook(
-        capture_fusion
+    m = importlib.import_module(
+        "grecbase_fusion_full_head_72_max"
     )
 
-    original_get_path = model.get_path
+    fusion = np.load(
+        "/validation/pzaas_fusion_input.npy",
+        allow_pickle=False
+    ).astype(np.float32)
 
-    def capture_path(*args, **kwargs):
-        captured["path"] = args[-1].detach().cpu().clone()
-        return original_get_path(*args, **kwargs)
-
-    model.get_path = capture_path
-
-    kwargs = {}
-    for name in inspect.signature(model.forward).parameters:
-        key = "task_in" if name == "tasks_in" else name
-        if key in model_in:
-            kwargs[name] = model_in[key]
-
-    try:
-        with torch.inference_mode():
-            output = model(**kwargs)
-    finally:
-        hook.remove()
-        model.get_path = original_get_path
-
-    fusion = captured["fusion"]
-    path = captured["path"]
+    reference = np.load(
+        "/validation/pzaas_get_path_input.npy",
+        allow_pickle=False
+    ).astype(np.float32)
 
     assert fusion.shape == (1, 8, 256)
-    assert path.shape == (1, 2048)
-    assert output.shape == (1, 2048)
+    assert reference.shape == (1, 2048)
 
-    for name, value in (
-        ("pzaas_fusion_input.npy", fusion),
-        ("pzaas_get_path_input.npy", path)
-    ):
-        file = "/validation/" + name
-        np.save(file, value.numpy(), allow_pickle=False)
-        os.chmod(file, 0o600)
+    device = DeviceRef.CPU()
 
-    print("SCHEDULER BYPASS: PASS")
-    print("PYTORCH MODEL FORWARD: PASS")
-    print("FUSION INPUT:", tuple(fusion.shape))
-    print("PATH INPUT:", tuple(path.shape))
-    print("FUSION CAPTURE: PASS")
-    print("ORIGINAL DS FILES: UNCHANGED")
-    print("REAL MAX PARITY: NEXT")
+    def norm(x, name):
+        weight = np.load(
+            m.WDIR / (name + ".g.npy"),
+            allow_pickle=False
+        ).astype(np.float32)
+
+        assert weight.shape == (256,)
+
+        gamma = ops.constant(
+            weight,
+            dtype=DType.float32,
+            device=device
+        )
+
+        variance = ops.reshape(
+            ops.mean(x * x, axis=-1),
+            [1, 8, 1]
+        )
+
+        return x * ops.rsqrt(variance + 1e-6) * gamma
+
+    inv = np.load(
+        m.WDIR / "att_pooling.rotary_emb.inv_freq.npy",
+        allow_pickle=False
+    ).astype(np.float32)
+
+    assert inv.shape == (128,)
+
+    angles = np.arange(
+        8, dtype=np.float32
+    )[:, None] * inv[None, :]
+
+    position = np.concatenate(
+        [angles, angles], axis=1
+    )[None, None, :, :].astype(np.float32)
+
+    with Graph(
+        "pzaas_real_fusion_parity",
+        input_types=(
+            TensorType(
+                DType.float32,
+                [1, 8, 256],
+                device=device
+            ),
+        )
+    ) as graph:
+
+        x = graph.inputs[0]
+
+        x = norm(x, "moe_norm1")
+
+        pos = ops.constant(
+            position,
+            dtype=DType.float32,
+            device=device
+        )
+
+        block = m.AttPoolingBlockMAX(
+            dtype=DType.float32,
+            device=device,
+            layer_idx=0
+        )
+
+        x = block(x, pos)
+        x = norm(x, "moe_norm2")
+        x = ops.reshape(x, [1, 2048])
+
+        graph.output(x)
+
+    print("PZAAS MAX FUSION GRAPH: PASS", flush=True)
+
+    session = InferenceSession(devices=[CPU()])
+    model = session.load(graph)
+
+    print("REAL MAX CPU COMPILATION: PASS", flush=True)
+
+    result = model.execute(fusion)[0].to_numpy()
+
+    assert result.shape == reference.shape
+    assert np.isfinite(result).all()
+    assert np.isfinite(reference).all()
+
+    diff = np.abs(result - reference)
+
+    print("MAX OUTPUT:", result.shape)
+    print("PYTORCH OUTPUT:", reference.shape)
+    print("MAX ABS DIFF:", float(diff.max()))
+    print("MEAN ABS DIFF:", float(diff.mean()))
+
+    parity = np.allclose(
+        result, reference,
+        atol=1e-3,
+        rtol=1e-3
+    )
+
+    print(
+        "REAL MAX FUSION PARITY:",
+        "PASS" if parity else "FAILED"
+    )
+    print("ORIGINAL DS: UNCHANGED")
+    print("CTA / BPLAN: UNCHANGED")
+
+    if not parity:
+        raise SystemExit(1)
+
+    print("FULL PZAAS MAX PARITY: PENDING")
+    print("NATIVE MAX HTTP: PENDING")
 
 except Exception:
     traceback.print_exc()
-    raise SystemExit("FUSION CAPTURE: BLOCKED")
+    raise SystemExit("PZAAS MAX FUSION TEST: BLOCKED")
 PY

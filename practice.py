@@ -1,53 +1,83 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
+from datetime import datetime
+import re, shutil, ast, sys
 
-files = {
-    "ORIGINAL PYTORCH": (
-        Path("artifacts/v1.472/utils/dependency-utils/models.py"),
-        [(470,485),(537,563),(630,671)]
-    ),
-    "MAX ATTENTION": (
-        Path("artifacts/v1.472-max/pzaas_max/parallel_transformer_block_2layers.py"),
-        [(20,45),(75,143)]
-    ),
-    "MAX FUSION": (
-        Path("artifacts/v1.472-max/pzaas_max/grecbase_fusion_full_head_72_max.py"),
-        [(27,43)]
-    )
-}
+p = Path("artifacts/v1.472-max/pzaas_max/grecbase_fusion_full_head_72_max.py")
 
-terms = (
-    "scale", "heads", "dim_head", "reshape",
-    "permute", "split", "rotary", "norm",
-    "mask", "valid", "einsum", "matmul",
-    "softmax", "attn", "ff_out", "return",
-    "sx1", "sx2", "block0", "block1",
-    "q =", "k =", "v =", "out +",
-    "out +=", "fused", "residual"
+print("=== PZAAS TRAINED DEPTH ALIGNMENT ===")
+
+if not p.is_file():
+    sys.exit("BLOCKED: MAX fusion file missing")
+
+original = p.read_text()
+updated = original
+
+if not re.search(r'\bblock2\s*=', original):
+    if (re.search(r'\bblock1\s*=', original)
+        and not re.search(r'\bblock[2-5]\s*=', original)
+        and re.search(r'postprocess\(sx2\)', original)):
+        print("MAX DEPTH: ALREADY TWO")
+        sys.exit(0)
+    sys.exit("BLOCKED: Unexpected graph structure")
+
+patterns = []
+
+for i in range(2, 6):
+    patterns.append((
+        rf'(?m)^[ \t]*block{i}\s*=\s*ParallelTransformerBlockMAX\([^\n]*layer_idx\s*=\s*{i}\)[ \t]*\n',
+        '',
+        f"REMOVE EXTRA BLOCK {i}"
+    ))
+
+for i in range(3, 7):
+    patterns.append((
+        rf'(?m)^[ \t]*sx{i}\s*=\s*sx{i-1}\s*\+\s*block{i-1}\([^\n]*\)[ \t]*\n',
+        '',
+        f"REMOVE EXTRA EXECUTION {i}"
+    ))
+
+patterns.append((
+    r'postprocess\(sx6\)',
+    'postprocess(sx2)',
+    "USE TRAINED LAYER 1 OUTPUT"
+))
+
+for pattern, replacement, label in patterns:
+    updated, count = re.subn(pattern, replacement, updated)
+    if count != 1:
+        sys.exit(f"BLOCKED: {label}; matches={count}")
+    print(label + ": PASS")
+
+if re.search(r'\b(?:block[2-5]|sx[3-6])\b', updated):
+    sys.exit("BLOCKED: Extra layer references remain")
+
+try:
+    ast.parse(updated)
+    compile(updated, str(p), "exec")
+except Exception as e:
+    sys.exit(f"BLOCKED: Syntax validation: {e}")
+
+backup = p.with_name(
+    p.name + ".backup_" +
+    datetime.now().strftime("%Y%m%d_%H%M%S")
 )
 
-print("=== PZAAS EXACT ATTENTION ALIGNMENT ===")
+shutil.copy2(p, backup)
 
-for label, (path, ranges) in files.items():
-    print("\n###", label)
-    if not path.is_file():
-        print("BLOCKED: MISSING", path)
-        continue
+try:
+    p.write_text(updated)
+    assert p.read_text() == updated
+except Exception:
+    shutil.copy2(backup, p)
+    raise
 
-    lines = path.read_text().splitlines()
-    selected = set()
-
-    for start, end in ranges:
-        for i in range(start-1, min(end,len(lines))):
-            if any(t in lines[i].lower() for t in terms):
-                selected.update(range(max(start-1,i-1),
-                                      min(end,i+2)))
-
-    for i in sorted(selected):
-        print(f"{i+1}: {lines[i]}")
-
-print("\nSOURCE ALIGNMENT INSPECTION: COMPLETE")
+print("\n=== RESULTS ===")
+print("TRAINED DEPTH: 2")
+print("MAX GRAPH DEPTH: 2")
+print("PYTHON SYNTAX: PASS")
+print("SOURCE BACKUP: SAVED")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: CORRECT VERIFIED ATTENTION DIFFERENCE")
+print("NEXT: REAL MAX NUMERICAL PARITY")
 PY

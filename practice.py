@@ -6,113 +6,79 @@ run --rm -i --network none \
 -w /application1/sajjna8/rt-pzaas-v1.0 \
 --entrypoint /bin/sh \
 localhost/cta-max-faiss:local -c 'exec python3 -' <<'PY'
-import torch
-import numpy as np
-import hashlib
 from pathlib import Path
+import numpy as np
+import torch
 
 root = Path("artifacts/v1.472-max/pzaas_max/validation")
+names = ["sequence", "context", "search0", "search1",
+         "jet", "ihq", "sibling", "task"]
 
-print("=== PZAAS EXACT PYTORCH INPUT PROVENANCE ===")
-
-def load(name):
-    p = root / name
-    if not p.is_file():
-        print(name, "NOT FOUND")
-        return None
-    obj = torch.load(p, map_location="cpu", weights_only=True)
-    print(name, "READ")
-    return obj
-
-def canonical(x):
-    if isinstance(x, torch.Tensor):
-        x = x.detach().cpu().numpy()
-    if isinstance(x, np.ndarray):
-        a = np.ascontiguousarray(x)
-        return (
-            "array", str(a.dtype), tuple(a.shape),
-            hashlib.sha256(a.tobytes()).hexdigest()
-        )
-    if isinstance(x, dict):
-        return (
-            "dict",
-            tuple(sorted(
-                (str(k), canonical(v)) for k, v in x.items()
-            ))
-        )
-    if isinstance(x, (list, tuple)):
-        return ("sequence", tuple(canonical(v) for v in x))
-    return ("scalar", repr(x))
-
-def as_array(x):
+def tensor(x):
     if isinstance(x, torch.Tensor):
         return x.detach().cpu().numpy()
     if isinstance(x, np.ndarray):
         return x
     return None
 
-saved = load("ppa_model_input_exact.pt")
-base = load("ppa_model_base_reference.pt")
-other = load("ppa_pytorch_reference_01.pt")
-
-if isinstance(saved, dict) and "model_in" in saved:
-    saved_input = saved["model_in"]
-else:
-    saved_input = saved
-
-references = {}
-
-for label, obj in [("BASE", base), ("PYTORCH", other)]:
-    if not isinstance(obj, dict):
-        print(label, "REFERENCE STRUCTURE: UNAVAILABLE")
-        continue
-
-    print(label, "KEYS:", list(obj.keys())[:30])
-
-    if "model_in" in obj:
-        references[label] = obj["model_in"]
-
-        if saved_input is not None:
-            same = canonical(saved_input) == canonical(obj["model_in"])
-            print(label, "SAVED INPUT MATCH:", same)
-        else:
-            print(label, "SAVED INPUT MATCH: NOT CHECKED")
-
-    if "output" in obj:
-        a = as_array(obj["output"])
-        if a is not None:
-            print(label, "OUTPUT SHAPE:", a.shape)
-            print(label, "OUTPUT FINITE:", bool(np.isfinite(a).all()))
-
-if "BASE" in references and "PYTORCH" in references:
-    print(
-        "BOTH REFERENCES USE IDENTICAL INPUT:",
-        canonical(references["BASE"]) ==
-        canonical(references["PYTORCH"])
+def load(name):
+    return torch.load(
+        root / name,
+        map_location="cpu",
+        weights_only=True
     )
 
-if isinstance(base, dict) and isinstance(other, dict):
-    a = as_array(base.get("output"))
-    b = as_array(other.get("output"))
+print("=== PZAAS REFERENCE AND BRANCH TARGET ALIGNMENT ===")
 
-    if a is not None and b is not None and a.shape == b.shape:
-        print(
-            "TWO PYTORCH OUTPUTS MAX DIFF:",
-            float(np.max(np.abs(a.astype(np.float64) -
-                                b.astype(np.float64))))
-        )
+reference = load("ppa_pytorch_reference_01.pt")
+base = load("ppa_model_base_reference.pt")
 
-targets = root / "pzaas_eight_branch_targets.npz"
-if targets.is_file():
-    with np.load(targets, allow_pickle=False) as z:
-        names = [
-            "sequence", "context", "search0", "search1",
-            "jet", "ihq", "sibling", "task"
-        ]
-        print("BRANCH TARGETS:", len([n for n in names if n in z]))
-        print("BRANCH TARGETS: INTERMEDIATE FEATURES")
+assert isinstance(reference, dict)
+assert "output" in reference
 
-print("FULL-OUTPUT VS BRANCH-CONCAT: NOT A VALID PARITY TEST")
+actual = tensor(reference["output"])
+assert actual is not None
+
+print("PYTORCH REFERENCE SHAPE:", actual.shape)
+print("BASE REFERENCE TYPE:", type(base).__name__)
+
+base_output = tensor(base)
+if base_output is None and isinstance(base, dict):
+    base_output = tensor(base.get("output"))
+
+if base_output is not None:
+    print("BASE REFERENCE SHAPE:", base_output.shape)
+    if base_output.shape == actual.shape:
+        diff = np.abs(base_output.astype(np.float64) -
+                      actual.astype(np.float64))
+        print("BASE VS PYTORCH MAX DIFF:", float(diff.max()))
+
+with np.load(root / "pzaas_eight_branch_targets.npz",
+             allow_pickle=False) as z:
+    branches = [np.asarray(z[n], dtype=np.float32).reshape(-1)
+                for n in names]
+
+combined = np.concatenate(branches)
+
+print("EIGHT-BRANCH CONCAT SHAPE:", combined.shape)
+print("PYTORCH REFERENCE ELEMENTS:", actual.size)
+print("BRANCH TARGET ELEMENTS:", combined.size)
+
+if actual.size == combined.size:
+    diff = np.abs(
+        actual.astype(np.float64).reshape(-1) -
+        combined.astype(np.float64)
+    )
+    print("REFERENCE VS TARGET MAX DIFF:", float(diff.max()))
+    print("REFERENCE VS TARGET MEAN DIFF:", float(diff.mean()))
+    print("REFERENCE AND TARGET CONSISTENCY:",
+          "PASS" if np.allclose(actual.reshape(-1), combined,
+                                atol=1e-6, rtol=1e-6)
+          else "FAIL")
+else:
+    print("REFERENCE AND TARGET: DIFFERENT OUTPUT STAGES")
+    print("DIRECT FULL-OUTPUT COMPARISON: INVALID")
+
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
 print("FILES MODIFIED: NONE")

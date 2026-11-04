@@ -1,51 +1,61 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import re, zipfile
+import ast
+import re
 
-base = Path("artifacts/v1.472")
-maxdir = Path("artifacts/v1.472-max/pzaas_max")
+root = Path("artifacts/v1.472")
 
-print("=== PZAAS ACTUAL MODEL DEPTH ===")
+print("=== PZAAS MODEL LOADING VERIFICATION ===")
 
-for name in ["model_0_base.pt", "model_0_sku.pt"]:
-    p = base / "core-artifact" / name
-    if not p.exists():
-        print(name, "NOT FOUND")
+names = {
+    "loadBaseModel",
+    "loadTransformerModel",
+    "loadModel",
+}
+
+patterns = re.compile(
+    r"load_state_dict|strict\s*=|torch\.load|"
+    r"num_layers|ptransformer|model_base\s*="
+)
+
+files = [
+    root / "core-artifact/pipeline.py",
+    root / "utils/dependency-utils/models.py",
+]
+
+for p in files:
+    if not p.is_file():
         continue
-    with zipfile.ZipFile(p) as z:
-        data = b" ".join(
-            z.read(n) for n in z.namelist()
-            if n.endswith(".pkl")
-        )
-    layers = sorted(set(
-        int(x) for x in re.findall(
-            rb'ptransformer\.(\d+)\.', data
-        )
-    ))
-    print(name, "TRAINED LAYERS:", layers)
-    print("INFERRED DEPTH:", max(layers)+1 if layers else "UNKNOWN")
 
-print("\n=== ORIGINAL DS DEPTH CONFIGURATION ===")
-for p in [
-    base / "core-artifact/pipeline.py",
-    base / "utils/dependency-utils/models.py",
-]:
-    if not p.exists():
+    print("\nFILE:", p)
+    lines = p.read_text(errors="replace").splitlines()
+
+    try:
+        tree = ast.parse("\n".join(lines))
+    except SyntaxError as exc:
+        print("AST ERROR:", exc)
         continue
-    lines = p.read_text(errors="replace").splitlines()
-    for i, line in enumerate(lines):
-        if re.search(r'num_layers|ptransformer\s*=|model_base\s*=', line):
-            print(f"{p.name}:{i+1}: {line.strip()[:180]}")
 
-print("\n=== ISOLATED MAX GRAPH DEPTH ===")
-for p in maxdir.rglob("*.py") if maxdir.exists() else []:
-    lines = p.read_text(errors="replace").splitlines()
-    for i, line in enumerate(lines):
-        if re.search(r'range\(6\)|num_layers\s*=\s*6|ptransformer\.[2-5]\.', line):
-            print(f"{p.name}:{i+1}: {line.strip()[:180]}")
+    functions = [
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name in names
+    ]
 
-print("\nORIGINAL DS: UNCHANGED")
+    for node in functions:
+        print("\nLOADER:", node.name)
+        for i in range(node.lineno-1, min(node.end_lineno, len(lines))):
+            print(f"{i+1}: {lines[i]}")
+
+    print("\nOTHER RELEVANT LINES:")
+    for i, line in enumerate(lines):
+        if patterns.search(line):
+            if not any(n.lineno <= i+1 <= n.end_lineno for n in functions):
+                print(f"{i+1}: {line.strip()[:180]}")
+
+print("\n=== RESULT ===")
+print("ORIGINAL DS: UNCHANGED")
+print("MAX GRAPH: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("FILES MODIFIED: 0")
-print("NEXT: ALIGN MAX WITH VERIFIED PYTORCH DEPTH")
+print("NEXT: CONFIRM RUNTIME DEPTH BEFORE ALIGNMENT")
 PY

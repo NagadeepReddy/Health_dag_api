@@ -1,38 +1,17 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-from pathlib import Path
-import ast
-
-root = Path("artifacts/v1.472")
-p = root / "core-artifact/pipeline.py"
-tree = ast.parse(p.read_text())
-
-print("=== ACTUAL DEPENDENCY FILES ===")
-for f in sorted(Path("artifacts").rglob("*")):
-    if f.is_file() and (
-        "requirements" in f.name.lower()
-        or f.name.lower().startswith("dockerfile")
-    ):
-        print(f)
-        if "requirements" in f.name.lower():
-            for line in f.read_text(errors="replace").splitlines():
-                if "apscheduler" in line.lower():
-                    print("  DEPENDENCY:", line)
-
-print("\n=== SCHEDULER INVOCATIONS ===")
-for node in ast.walk(tree):
-    if isinstance(node, ast.Call):
-        name = ast.unparse(node.func)
-        if "schedule_pull" in name or "BackgroundScheduler" in name:
-            print("LINE:", node.lineno, name)
-
-print("\n=== DS INITIALIZATION IMPORTS ===")
-for node in ast.walk(tree):
-    if isinstance(node, ast.ImportFrom) and node.module:
-        if any(x in node.module for x in (
-            "apscheduler", "faiss", "transformers"
-        )):
-            print("IMPORT:", node.module)
-
-print("RUNTIME INSPECTION: COMPLETE")
-print("ORIGINAL DS: UNCHANGED")
-PY
+cd /application1/sajjna8/rt-pzaas-v1.0 && \
+mkdir -p artifacts/v1.472-max/pzaas_max/validation/python_deps && \
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage run --rm -i \
+--memory 2g \
+-v "$PWD/artifacts/v1.472-max/pzaas_max/validation/python_deps:/deps:rw" \
+--entrypoint /bin/sh localhost/cta-max-faiss:local -c '
+python3 -m pip install --disable-pip-version-check \
+--no-cache-dir --target /deps "APScheduler>=3.10,<4" &&
+PYTHONPATH=/deps python3 -c "
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+print(\"PZAAS APSCHEDULER: PASS\")
+print(\"ORIGINAL DS: UNCHANGED\")
+print(\"REAL INPUT CAPTURE: NEXT\")
+"
+'

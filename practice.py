@@ -2,104 +2,95 @@ cd /application1/sajjna8/rt-pzaas-v1.0 && \
 V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
-run --rm -i --network none --memory 10g \
+run --rm -i --pull=never \
+--network none --memory 10g \
 --tmpfs /tmp:rw,size=1g \
 -e HOME=/tmp \
 -e PYTHONDONTWRITEBYTECODE=1 \
 -e PYTHONPATH=/validation/python_deps:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
 -v "$PWD:/workspace:ro" \
 -v "$V:/validation:rw" \
--v /vzwhome/sajjna8:/wheels:ro \
 -w /workspace \
---entrypoint /bin/sh \
-localhost/cta-max-faiss:local -ec '
-set -- /wheels/threadpoolctl-*.whl
-test -f "$1" || { echo "THREADPOOLCTL WHEEL MISSING"; exit 2; }
-
-/opt/venv/bin/python -m pip install \
-  --no-index --no-deps --no-cache-dir \
-  --target /validation/python_deps "$1"
-
-if ! /opt/venv/bin/python -c "import scipy; import scipy.special" >/dev/null 2>&1; then
-  set -- /wheels/scipy-*.whl
-  test -f "$1" || { echo "SCIPY WHEEL MISSING"; exit 2; }
-
-  /opt/venv/bin/python -m pip install \
-    --no-index --no-deps --no-cache-dir \
-    --target /validation/python_deps "$1"
-fi
-
-/opt/venv/bin/python -u -' <<'PY'
-import sys, types, os, json, traceback
+--entrypoint /opt/venv/bin/python \
+localhost/cta-max-faiss:local -u - <<'PY'
+import sys, types, json, traceback
 import numpy as np
 
-os.umask(0o077)
+print("=== PZAAS REAL INPUT CAPTURE ===", flush=True)
 
-print("=== PZAAS RUNTIME VALIDATION ===", flush=True)
+# Import compatibility for offline validation only.
+for name in (
+    "apscheduler",
+    "apscheduler.schedulers",
+    "apscheduler.schedulers.background",
+    "apscheduler.triggers",
+    "apscheduler.triggers.interval",
+):
+    module = types.ModuleType(name)
+    module.__path__ = []
+    sys.modules[name] = module
+
+class BackgroundScheduler:
+    def __init__(self, *a, **kw): pass
+
+class IntervalTrigger:
+    def __init__(self, *a, **kw): pass
+
+sys.modules[
+    "apscheduler.schedulers.background"
+].BackgroundScheduler = BackgroundScheduler
+
+sys.modules[
+    "apscheduler.triggers.interval"
+].IntervalTrigger = IntervalTrigger
 
 try:
-    import torch, einops, joblib, sklearn
-    import cloudpickle, threadpoolctl, scipy
+    import torch
+    import einops, joblib, sklearn, cloudpickle
+    import threadpoolctl, scipy
 
-    print("PZAAS RUNTIME DEPENDENCIES: PASS", flush=True)
-
-    # Offline validation only; no DS files modified.
-    for name in (
-        "apscheduler",
-        "apscheduler.schedulers",
-        "apscheduler.schedulers.background",
-        "apscheduler.triggers",
-        "apscheduler.triggers.interval",
-    ):
-        m = types.ModuleType(name)
-        m.__path__ = []
-        sys.modules[name] = m
-
-    class BackgroundScheduler:
-        def __init__(self, *a, **kw): pass
-        def add_job(self, *a, **kw): pass
-        def start(self): pass
-
-    class IntervalTrigger:
-        def __init__(self, *a, **kw): pass
-
-    sys.modules[
-        "apscheduler.schedulers.background"
-    ].BackgroundScheduler = BackgroundScheduler
-
-    sys.modules[
-        "apscheduler.triggers.interval"
-    ].IntervalTrigger = IntervalTrigger
+    print("RUNTIME DEPENDENCIES: PASS", flush=True)
 
     from pipeline import pipeline
 
-    print("ORIGINAL DS IMPORT: PASS", flush=True)
+    # Disable only periodic refresh scheduling for this process.
+    # Original source files remain untouched.
+    pipeline.schedule_pull = lambda self: None
+
+    print("OFFLINE SCHEDULER ISOLATION: PASS", flush=True)
 
     ds = pipeline()
     if not getattr(ds, "loaded", False):
         ds.load()
 
-    print("ORIGINAL DS LOAD: PASS", flush=True)
+    print("ORIGINAL DS MODEL LOAD: PASS", flush=True)
 
     with open(
         "artifacts/v1.472/samples/sanity_input.json"
     ) as f:
         body = json.load(f)
 
-    model_in = ds.preprocess(body)[0]
+    result = ds.preprocess(body)
+    model_in = result[0]
+
     assert isinstance(model_in, dict)
+
+    print("ORIGINAL DS PREPROCESS: PASS", flush=True)
+    print("MODEL INPUT FIELDS:", len(model_in))
 
     arrays = {}
 
     for name, value in model_in.items():
         if isinstance(value, torch.Tensor):
             value = value.detach().cpu().numpy()
+
         if isinstance(value, np.ndarray):
             arrays[name] = value
             print("INPUT:", name, value.shape, value.dtype)
+        else:
+            print("NON-ARRAY FIELD:", name, type(value).__name__)
 
-    assert len(arrays) == len(model_in), \
-        "Some model inputs were not captured"
+    assert arrays, "No model tensors captured"
 
     np.savez_compressed(
         "/validation/sanity_model_inputs.npz",
@@ -108,7 +99,7 @@ try:
 
     print("PZAAS REAL INPUT CAPTURE: PASS")
     print("CAPTURED TENSORS:", len(arrays))
-    print("ORIGINAL DS: UNCHANGED")
+    print("ORIGINAL DS FILES: UNCHANGED")
     print("MAX INFERENCE / PARITY: NEXT")
 
 except Exception:

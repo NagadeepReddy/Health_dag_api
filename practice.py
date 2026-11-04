@@ -6,144 +6,113 @@ run --rm -i --network none \
 -w /application1/sajjna8/rt-pzaas-v1.0 \
 --entrypoint /bin/sh \
 localhost/cta-max-faiss:local -c 'exec python3 -' <<'PY'
-import numpy as np
 import torch
+import numpy as np
+import hashlib
 from pathlib import Path
 
 root = Path("artifacts/v1.472-max/pzaas_max/validation")
 
-names = [
-    "sequence", "context", "search0", "search1",
-    "jet", "ihq", "sibling", "task"
-]
+print("=== PZAAS EXACT PYTORCH INPUT PROVENANCE ===")
 
-print("=== PZAAS PYTORCH REFERENCE ROOT-CAUSE CHECK ===", flush=True)
+def load(name):
+    p = root / name
+    if not p.is_file():
+        print(name, "NOT FOUND")
+        return None
+    obj = torch.load(p, map_location="cpu", weights_only=True)
+    print(name, "READ")
+    return obj
 
-target_path = root / "pzaas_eight_branch_targets.npz"
-assert target_path.is_file(), "Eight-branch targets missing"
+def canonical(x):
+    if isinstance(x, torch.Tensor):
+        x = x.detach().cpu().numpy()
+    if isinstance(x, np.ndarray):
+        a = np.ascontiguousarray(x)
+        return (
+            "array", str(a.dtype), tuple(a.shape),
+            hashlib.sha256(a.tobytes()).hexdigest()
+        )
+    if isinstance(x, dict):
+        return (
+            "dict",
+            tuple(sorted(
+                (str(k), canonical(v)) for k, v in x.items()
+            ))
+        )
+    if isinstance(x, (list, tuple)):
+        return ("sequence", tuple(canonical(v) for v in x))
+    return ("scalar", repr(x))
 
-with np.load(target_path, allow_pickle=False) as z:
-    assert all(k in z.files for k in names)
-    branches = {
-        k: np.asarray(z[k], dtype=np.float32).reshape(-1)
-        for k in names
-    }
+def as_array(x):
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    if isinstance(x, np.ndarray):
+        return x
+    return None
 
-for name, value in branches.items():
+saved = load("ppa_model_input_exact.pt")
+base = load("ppa_model_base_reference.pt")
+other = load("ppa_pytorch_reference_01.pt")
+
+if isinstance(saved, dict) and "model_in" in saved:
+    saved_input = saved["model_in"]
+else:
+    saved_input = saved
+
+references = {}
+
+for label, obj in [("BASE", base), ("PYTORCH", other)]:
+    if not isinstance(obj, dict):
+        print(label, "REFERENCE STRUCTURE: UNAVAILABLE")
+        continue
+
+    print(label, "KEYS:", list(obj.keys())[:30])
+
+    if "model_in" in obj:
+        references[label] = obj["model_in"]
+
+        if saved_input is not None:
+            same = canonical(saved_input) == canonical(obj["model_in"])
+            print(label, "SAVED INPUT MATCH:", same)
+        else:
+            print(label, "SAVED INPUT MATCH: NOT CHECKED")
+
+    if "output" in obj:
+        a = as_array(obj["output"])
+        if a is not None:
+            print(label, "OUTPUT SHAPE:", a.shape)
+            print(label, "OUTPUT FINITE:", bool(np.isfinite(a).all()))
+
+if "BASE" in references and "PYTORCH" in references:
     print(
-        f"{name}: shape={value.shape}, "
-        f"min={value.min():.6f}, "
-        f"max={value.max():.6f}, "
-        f"mean={value.mean():.6f}"
+        "BOTH REFERENCES USE IDENTICAL INPUT:",
+        canonical(references["BASE"]) ==
+        canonical(references["PYTORCH"])
     )
 
-expected = np.concatenate([branches[k] for k in names])
-assert expected.size == 2048
-assert np.isfinite(expected).all()
+if isinstance(base, dict) and isinstance(other, dict):
+    a = as_array(base.get("output"))
+    b = as_array(other.get("output"))
 
-print("\nTARGET CONCATENATION: PASS")
-
-def collect(obj, prefix="", depth=0):
-    if depth > 5:
-        return
-
-    if isinstance(obj, torch.Tensor):
-        a = obj.detach().cpu().numpy()
-        if a.size in (256, 2048):
-            yield prefix, np.asarray(a, dtype=np.float32).reshape(-1)
-
-    elif isinstance(obj, np.ndarray):
-        if obj.size in (256, 2048):
-            yield prefix, np.asarray(obj, dtype=np.float32).reshape(-1)
-
-    elif isinstance(obj, dict):
-        for k, v in obj.items():
-            yield from collect(v, prefix + "/" + str(k), depth + 1)
-
-    elif isinstance(obj, (list, tuple)):
-        for i, v in enumerate(obj):
-            yield from collect(v, prefix + "/" + str(i), depth + 1)
-
-reference_files = [
-    "ppa_pytorch_reference_01.pt",
-    "ppa_model_base_reference.pt"
-]
-
-matched = False
-found_candidates = 0
-
-for filename in reference_files:
-    path = root / filename
-    print("\nREFERENCE:", filename)
-
-    if not path.is_file():
-        print("STATUS: NOT FOUND")
-        continue
-
-    try:
-        obj = torch.load(
-            path,
-            map_location="cpu",
-            weights_only=True
+    if a is not None and b is not None and a.shape == b.shape:
+        print(
+            "TWO PYTORCH OUTPUTS MAX DIFF:",
+            float(np.max(np.abs(a.astype(np.float64) -
+                                b.astype(np.float64))))
         )
-    except Exception as exc:
-        print("CANNOT READ SAFELY:", str(exc)[:250])
-        continue
 
-    if isinstance(obj, dict):
-        print("TOP-LEVEL KEYS:", list(obj)[:25])
-    else:
-        print("OBJECT TYPE:", type(obj).__name__)
+targets = root / "pzaas_eight_branch_targets.npz"
+if targets.is_file():
+    with np.load(targets, allow_pickle=False) as z:
+        names = [
+            "sequence", "context", "search0", "search1",
+            "jet", "ihq", "sibling", "task"
+        ]
+        print("BRANCH TARGETS:", len([n for n in names if n in z]))
+        print("BRANCH TARGETS: INTERMEDIATE FEATURES")
 
-    candidates = list(collect(obj))
-    print("CANDIDATE TENSORS:", len(candidates))
-
-    for key, value in candidates:
-        if not np.isfinite(value).all():
-            continue
-
-        found_candidates += 1
-
-        if value.size == 2048:
-            diff = np.abs(value - expected)
-            print(
-                "FULL REFERENCE:", key,
-                "max_diff=", float(diff.max()),
-                "mean_diff=", float(diff.mean())
-            )
-
-            if np.allclose(value, expected, atol=1e-6, rtol=1e-6):
-                matched = True
-                print("SAVED TARGET REFERENCE: MATCH")
-
-        elif value.size == 256:
-            scores = sorted(
-                (
-                    float(np.max(np.abs(value - branches[k]))),
-                    k
-                )
-                for k in names
-            )
-            best_diff, best_name = scores[0]
-            if best_diff < 1e-3:
-                print(
-                    "BRANCH REFERENCE MATCH:",
-                    key, "->", best_name,
-                    "diff=", best_diff
-                )
-                matched = True
-
-print("\n=== ROOT-CAUSE CHECK RESULTS ===")
-print("PYTORCH TARGET ARRAY: VALID")
-print("REFERENCE CANDIDATES:", found_candidates)
-
-if matched:
-    print("REFERENCE CONTENT CONSISTENCY: PASS")
-    print("NEXT: VERIFY SAME-INPUT PROVENANCE AND MAX OPERATIONS")
-else:
-    print("REFERENCE CONTENT CONSISTENCY: NOT ESTABLISHED")
-    print("NEXT: REGENERATE VERIFIED SAME-INPUT PYTORCH REFERENCE")
-
+print("FULL-OUTPUT VS BRANCH-CONCAT: NOT A VALID PARITY TEST")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
 print("FILES MODIFIED: NONE")

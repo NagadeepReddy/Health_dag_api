@@ -1,218 +1,77 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
-set -euo pipefail
-
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
-ROOT="$PWD"
-IMAGE=""
-
-for CID in 87202aa5f06a 225c544812ad 393fc64b1a75 d8578435c7b; do
-    IMG=$("${P[@]}" inspect --format '{{.Image}}' "$CID" 2>/dev/null || true)
-    if [ -n "$IMG" ] && "${P[@]}" image exists "$IMG"; then
-        IMAGE="$IMG"
-        break
-    fi
-done
-
-[ -n "$IMAGE" ] || { echo "BLOCKED: Existing PyTorch image unavailable"; exit 1; }
-
-"${P[@]}" run --rm -i \
-  --network none \
-  --read-only \
-  --tmpfs /tmp:rw,size=2g \
-  -e HOME=/tmp \
-  -e HF_HOME=/tmp/hf \
-  -e HF_HUB_OFFLINE=1 \
-  -e TRANSFORMERS_OFFLINE=1 \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -v "$ROOT:$ROOT:ro" \
-  -w "$ROOT" \
-  --entrypoint /opt/venv/bin/python \
-  "$IMAGE" - <<'PY'
-import sys
-import json
-import inspect
-import traceback
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
+import json
+import os
 
-import torch
+base = Path("artifacts/v1.472")
+pipeline = base / "core-artifact/pipeline.py"
 
-torch.set_num_threads(2)
+print("=== PZAAS ORIGINAL DEBERT CONFIG RESOLUTION ===")
 
-root = Path.cwd()
-original = root / "artifacts/v1.472"
-validation = root / "artifacts/v1.472-max/pzaas_max/validation"
+print("\n=== ORIGINAL PIPELINE PATHS ===")
+if pipeline.is_file():
+    lines = pipeline.read_text(errors="replace").splitlines()
+    for i, line in enumerate(lines, 1):
+        if any(x in line.lower() for x in (
+            "dbert_path",
+            "nlp_encoder_path",
+            "deberta"
+        )):
+            print(f"{i}: {line.strip()}")
 
-print("=== PZAAS ORIGINAL PYTORCH REPLAY ===", flush=True)
+print("\n=== ORIGINAL MODEL PARAMETERS ===")
+for p in sorted(base.rglob("torch_model_params_base.json")):
+    data = json.loads(p.read_text())
+    data = data[0] if isinstance(data, list) else data
+    print("PARAMETER FILE:", p)
+    for key in (
+        "nlp_encoder_path",
+        "nlp_embed_dim",
+        "sequence_transformer_kwargs"
+    ):
+        print(key, "=", data.get(key))
 
-try:
-    sys.path.insert(
-        0,
-        str(original / "utils/dependency-utils")
-    )
+print("\n=== EXISTING DEBERT CONFIG CANDIDATES ===")
+found = []
 
-    from models import GRecBase
-
-    params_files = sorted(
-        original.rglob("torch_model_params_base.json")
-    )
-
-    if len(params_files) != 1:
-        raise RuntimeError(
-            f"Expected one base parameter file; found {len(params_files)}"
+for root, dirs, files in os.walk("/application1"):
+    dirs[:] = [
+        d for d in dirs
+        if d not in (
+            "podman", ".git", "__pycache__",
+            "node_modules"
         )
+    ]
 
-    with open(params_files[0]) as f:
-        raw = json.load(f)
+    if "config.json" not in files:
+        continue
 
-    params = raw[0] if isinstance(raw, list) else raw
+    p = Path(root) / "config.json"
 
-    if not isinstance(params, dict):
-        raise RuntimeError("Invalid original model parameters")
+    try:
+        obj = json.loads(p.read_text())
+        model_type = str(obj.get("model_type", "")).lower()
+        architectures = str(obj.get("architectures", "")).lower()
 
-    # Match the original pipeline's base-model loader.
-    params["transfer_ind"] = True
-    params["extract_deep_idx"] = -1
+        if "debert" in model_type or "debert" in architectures:
+            found.append(p)
+            print("FOUND:", p)
+            print("MODEL TYPE:", model_type)
+            print("HIDDEN SIZE:", obj.get("hidden_size"))
+            print("LAYERS:", obj.get("num_hidden_layers"))
+    except (OSError, ValueError):
+        continue
 
-    config = params.get("nlp_encoder_path")
-
-    if not config or not Path(config).is_file():
-        candidates = []
-        for p in original.rglob("config.json"):
-            try:
-                with open(p) as f:
-                    obj = json.load(f)
-                if "debert" in str(obj.get("model_type", "")).lower():
-                    candidates.append(p)
-            except (OSError, ValueError):
-                continue
-
-        if len(candidates) != 1:
-            raise RuntimeError(
-                "Original DeBERT config unresolved: "
-                + str([str(p) for p in candidates])
-            )
-
-        params["nlp_encoder_path"] = str(candidates[0])
-
-    print("MODEL CONFIG: FOUND", flush=True)
-
-    checkpoint = original / "core-artifact/model_0_base.pt"
-
-    if not checkpoint.is_file():
-        raise RuntimeError("Original base checkpoint missing")
-
-    model = GRecBase(**params)
-
-    state = torch.load(
-        checkpoint,
-        map_location="cpu",
-        weights_only=True
-    )
-
-    model.load_state_dict(state, strict=True)
-    model.eval()
-
-    print("TRAINED BASE MODEL: LOADED", flush=True)
-
-    saved = torch.load(
-        validation / "ppa_pytorch_reference_01.pt",
-        map_location="cpu",
-        weights_only=True
-    )
-
-    inputs = saved["model_in"]
-
-    if not isinstance(inputs, dict):
-        raise RuntimeError("Saved model_in is not a dictionary")
-
-    signature = inspect.signature(model.forward)
-
-    kwargs = {}
-    missing = []
-
-    for name, parameter in signature.parameters.items():
-        if name == "self":
-            continue
-
-        if parameter.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD
-        ):
-            continue
-
-        if name in inputs:
-            kwargs[name] = inputs[name]
-        elif parameter.default is inspect.Parameter.empty:
-            missing.append(name)
-
-    if missing:
-        raise RuntimeError(
-            "Required original inputs missing: " + str(missing)
-        )
-
-    print("SAME INPUT: MAPPED", flush=True)
-
-    with torch.inference_mode():
-        actual = model(**kwargs)
-
-    if not isinstance(actual, torch.Tensor):
-        raise RuntimeError(
-            "Original model returned " + str(type(actual))
-        )
-
-    reference = torch.load(
-        validation / "ppa_model_base_reference.pt",
-        map_location="cpu",
-        weights_only=True
-    )
-
-    if not isinstance(reference, torch.Tensor):
-        raise RuntimeError("Reference is not a tensor")
-
-    actual = actual.detach().cpu().float()
-    reference = reference.detach().cpu().float()
-
-    print("ORIGINAL OUTPUT SHAPE:", tuple(actual.shape))
-    print("REFERENCE SHAPE:", tuple(reference.shape))
-
-    if actual.shape != reference.shape:
-        raise RuntimeError("Original/reference shape mismatch")
-
-    if not torch.isfinite(actual).all():
-        raise RuntimeError("Original model produced nonfinite values")
-
-    diff = (actual - reference).abs()
-
-    print("MAX ABS DIFF:", diff.max().item())
-    print("MEAN ABS DIFF:", diff.mean().item())
-
-    passed = torch.allclose(
-        actual,
-        reference,
-        rtol=1e-3,
-        atol=1e-3
-    )
-
-    print(
-        "ORIGINAL VS SAVED REFERENCE:",
-        "PASS" if passed else "FAIL"
-    )
-
-    print(
-        "NEXT:",
-        "COMPARE VERIFIED REFERENCE WITH MAX"
-        if passed else
-        "RESOLVE PYTORCH REFERENCE PROVENANCE"
-    )
-
-except Exception:
-    print("ORIGINAL PYTORCH REPLAY: BLOCKED")
-    traceback.print_exc(limit=4)
-    sys.exit(1)
-
-finally:
-    print("ORIGINAL DS: UNCHANGED")
-    print("CTA / BPLAN: UNCHANGED")
+print("\n=== RESULTS ===")
+print("DEBERT CANDIDATES:", len(found))
+print("ORIGINAL DS: UNCHANGED")
+print("CTA / BPLAN: UNCHANGED")
+print("FILES MODIFIED: NONE")
+print(
+    "NEXT:",
+    "MATCH CONFIG WITH ORIGINAL PIPELINE"
+    if found else
+    "LOCATE ORIGINAL EXTERNAL DEBERT MODEL ASSET"
+)
 PY
-SH

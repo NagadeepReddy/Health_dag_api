@@ -1,39 +1,46 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-from pathlib import Path
-import json
+cd /application1/sajjna8/rt-pzaas-v1.0 && \
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage run --rm -i \
+--network none --read-only --memory 10g \
+--tmpfs /tmp:rw,size=512m \
+-e PYTHONDONTWRITEBYTECODE=1 \
+-e PYTHONPATH=/workspace/artifacts/v1.472-max \
+-v "$PWD:/workspace:ro" \
+-w /workspace \
+--entrypoint python3 localhost/cta-max-faiss:local - <<'PY'
+import importlib
+import inspect
+import traceback
 
-root = Path("artifacts/v1.472-max/pzaas_max")
-p = root / "sequence_transformer_max.py"
+print("=== PZAAS MAX GRAPH BUILD ===", flush=True)
 
-manifest = json.loads(
-    (root / "pzaas_base_weights/manifest.json").read_text()
-)
-cfg = json.loads(
-    Path("artifacts/v1.472/config/torch_model_params_base.json").read_text()
-)
-if isinstance(cfg, list):
-    cfg = cfg[0]
+try:
+    module = importlib.import_module(
+        "pzaas_max.grecbase_fusion_full_head_72_max"
+    )
+    print("PZAAS GRAPH IMPORT: PASS", flush=True)
 
-size = manifest["sequence_transformer.item_meta_embedding.weight"]["shape"][0]
-assert size == cfg["item_meta_dim"] == 522
+    fn = module.build_grecbase_fusion_graph_order_correct
+    sig = inspect.signature(fn)
+    print("BUILD SIGNATURE:", sig, flush=True)
 
-source = p.read_text()
-
-if source.count("vocab_size=523") == 1:
-    updated = source.replace("vocab_size=523", "vocab_size=522", 1)
-    compile(updated, str(p), "exec")
-    p.write_text(updated)
-    print("PZAAS ITEM META DIMENSION: UPDATED")
-elif source.count("vocab_size=522") == 1:
-    print("PZAAS ITEM META DIMENSION: ALREADY CORRECT")
-else:
-    raise SystemExit("STOP: Unexpected vocabulary definition")
-
-for f in root.glob("*.py"):
-    compile(f.read_text(), str(f), "exec")
-
-print("ITEM META DIMENSION:", size)
-print("GRAPH PYTHON SYNTAX: PASS")
-print("ORIGINAL DS: UNCHANGED")
-print("MAX GRAPH COMPILATION: PENDING")
+    required = [
+        p.name for p in sig.parameters.values()
+        if p.default is inspect.Parameter.empty
+        and p.kind not in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD
+        )
+    ]
+    if required:
+        print("BUILD NEEDS ARGUMENTS:", required)
+    else:
+        graph = fn()
+        print("PZAAS MAX GRAPH BUILD: PASS")
+        print("GRAPH TYPE:", type(graph).__name__)
+        print("MAX COMPILATION: PENDING")
+except Exception:
+    print("PZAAS GRAPH BUILD: FAILED")
+    traceback.print_exc()
+    raise SystemExit(1)
 PY

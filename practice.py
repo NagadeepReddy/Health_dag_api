@@ -21,10 +21,9 @@ from max.driver import CPU
 from max.dtype import DType
 from max.engine import InferenceSession
 from max.graph import DeviceRef, Graph, TensorType, ops
-
 from pzaas_max import grecbase_fusion_full_head_72_max as m
 
-print("=== PZAAS REAL MAX AUX BRANCH PARITY ===", flush=True)
+print("=== PZAAS REAL MAX SIBLING PARITY ===", flush=True)
 
 try:
     ref = torch.load(
@@ -32,78 +31,109 @@ try:
         map_location="cpu",
         weights_only=True
     )
-    model_in = ref["model_in"]
+    data = ref["model_in"]
 
     with np.load(
         "/validation/pzaas_eight_branch_targets.npz",
         allow_pickle=False
-    ) as data:
-        names = ["task", "ihq", "jet"]
-        expected = np.stack(
-            [data[name] for name in names],
-            axis=1
-        ).astype(np.float32)
+    ) as targets:
+        expected = targets["sibling"].astype(np.float32)
 
-    assert expected.shape == (1, 3, 256)
+    deep = data["sibling_deep_in"]
+    wide = data["sibling_wide_in"]
+    valid = data["sibling_vl_in"]
 
-    def to_numpy(t):
-        return np.ascontiguousarray(
-            t.detach().cpu().numpy().astype(np.int64)
+    assert tuple(deep.shape) == (1, 3, 10)
+    assert tuple(wide.shape) == (1, 18, 10)
+    assert tuple(valid.shape) == (1,)
+    assert expected.shape == (1, 256)
+
+    values = []
+    shapes = []
+
+    for i in range(10):
+        for j in range(3):
+            values.append(
+                np.ascontiguousarray(
+                    deep[:, j, i].numpy().astype(np.int64)
+                )
+            )
+            shapes.append([1])
+
+        values.append(
+            np.ascontiguousarray(
+                wide[:, :, i].numpy().astype(np.int64)
+            )
         )
+        shapes.append([1, 18])
 
-    inputs = [
-        to_numpy(model_in["task_in"][0]),
-        to_numpy(model_in["task_in"][1]),
-        to_numpy(model_in["ihq_in"]),
-        to_numpy(model_in["jet_name_in"]),
-        to_numpy(model_in["jet_status_in"])
-    ]
+    values.append(
+        np.ascontiguousarray(
+            valid.numpy().astype(np.int64)
+        )
+    )
+    shapes.append([1])
 
-    shapes = [
-        [1], [1], [1, 50], [1, 50], [1, 50]
-    ]
-
-    for value, shape in zip(inputs, shapes):
-        assert list(value.shape) == shape
-
-    print("PYTORCH AUX INPUTS: PASS", flush=True)
+    print("SIBLING INPUT MAPPING: PASS", flush=True)
 
     device = DeviceRef.CPU()
 
     with Graph(
-        "pzaas_aux_branches_real",
+        "pzaas_real_sibling",
         input_types=[
-            TensorType(DType.int64, shape, device=device)
-            for shape in shapes
+            TensorType(DType.int64, s, device=device)
+            for s in shapes
         ]
     ) as graph:
 
-        task0, task1, ihq_ids, jet_name, jet_status = graph.inputs
+        inputs = graph.inputs
+        siblings = []
 
-        task, ihq, jet = m.grecbase_aux_features(
-            task0, task1, ihq_ids,
-            jet_name, jet_status, device
+        for i in range(10):
+            part = inputs[i*4:(i+1)*4]
+
+            output = m.sibling_context_forward(
+                part[:3], part[3], device
+            )
+
+            siblings.append(
+                ops.reshape(output, [1, 1, 128])
+            )
+
+        stack = ops.concat(siblings, axis=1)
+
+        length = ops.cast(
+            ops.reshape(inputs[40], [1, 1]),
+            DType.float32
         )
 
-        packed = ops.concat(
-            [
-                ops.reshape(x, [1, 1, 256])
-                for x in (task, ihq, jet)
-            ],
-            axis=1
+        epsilon = ops.constant(
+            np.array(1e-7, dtype=np.float32),
+            dtype=DType.float32,
+            device=device
         )
 
-        graph.output(packed)
+        mean = ops.sum(stack, axis=1) / (
+            length + epsilon
+        )
+        maximum = ops.max(stack, axis=1)
 
-    print("MAX AUX GRAPH BUILD: PASS", flush=True)
-
-    weights = {}
-    for path in sorted(Path(m.WDIR).glob("*.npy")):
-        weights[path.stem] = np.ascontiguousarray(
-            np.load(path, allow_pickle=False)
+        result = ops.concat(
+            [mean, maximum], axis=1
         )
 
-    print("AVAILABLE MAX WEIGHTS:", len(weights), flush=True)
+        graph.output(result)
+
+    print("SIBLING MAX GRAPH: PASS", flush=True)
+
+    weights = {
+        p.stem: np.ascontiguousarray(
+            np.load(p, allow_pickle=False)
+        )
+        for p in Path(m.WDIR).glob("*.npy")
+    }
+
+    assert len(weights) == 208
 
     session = InferenceSession(devices=[CPU()])
     model = session.load(
@@ -111,45 +141,37 @@ try:
         weights_registry=weights
     )
 
-    print("REAL MAX AUX CPU COMPILATION: PASS", flush=True)
+    print("SIBLING MAX CPU COMPILATION: PASS", flush=True)
 
-    actual = model.execute(*inputs)[0].to_numpy()
+    actual = model.execute(*values)[0].to_numpy()
 
     assert actual.shape == expected.shape
     assert np.isfinite(actual).all()
 
-    all_pass = True
+    diff = np.abs(actual - expected)
+    parity = np.allclose(
+        actual, expected,
+        atol=1e-3,
+        rtol=1e-3
+    )
 
-    for i, name in enumerate(names):
-        diff = np.abs(actual[:, i] - expected[:, i])
-        ok = np.allclose(
-            actual[:, i],
-            expected[:, i],
-            atol=1e-3,
-            rtol=1e-3
-        )
-        all_pass &= ok
-
-        print(
-            name.upper(),
-            "MAX ABS DIFF:", float(diff.max()),
-            "PARITY:", "PASS" if ok else "FAILED",
-            flush=True
-        )
-
+    print("MAX OUTPUT:", actual.shape)
+    print("PYTORCH OUTPUT:", expected.shape)
+    print("MAX ABS DIFF:", float(diff.max()))
+    print("MEAN ABS DIFF:", float(diff.mean()))
     print(
-        "PZAAS THREE BRANCH PARITY:",
-        "PASS" if all_pass else "FAILED"
+        "SIBLING PARITY:",
+        "PASS" if parity else "FAILED"
     )
     print("ORIGINAL DS: UNCHANGED")
     print("CTA / BPLAN: UNCHANGED")
 
-    if not all_pass:
+    if not parity:
         raise SystemExit(1)
 
-    print("REMAINING FIVE BRANCHES: NEXT")
+    print("REMAINING FOUR BRANCHES: NEXT")
 
 except Exception:
     traceback.print_exc()
-    raise SystemExit("PZAAS AUX BRANCH TEST: BLOCKED")
+    raise SystemExit("PZAAS SIBLING TEST: BLOCKED")
 PY

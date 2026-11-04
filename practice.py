@@ -1,62 +1,51 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import zipfile, re
+import re, zipfile
 
-print("=== PZAAS ORIGINAL TRAINED WEIGHT DISCOVERY ===")
+base = Path("artifacts/v1.472")
+maxdir = Path("artifacts/v1.472-max/pzaas_max")
 
-roots = [
-    Path("artifacts/v1.472"),
-    Path("artifacts/v1.472-max"),
-    Path("/models/pzaas_max"),
-]
+print("=== PZAAS ACTUAL MODEL DEPTH ===")
 
-pattern = re.compile(
-    rb'(?:ptransformer|ptramsformer|transformer)\.(\d+)\.'
-)
-
-found = set()
-checkpoints = []
-
-for root in roots:
-    if not root.exists():
+for name in ["model_0_base.pt", "model_0_sku.pt"]:
+    p = base / "core-artifact" / name
+    if not p.exists():
+        print(name, "NOT FOUND")
         continue
-    for p in root.rglob("*"):
-        if not p.is_file():
-            continue
-        if p.suffix == ".npy":
-            found.update(int(x) for x in pattern.findall(
-                p.name.encode()
-            ))
-        elif p.suffix in (".pt", ".pth", ".ckpt"):
-            checkpoints.append(p)
+    with zipfile.ZipFile(p) as z:
+        data = b" ".join(
+            z.read(n) for n in z.namelist()
+            if n.endswith(".pkl")
+        )
+    layers = sorted(set(
+        int(x) for x in re.findall(
+            rb'ptransformer\.(\d+)\.', data
+        )
+    ))
+    print(name, "TRAINED LAYERS:", layers)
+    print("INFERRED DEPTH:", max(layers)+1 if layers else "UNKNOWN")
 
-print("EXPORTED WEIGHT LAYERS:", sorted(found))
-print("CHECKPOINTS FOUND:", len(checkpoints))
+print("\n=== ORIGINAL DS DEPTH CONFIGURATION ===")
+for p in [
+    base / "core-artifact/pipeline.py",
+    base / "utils/dependency-utils/models.py",
+]:
+    if not p.exists():
+        continue
+    lines = p.read_text(errors="replace").splitlines()
+    for i, line in enumerate(lines):
+        if re.search(r'num_layers|ptransformer\s*=|model_base\s*=', line):
+            print(f"{p.name}:{i+1}: {line.strip()[:180]}")
 
-for p in checkpoints:
-    layers = set()
-    try:
-        if zipfile.is_zipfile(p):
-            with zipfile.ZipFile(p) as z:
-                for name in z.namelist():
-                    if name.endswith(".pkl"):
-                        layers.update(
-                            int(x) for x in pattern.findall(z.read(name))
-                        )
-        else:
-            layers.update(
-                int(x) for x in pattern.findall(p.read_bytes())
-            )
-        print("CHECKPOINT:", p)
-        print("TRAINED LAYERS:", sorted(layers))
-    except Exception as e:
-        print("INSPECTION ERROR:", type(e).__name__, str(e)[:150])
+print("\n=== ISOLATED MAX GRAPH DEPTH ===")
+for p in maxdir.rglob("*.py") if maxdir.exists() else []:
+    lines = p.read_text(errors="replace").splitlines()
+    for i, line in enumerate(lines):
+        if re.search(r'range\(6\)|num_layers\s*=\s*6|ptransformer\.[2-5]\.', line):
+            print(f"{p.name}:{i+1}: {line.strip()[:180]}")
 
-print("=== FINAL ===")
-print("EXPECTED LAYERS:", list(range(6)))
-print("MISSING EXPORTED LAYERS:",
-      sorted(set(range(6)) - found))
-print("ORIGINAL DS: UNCHANGED")
+print("\nORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: EXTRACT MISSING TRAINED WEIGHTS OR VERIFY MODEL DEPTH")
+print("FILES MODIFIED: 0")
+print("NEXT: ALIGN MAX WITH VERIFIED PYTORCH DEPTH")
 PY

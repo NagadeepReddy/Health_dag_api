@@ -9,214 +9,192 @@ run --rm -i --network none \
 localhost/cta-max-faiss:local -c 'exec python3 -' <<'PY'
 import re
 import numpy as np
-import torch
 from pathlib import Path
 
+from max import engine
+from max.driver import CPU, Tensor
 from max.graph import DeviceRef
+
 from pzaas_max.grecbase_fusion_full_head_72_max import (
     build_grecbase_fusion_graph_order_correct
 )
 from pzaas_max.pzaas_weight_loader import load_weight
 
-print("=== PZAAS CORRECTED 72-INPUT PACKING ===", flush=True)
+print("=== PZAAS REAL MAX CPU NUMERICAL PARITY ===", flush=True)
 
 root = Path("artifacts/v1.472-max/pzaas_max/validation")
+input_file = root / "ppa_packed_inputs_72_verified.npz"
+target_file = root / "pzaas_eight_branch_targets.npz"
 
-p = torch.load(
-    root / "ppa_model_input_exact.pt",
-    map_location="cpu",
-    weights_only=True
-)
+assert input_file.is_file(), "Verified inputs missing"
+assert target_file.is_file(), "PyTorch targets missing"
 
-with np.load(root / "ppa_tensor_inputs.npz", allow_pickle=False) as z:
-    auxiliary = {k: z[k].copy() for k in z.files}
-
-def array(x):
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
-
-def flatten(x):
-    if isinstance(x, dict):
-        for v in x.values():
-            yield from flatten(v)
-    elif isinstance(x, (list, tuple)):
-        for v in x:
-            yield from flatten(v)
-    else:
-        yield array(x)
-
-def get(name, count=1):
-    if name in p:
-        values = list(flatten(p[name]))
-    elif name in auxiliary:
-        values = [auxiliary[name]]
-    else:
-        raise RuntimeError(f"Missing input: {name}")
-
-    if len(values) != count:
-        raise RuntimeError(
-            f"{name}: expected {count}, found {len(values)}"
-        )
-    return values
+device = CPU()
 
 graph = build_grecbase_fusion_graph_order_correct(
     DeviceRef.CPU()
 )
 
 assert len(graph.inputs) == 72
-print("MAX GRAPH: PASS")
+print("MAX GRAPH: PASS", flush=True)
 
-packed = []
+# Bind original trained weights, including verified aliases.
+registry = {}
+missing = []
 
-# Inputs 0-4
-packed += get("task_in", 2)
-packed += get("ihq_in")
-packed += get("jet_name_in")
-packed += get("jet_status_in")
+for name in graph._weights:
+    candidates = [name]
 
-# Inputs 5-22
-packed += get("deep_in", 17)
+    if not name.endswith((".weight", ".bias")):
+        candidates.append(name + ".weight")
 
-wide = np.concatenate(
-    [x.reshape(1, 1) for x in get("wide_in", 127)],
-    axis=1
-).astype(np.float32)
+    for candidate in list(candidates):
+        alias = re.sub(
+            r"(\.ptransformer\.[01]\.)",
+            r"\1fn.",
+            candidate
+        )
+        if alias not in candidates:
+            candidates.append(alias)
 
-packed.append(wide)
+    found = False
 
-# Inputs 23-24
-packed += get("input_ids")
-packed += get("attention_mask")
+    for candidate in candidates:
+        try:
+            value = np.asarray(load_weight(candidate))
+            value = np.ascontiguousarray(value)
+            registry[name] = value
+            found = True
+            break
+        except (KeyError, FileNotFoundError, ValueError):
+            continue
 
-# Inputs 25-29
-packed += get("page_in")
-packed += get("item_in")
-packed += get("item_meta_in")
+    if not found:
+        missing.append((name, candidates))
 
-page_wide = get("page_meta_wide_in")[0]
-packed.append(
-    page_wide.reshape(1, 50, 1).astype(np.float32)
+print("GRAPH WEIGHTS:", len(graph._weights))
+print("BOUND WEIGHTS:", len(registry))
+
+if missing:
+    for name, candidates in missing:
+        print("MISSING:", name, candidates)
+    raise RuntimeError("Weight binding incomplete")
+
+assert len(registry) == len(graph._weights) == 17
+print("TRAINED WEIGHTS: 17/17 PASS", flush=True)
+
+with np.load(input_file, allow_pickle=False) as z:
+    keys = [f"input_{i:02d}" for i in range(72)]
+    assert set(z.files) == set(keys)
+    arrays = [
+        np.ascontiguousarray(z[key].copy())
+        for key in keys
+    ]
+
+print("SAVED INPUTS: 72/72 PASS", flush=True)
+
+# Real MAX compilation and execution.
+print("COMPILING REAL MAX CPU GRAPH...", flush=True)
+
+session = engine.InferenceSession(devices=[device])
+
+model = session.load(
+    graph,
+    weights_registry=registry
 )
 
-inv = array(load_weight(
-    "sequence_transformer.ptransformer.0.fn.rotary_emb.inv_freq"
-)).astype(np.float32).reshape(-1)
+print("REAL MAX CPU COMPILATION: PASS", flush=True)
 
-assert inv.size == 128
+inputs = [
+    Tensor.from_numpy(value).to(device)
+    for value in arrays
+]
 
-freq = np.arange(50, dtype=np.float32)[:, None] * inv[None, :]
-pos = np.concatenate([freq, freq], axis=-1)
-packed.append(pos.reshape(1, 1, 50, 256))
+print("EXECUTING REAL MAX CPU GRAPH...", flush=True)
 
-# Inputs 30-69: corrected sibling dtype
-sdeep = get("sibling_deep_in")[0]
-swide = get("sibling_wide_in")[0]
+results = model.execute(*inputs)
 
-assert sdeep.shape == (1, 3, 10)
-assert swide.shape == (1, 18, 10)
+assert len(results) == 1
 
-# MAX expects sibling-wide float32, not int64.
-swide = swide.astype(np.float32)
+actual = np.asarray(
+    results[0].to_numpy(),
+    dtype=np.float32
+)
 
-print("SIBLING WIDE DTYPE: float32")
-print("SIBLING WIDE CAST: PASS")
+print("REAL MAX CPU EXECUTION: PASS", flush=True)
+print("MAX OUTPUT SHAPE:", actual.shape)
 
-for i in range(10):
-    for j in range(3):
-        packed.append(sdeep[:, j, i])
-    packed.append(swide[:, :, i])
+# Original PyTorch branch targets.
+branch_names = [
+    "sequence",
+    "context",
+    "search0",
+    "search1",
+    "jet",
+    "ihq",
+    "sibling",
+    "task"
+]
 
-# Inputs 70-71: lowercase L, not digit 1
-packed += get("vl_in")
-packed += get("sibling_vl_in")
+with np.load(target_file, allow_pickle=False) as z:
+    assert set(branch_names).issubset(set(z.files))
+    targets = [
+        np.asarray(z[name], dtype=np.float32).reshape(1, 256)
+        for name in branch_names
+    ]
 
-assert len(packed) == 72
-print("EXACT INPUT COUNT: 72/72 PASS")
+expected = np.concatenate(targets, axis=1)
 
-verified = []
-errors = []
+assert expected.shape == (1, 2048)
+assert actual.shape == expected.shape
+assert np.isfinite(actual).all()
+assert np.isfinite(expected).all()
 
-for i, (value, tensor) in enumerate(zip(packed, graph.inputs)):
-    spec = str(tensor.type)
+print("\n=== EIGHT-BRANCH NUMERICAL PARITY ===")
 
-    dm = re.search(r"dtype=(int64|float32)", spec)
-    sm = re.search(r"shape=\[([^\]]+)\]", spec)
+all_pass = True
 
-    if dm is None or sm is None:
-        errors.append((i, "SIGNATURE", spec))
-        continue
+for i, name in enumerate(branch_names):
+    start = i * 256
+    end = start + 256
 
-    dtype = np.dtype(dm.group(1))
-    shape = tuple(
-        int(x) for x in re.findall(
-            r"Dim\((\d+)\)", sm.group(1)
-        )
+    a = actual[:, start:end]
+    b = expected[:, start:end]
+
+    diff = np.abs(a - b)
+    passed = np.allclose(
+        a, b,
+        atol=1e-3,
+        rtol=1e-3
     )
 
-    value = np.asarray(value)
+    all_pass &= passed
 
-    if value.shape != shape:
-        errors.append(
-            (i, "SHAPE", value.shape, shape)
-        )
-        continue
+    print(
+        f"{name}: {'PASS' if passed else 'FAIL'} "
+        f"| max_diff={diff.max():.8g} "
+        f"| mean_diff={diff.mean():.8g}",
+        flush=True
+    )
 
-    if not np.can_cast(
-        value.dtype, dtype, casting="safe"
-    ):
-        errors.append(
-            (i, "DTYPE", str(value.dtype), str(dtype))
-        )
-        continue
+diff = np.abs(actual - expected)
 
-    verified.append(value.astype(dtype, copy=False))
+print("\n=== FULL GRAPH RESULTS ===")
+print("MAX OUTPUT:", actual.shape)
+print("PYTORCH OUTPUT:", expected.shape)
+print("MAX ABS DIFF:", float(diff.max()))
+print("MEAN ABS DIFF:", float(diff.mean()))
 
-if errors:
-    print("VALIDATION: BLOCKED")
-    for error in errors:
-        print("MISMATCH:", error)
-    raise SystemExit(1)
-
-assert len(verified) == 72
-
-print("ALL 72 INPUT SHAPES: PASS")
-print("ALL 72 INPUT DTYPES: PASS")
-
-output = root / "ppa_packed_inputs_72_verified.npz"
-
-data = {
-    f"input_{i:02d}": value
-    for i, value in enumerate(verified)
-}
-
-if output.exists():
-    with np.load(output, allow_pickle=False) as old:
-        identical = (
-            set(old.files) == set(data)
-            and all(
-                old[k].dtype == value.dtype
-                and old[k].shape == value.shape
-                and np.array_equal(old[k], value)
-                for k, value in data.items()
-            )
-        )
-
-    if not identical:
-        raise RuntimeError(
-            "Existing packed file differs; refusing overwrite"
-        )
-    print("EXISTING PACKED INPUTS: VERIFIED")
+if all_pass:
+    print("FULL 8-BRANCH NUMERICAL PARITY: PASS")
+    print("PZAAS REAL MAX CPU POC: NUMERICAL PASS")
 else:
-    np.savez_compressed(output, **data)
-    print("PACKED INPUTS: SAVED")
+    print("FULL 8-BRANCH NUMERICAL PARITY: FAIL")
+    print("FIRST FAILED BRANCH IDENTIFIED ABOVE")
 
-print("\n=== FINAL RESULTS ===")
-print("MAX GRAPH: PASS")
-print("EXACT 72 INPUTS: PASS")
-print("SIBLING DTYPE FIX: PASS")
-print("INPUT SHAPES AND DTYPES: PASS")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: REAL MAX CPU EXECUTION + NUMERICAL PARITY")
+
+if not all_pass:
+    raise SystemExit(1)
 PY

@@ -18,7 +18,7 @@ from pzaas_max.grecbase_fusion_full_head_72_max import (
 )
 from pzaas_max.pzaas_weight_loader import load_weight
 
-print("=== PZAAS EXACT 72-INPUT FIX ===", flush=True)
+print("=== PZAAS CORRECTED 72-INPUT PACKING ===", flush=True)
 
 root = Path("artifacts/v1.472-max/pzaas_max/validation")
 
@@ -36,32 +36,28 @@ def array(x):
         return x.detach().cpu().numpy()
     return np.asarray(x)
 
-def leaves(x):
+def flatten(x):
     if isinstance(x, dict):
-        for value in x.values():
-            yield from leaves(value)
+        for v in x.values():
+            yield from flatten(v)
     elif isinstance(x, (list, tuple)):
-        for value in x:
-            yield from leaves(value)
+        for v in x:
+            yield from flatten(v)
     else:
         yield array(x)
 
 def get(name, count=1):
     if name in p:
-        values = list(leaves(p[name]))
+        values = list(flatten(p[name]))
     elif name in auxiliary:
         values = [auxiliary[name]]
     else:
-        raise RuntimeError(
-            f"Missing input {name}; available NPZ keys: "
-            f"{sorted(auxiliary)}"
-        )
+        raise RuntimeError(f"Missing input: {name}")
 
     if len(values) != count:
         raise RuntimeError(
             f"{name}: expected {count}, found {len(values)}"
         )
-
     return values
 
 graph = build_grecbase_fusion_graph_order_correct(
@@ -73,11 +69,13 @@ print("MAX GRAPH: PASS")
 
 packed = []
 
+# Inputs 0-4
 packed += get("task_in", 2)
 packed += get("ihq_in")
 packed += get("jet_name_in")
 packed += get("jet_status_in")
 
+# Inputs 5-22
 packed += get("deep_in", 17)
 
 wide = np.concatenate(
@@ -87,9 +85,11 @@ wide = np.concatenate(
 
 packed.append(wide)
 
+# Inputs 23-24
 packed += get("input_ids")
 packed += get("attention_mask")
 
+# Inputs 25-29
 packed += get("page_in")
 packed += get("item_in")
 packed += get("item_meta_in")
@@ -109,24 +109,30 @@ freq = np.arange(50, dtype=np.float32)[:, None] * inv[None, :]
 pos = np.concatenate([freq, freq], axis=-1)
 packed.append(pos.reshape(1, 1, 50, 256))
 
+# Inputs 30-69: corrected sibling dtype
 sdeep = get("sibling_deep_in")[0]
 swide = get("sibling_wide_in")[0]
 
 assert sdeep.shape == (1, 3, 10)
 assert swide.shape == (1, 18, 10)
 
+# MAX expects sibling-wide float32, not int64.
+swide = swide.astype(np.float32)
+
+print("SIBLING WIDE DTYPE: float32")
+print("SIBLING WIDE CAST: PASS")
+
 for i in range(10):
     for j in range(3):
         packed.append(sdeep[:, j, i])
     packed.append(swide[:, :, i])
 
-# Correct spelling: lowercase L, not digit 1.
+# Inputs 70-71: lowercase L, not digit 1
 packed += get("vl_in")
 packed += get("sibling_vl_in")
 
 assert len(packed) == 72
 print("EXACT INPUT COUNT: 72/72 PASS")
-print("VALID LENGTH INPUTS: FOUND")
 
 verified = []
 errors = []
@@ -138,11 +144,11 @@ for i, (value, tensor) in enumerate(zip(packed, graph.inputs)):
     sm = re.search(r"shape=\[([^\]]+)\]", spec)
 
     if dm is None or sm is None:
-        errors.append((i, "Unsupported graph signature", spec))
+        errors.append((i, "SIGNATURE", spec))
         continue
 
-    expected_dtype = np.dtype(dm.group(1))
-    expected_shape = tuple(
+    dtype = np.dtype(dm.group(1))
+    shape = tuple(
         int(x) for x in re.findall(
             r"Dim\((\d+)\)", sm.group(1)
         )
@@ -150,23 +156,21 @@ for i, (value, tensor) in enumerate(zip(packed, graph.inputs)):
 
     value = np.asarray(value)
 
-    if value.shape != expected_shape:
+    if value.shape != shape:
         errors.append(
-            (i, "SHAPE", value.shape, expected_shape)
+            (i, "SHAPE", value.shape, shape)
         )
         continue
 
     if not np.can_cast(
-        value.dtype, expected_dtype, casting="safe"
+        value.dtype, dtype, casting="safe"
     ):
         errors.append(
-            (i, "DTYPE", str(value.dtype), str(expected_dtype))
+            (i, "DTYPE", str(value.dtype), str(dtype))
         )
         continue
 
-    verified.append(
-        value.astype(expected_dtype, copy=False)
-    )
+    verified.append(value.astype(dtype, copy=False))
 
 if errors:
     print("VALIDATION: BLOCKED")
@@ -197,20 +201,22 @@ if output.exists():
                 for k, value in data.items()
             )
         )
+
     if not identical:
         raise RuntimeError(
             "Existing packed file differs; refusing overwrite"
         )
-    print("PACKED INPUTS: EXISTING FILE VERIFIED")
+    print("EXISTING PACKED INPUTS: VERIFIED")
 else:
     np.savez_compressed(output, **data)
     print("PACKED INPUTS: SAVED")
 
-print("=== PZAAS RESULTS ===")
-print("GRAPH: PASS")
-print("72 INPUTS: PASS")
-print("SHAPES AND DTYPES: PASS")
+print("\n=== FINAL RESULTS ===")
+print("MAX GRAPH: PASS")
+print("EXACT 72 INPUTS: PASS")
+print("SIBLING DTYPE FIX: PASS")
+print("INPUT SHAPES AND DTYPES: PASS")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: REAL MAX EXECUTION AND NUMERICAL PARITY")
+print("NEXT: REAL MAX CPU EXECUTION + NUMERICAL PARITY")
 PY

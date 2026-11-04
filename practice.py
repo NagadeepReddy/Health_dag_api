@@ -2,199 +2,149 @@ cd /application1/sajjna8/rt-pzaas-v1.0 && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --network none \
--v /application1:/application1:rw \
+-v /application1:/application1:ro \
 -w /application1/sajjna8/rt-pzaas-v1.0 \
--e PYTHONPATH=/application1/sajjna8/rt-pzaas-v1.0/artifacts/v1.472-max \
 --entrypoint /bin/sh \
 localhost/cta-max-faiss:local -c 'exec python3 -' <<'PY'
-import re
 import numpy as np
+import torch
 from pathlib import Path
 
-from max import engine
-from max.driver import CPU, Tensor
-from max.graph import DeviceRef
-
-from pzaas_max.grecbase_fusion_full_head_72_max import (
-    build_grecbase_fusion_graph_order_correct
-)
-from pzaas_max.pzaas_weight_loader import load_weight
-
-print("=== PZAAS REAL MAX CPU NUMERICAL PARITY ===", flush=True)
-
 root = Path("artifacts/v1.472-max/pzaas_max/validation")
-input_file = root / "ppa_packed_inputs_72_verified.npz"
-target_file = root / "pzaas_eight_branch_targets.npz"
 
-assert input_file.is_file(), "Verified inputs missing"
-assert target_file.is_file(), "PyTorch targets missing"
-
-device = CPU()
-
-graph = build_grecbase_fusion_graph_order_correct(
-    DeviceRef.CPU()
-)
-
-assert len(graph.inputs) == 72
-print("MAX GRAPH: PASS", flush=True)
-
-# Bind original trained weights, including verified aliases.
-registry = {}
-missing = []
-
-for name in graph._weights:
-    candidates = [name]
-
-    if not name.endswith((".weight", ".bias")):
-        candidates.append(name + ".weight")
-
-    for candidate in list(candidates):
-        alias = re.sub(
-            r"(\.ptransformer\.[01]\.)",
-            r"\1fn.",
-            candidate
-        )
-        if alias not in candidates:
-            candidates.append(alias)
-
-    found = False
-
-    for candidate in candidates:
-        try:
-            value = np.asarray(load_weight(candidate))
-            value = np.ascontiguousarray(value)
-            registry[name] = value
-            found = True
-            break
-        except (KeyError, FileNotFoundError, ValueError):
-            continue
-
-    if not found:
-        missing.append((name, candidates))
-
-print("GRAPH WEIGHTS:", len(graph._weights))
-print("BOUND WEIGHTS:", len(registry))
-
-if missing:
-    for name, candidates in missing:
-        print("MISSING:", name, candidates)
-    raise RuntimeError("Weight binding incomplete")
-
-assert len(registry) == len(graph._weights) == 17
-print("TRAINED WEIGHTS: 17/17 PASS", flush=True)
-
-with np.load(input_file, allow_pickle=False) as z:
-    keys = [f"input_{i:02d}" for i in range(72)]
-    assert set(z.files) == set(keys)
-    arrays = [
-        np.ascontiguousarray(z[key].copy())
-        for key in keys
-    ]
-
-print("SAVED INPUTS: 72/72 PASS", flush=True)
-
-# Real MAX compilation and execution.
-print("COMPILING REAL MAX CPU GRAPH...", flush=True)
-
-session = engine.InferenceSession(devices=[device])
-
-model = session.load(
-    graph,
-    weights_registry=registry
-)
-
-print("REAL MAX CPU COMPILATION: PASS", flush=True)
-
-inputs = [
-    Tensor.from_numpy(value).to(device)
-    for value in arrays
+names = [
+    "sequence", "context", "search0", "search1",
+    "jet", "ihq", "sibling", "task"
 ]
 
-print("EXECUTING REAL MAX CPU GRAPH...", flush=True)
+print("=== PZAAS PYTORCH REFERENCE ROOT-CAUSE CHECK ===", flush=True)
 
-results = model.execute(*inputs)
+target_path = root / "pzaas_eight_branch_targets.npz"
+assert target_path.is_file(), "Eight-branch targets missing"
 
-assert len(results) == 1
+with np.load(target_path, allow_pickle=False) as z:
+    assert all(k in z.files for k in names)
+    branches = {
+        k: np.asarray(z[k], dtype=np.float32).reshape(-1)
+        for k in names
+    }
 
-actual = np.asarray(
-    results[0].to_numpy(),
-    dtype=np.float32
-)
+for name, value in branches.items():
+    print(
+        f"{name}: shape={value.shape}, "
+        f"min={value.min():.6f}, "
+        f"max={value.max():.6f}, "
+        f"mean={value.mean():.6f}"
+    )
 
-print("REAL MAX CPU EXECUTION: PASS", flush=True)
-print("MAX OUTPUT SHAPE:", actual.shape)
-
-# Original PyTorch branch targets.
-branch_names = [
-    "sequence",
-    "context",
-    "search0",
-    "search1",
-    "jet",
-    "ihq",
-    "sibling",
-    "task"
-]
-
-with np.load(target_file, allow_pickle=False) as z:
-    assert set(branch_names).issubset(set(z.files))
-    targets = [
-        np.asarray(z[name], dtype=np.float32).reshape(1, 256)
-        for name in branch_names
-    ]
-
-expected = np.concatenate(targets, axis=1)
-
-assert expected.shape == (1, 2048)
-assert actual.shape == expected.shape
-assert np.isfinite(actual).all()
+expected = np.concatenate([branches[k] for k in names])
+assert expected.size == 2048
 assert np.isfinite(expected).all()
 
-print("\n=== EIGHT-BRANCH NUMERICAL PARITY ===")
+print("\nTARGET CONCATENATION: PASS")
 
-all_pass = True
+def collect(obj, prefix="", depth=0):
+    if depth > 5:
+        return
 
-for i, name in enumerate(branch_names):
-    start = i * 256
-    end = start + 256
+    if isinstance(obj, torch.Tensor):
+        a = obj.detach().cpu().numpy()
+        if a.size in (256, 2048):
+            yield prefix, np.asarray(a, dtype=np.float32).reshape(-1)
 
-    a = actual[:, start:end]
-    b = expected[:, start:end]
+    elif isinstance(obj, np.ndarray):
+        if obj.size in (256, 2048):
+            yield prefix, np.asarray(obj, dtype=np.float32).reshape(-1)
 
-    diff = np.abs(a - b)
-    passed = np.allclose(
-        a, b,
-        atol=1e-3,
-        rtol=1e-3
-    )
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from collect(v, prefix + "/" + str(k), depth + 1)
 
-    all_pass &= passed
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            yield from collect(v, prefix + "/" + str(i), depth + 1)
 
-    print(
-        f"{name}: {'PASS' if passed else 'FAIL'} "
-        f"| max_diff={diff.max():.8g} "
-        f"| mean_diff={diff.mean():.8g}",
-        flush=True
-    )
+reference_files = [
+    "ppa_pytorch_reference_01.pt",
+    "ppa_model_base_reference.pt"
+]
 
-diff = np.abs(actual - expected)
+matched = False
+found_candidates = 0
 
-print("\n=== FULL GRAPH RESULTS ===")
-print("MAX OUTPUT:", actual.shape)
-print("PYTORCH OUTPUT:", expected.shape)
-print("MAX ABS DIFF:", float(diff.max()))
-print("MEAN ABS DIFF:", float(diff.mean()))
+for filename in reference_files:
+    path = root / filename
+    print("\nREFERENCE:", filename)
 
-if all_pass:
-    print("FULL 8-BRANCH NUMERICAL PARITY: PASS")
-    print("PZAAS REAL MAX CPU POC: NUMERICAL PASS")
+    if not path.is_file():
+        print("STATUS: NOT FOUND")
+        continue
+
+    try:
+        obj = torch.load(
+            path,
+            map_location="cpu",
+            weights_only=True
+        )
+    except Exception as exc:
+        print("CANNOT READ SAFELY:", str(exc)[:250])
+        continue
+
+    if isinstance(obj, dict):
+        print("TOP-LEVEL KEYS:", list(obj)[:25])
+    else:
+        print("OBJECT TYPE:", type(obj).__name__)
+
+    candidates = list(collect(obj))
+    print("CANDIDATE TENSORS:", len(candidates))
+
+    for key, value in candidates:
+        if not np.isfinite(value).all():
+            continue
+
+        found_candidates += 1
+
+        if value.size == 2048:
+            diff = np.abs(value - expected)
+            print(
+                "FULL REFERENCE:", key,
+                "max_diff=", float(diff.max()),
+                "mean_diff=", float(diff.mean())
+            )
+
+            if np.allclose(value, expected, atol=1e-6, rtol=1e-6):
+                matched = True
+                print("SAVED TARGET REFERENCE: MATCH")
+
+        elif value.size == 256:
+            scores = sorted(
+                (
+                    float(np.max(np.abs(value - branches[k]))),
+                    k
+                )
+                for k in names
+            )
+            best_diff, best_name = scores[0]
+            if best_diff < 1e-3:
+                print(
+                    "BRANCH REFERENCE MATCH:",
+                    key, "->", best_name,
+                    "diff=", best_diff
+                )
+                matched = True
+
+print("\n=== ROOT-CAUSE CHECK RESULTS ===")
+print("PYTORCH TARGET ARRAY: VALID")
+print("REFERENCE CANDIDATES:", found_candidates)
+
+if matched:
+    print("REFERENCE CONTENT CONSISTENCY: PASS")
+    print("NEXT: VERIFY SAME-INPUT PROVENANCE AND MAX OPERATIONS")
 else:
-    print("FULL 8-BRANCH NUMERICAL PARITY: FAIL")
-    print("FIRST FAILED BRANCH IDENTIFIED ABOVE")
+    print("REFERENCE CONTENT CONSISTENCY: NOT ESTABLISHED")
+    print("NEXT: REGENERATE VERIFIED SAME-INPUT PYTORCH REFERENCE")
 
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-
-if not all_pass:
-    raise SystemExit(1)
+print("FILES MODIFIED: NONE")
 PY

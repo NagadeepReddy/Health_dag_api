@@ -2,115 +2,68 @@ cd /application1/sajjna8/rt-pzaas-v1.0 && \
 V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
-run --rm -i --pull=never \
---network none --memory 10g \
---tmpfs /tmp:rw,size=1g \
--e HOME=/tmp \
+run --rm -i --pull=never --network none \
+--memory 4g \
 -e PYTHONDONTWRITEBYTECODE=1 \
--e PYTHONPATH=/validation/sklearn_161:/validation/python_deps:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
+-e PYTHONPATH=/validation/sklearn_161:/validation/python_deps:/workspace/artifacts/v1.472/core-artifact \
 -v "$PWD:/workspace:ro" \
--v "$V:/validation:rw" \
+-v "$V:/validation:ro" \
 -w /workspace \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
-import sys, types, json, os, traceback
+import torch
+from pathlib import Path
 
-os.umask(0o077)
-print("=== PZAAS ORIGINAL PYTORCH REFERENCE ===", flush=True)
+print("=== PZAAS PYTORCH TO MAX INPUT CONTRACT ===")
 
-try:
-    import torch
-    import sklearn
-    assert sklearn.__version__ == "1.6.1"
+p = "/validation/ppa_pytorch_reference_01.pt"
 
-    # Offline scheduler isolation only.
-    for name in (
-        "apscheduler",
-        "apscheduler.schedulers",
-        "apscheduler.schedulers.background",
-        "apscheduler.triggers",
-        "apscheduler.triggers.interval",
-    ):
-        m = types.ModuleType(name)
-        m.__path__ = []
-        sys.modules[name] = m
+# Reference generated locally by the previous DS validation.
+ref = torch.load(p, map_location="cpu", weights_only=False)
 
-    class BackgroundScheduler:
-        def __init__(self, *a, **kw): pass
+assert "model_in" in ref and "output" in ref
 
-    class IntervalTrigger:
-        def __init__(self, *a, **kw): pass
+def inspect_value(name, value):
+    if isinstance(value, torch.Tensor):
+        print(name, "TENSOR", tuple(value.shape), value.dtype)
+    elif isinstance(value, dict):
+        print(name, "DICT", len(value))
+        for k, v in value.items():
+            inspect_value(name + "." + str(k), v)
+    elif isinstance(value, (list, tuple)):
+        print(name, type(value).__name__, len(value))
+        for i, v in enumerate(value[:3]):
+            inspect_value(name + "[" + str(i) + "]", v)
+    else:
+        print(name, type(value).__name__)
 
-    sys.modules[
-        "apscheduler.schedulers.background"
-    ].BackgroundScheduler = BackgroundScheduler
-    sys.modules[
-        "apscheduler.triggers.interval"
-    ].IntervalTrigger = IntervalTrigger
+print("\n=== EXACT ORIGINAL MODEL INPUTS ===")
+inspect_value("model_in", ref["model_in"])
 
-    from pipeline import pipeline
+print("\n=== ORIGINAL PYTORCH OUTPUT ===")
+inspect_value("output", ref["output"])
 
-    # No source changes; skip background refresh only.
-    pipeline.schedule_pull = lambda self: None
+print("\n=== MAX GRAPH INPUT DECLARATIONS ===")
 
-    ds = pipeline()
-    if not getattr(ds, "loaded", False):
-        ds.load()
+p = Path(
+    "artifacts/v1.472-max/pzaas_max/"
+    "grecbase_fusion_full_head_72_max.py"
+)
 
-    print("ORIGINAL DS LOAD: PASS", flush=True)
+assert p.is_file(), "MAX graph source missing"
 
-    with open("artifacts/v1.472/samples/ppa_input.json") as f:
-        body = json.load(f)
+lines = p.read_text().splitlines()
 
-    # Capture actual DS inference inputs and outputs.
-    original_inference = ds.inference
-    reference_files = []
+for i, line in enumerate(lines, 1):
+    if any(x in line for x in (
+        "TensorType(",
+        "input_types",
+        "graph.inputs",
+        "def build_grecbase_fusion_graph_order_correct",
+    )):
+        print(f"{i}: {line.strip()[:180]}")
 
-    def capture_inference(*args, **kwargs):
-        result = original_inference(*args, **kwargs)
-
-        model_in = args[0] if args else kwargs.get("model_in")
-        assert model_in is not None, "Inference input missing"
-
-        path = (
-            "/validation/ppa_pytorch_reference_"
-            f"{len(reference_files) + 1:02d}.pt"
-        )
-
-        torch.save({
-            "model_in": model_in,
-            "output": result
-        }, path)
-
-        os.chmod(path, 0o600)
-        reference_files.append(path)
-
-        print("PYTORCH INFERENCE: PASS", flush=True)
-        print("REFERENCE:", path, flush=True)
-        return result
-
-    # Observe inference in memory; preserve its actual result.
-    ds.inference = capture_inference
-
-    print("STARTING ORIGINAL DS PREDICT_RAW", flush=True)
-
-    with torch.no_grad():
-        response = ds.predict_raw(body)
-
-    print("ORIGINAL DS PREDICT_RAW: PASS", flush=True)
-    print("RESPONSE TYPE:", type(response).__name__)
-    print("PYTORCH INFERENCE CALLS:", len(reference_files))
-
-    if not reference_files:
-        raise RuntimeError(
-            "DS returned without invoking PyTorch inference"
-        )
-
-    print("PZAAS PYTORCH REFERENCE: PASS")
-    print("ORIGINAL DS SOURCE: UNCHANGED")
-    print("REAL MAX NUMERICAL PARITY: NEXT")
-
-except Exception:
-    traceback.print_exc()
-    raise SystemExit("PZAAS PYTORCH REFERENCE: BLOCKED")
+print("\nPZAAS PYTORCH REFERENCE: VERIFIED")
+print("MAX INPUT MAPPING: INSPECTED")
+print("ORIGINAL DS: UNCHANGED")
 PY

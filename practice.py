@@ -10,117 +10,112 @@ run --rm -i --pull=never --network none \
 -w /workspace \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
-import ast
-import json
-import os
-import re
+import ast, json, os, importlib.util
 from pathlib import Path
 import torch
 
 os.umask(0o077)
-
-print("=== PZAAS EXACT MAX ALIGNMENT ===")
+print("=== PZAAS NATIVE MAX INPUT ADAPTER ===")
 
 ref = torch.load(
     "/validation/ppa_pytorch_reference_01.pt",
     map_location="cpu",
     weights_only=True
 )
-
 model_in = ref["model_in"]
-assert isinstance(model_in, dict)
 
-inputs = []
+source = Path(
+    "artifacts/v1.472/utils/dependency-utils/models.py"
+).read_text()
 
-def flatten(path, value):
+tree = ast.parse(source)
+cls = next(
+    n for n in tree.body
+    if isinstance(n, ast.ClassDef) and n.name == "GRecBase"
+)
+forward = next(
+    n for n in cls.body
+    if isinstance(n, ast.FunctionDef) and n.name == "forward"
+)
+
+args = [a.arg for a in forward.args.args if a.arg != "self"]
+records = []
+
+def flatten(key, value, indices=()):
     if isinstance(value, torch.Tensor):
-        inputs.append({
-            "path": path,
+        records.append({
+            "key": key,
+            "indices": list(indices),
             "shape": list(value.shape),
             "dtype": str(value.dtype)
         })
     elif isinstance(value, (list, tuple)):
         for i, item in enumerate(value):
-            flatten(f"{path}[{i}]", item)
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            flatten(f"{path}.{key}", item)
+            flatten(key, item, indices + (i,))
+    else:
+        raise TypeError(f"Unexpected input type: {key}")
 
-for key, value in model_in.items():
-    flatten(key, value)
+for arg in args:
+    key = "task_in" if arg == "tasks_in" else arg
+    assert key in model_in, f"Missing DS input: {key}"
+    flatten(key, model_in[key])
 
-source_path = Path(
-    "artifacts/v1.472/utils/dependency-utils/models.py"
-)
-source = source_path.read_text()
-tree = ast.parse(source)
-
-classes = [
-    n for n in tree.body
-    if isinstance(n, ast.ClassDef)
-    and n.name == "GRecBase"
-]
-
-assert len(classes) == 1, "Expected one GRecBase class"
-
-forward = next(
-    n for n in classes[0].body
-    if isinstance(n, ast.FunctionDef)
-    and n.name == "forward"
+assert len(args) == 16
+assert len(records) == 159, (
+    f"Unexpected active tensor count: {len(records)}"
 )
 
-args = [
-    a.arg for a in forward.args.args
-    if a.arg != "self"
-]
-
-graph_path = Path(
-    "artifacts/v1.472-max/pzaas_max/"
-    "grecbase_fusion_full_head_72_max.py"
-)
-
-graph_source = graph_path.read_text()
-
-match = re.search(
-    r'Graph\(\s*["\']([^"\']+)',
-    graph_source
-)
-
-graph_name = match.group(1) if match else "UNKNOWN"
-
-manifest = {
-    "model_class": "GRecBase",
-    "reference": "ppa_pytorch_reference_01.pt",
+schema = Path("/validation/pzaas_forward_schema.json")
+schema.write_text(json.dumps({
+    "model": "GRecBase",
     "forward_arguments": args,
-    "original_input_fields": list(model_in),
-    "leaf_tensors": inputs,
-    "existing_max_graph": graph_name
-}
+    "tensors": records
+}, indent=2))
+schema.chmod(0o600)
 
-target = Path("/validation/pzaas_alignment_manifest.json")
+adapter = Path("/validation/pzaas_forward_input_adapter.py")
+adapter.write_text('''
+import json
+from pathlib import Path
+import torch
 
-target.write_text(json.dumps(manifest, indent=2))
-target.chmod(0o600)
+SCHEMA = json.loads(
+    Path(__file__).with_name(
+        "pzaas_forward_schema.json"
+    ).read_text()
+)
 
-print("MODEL CLASS: GRecBase")
-print("ORIGINAL INPUT FIELDS:", len(model_in))
-print("ORIGINAL LEAF TENSORS:", len(inputs))
+def pack(model_in):
+    result = []
+    for spec in SCHEMA["tensors"]:
+        value = model_in[spec["key"]]
+        for index in spec["indices"]:
+            value = value[index]
+        assert isinstance(value, torch.Tensor)
+        assert list(value.shape) == spec["shape"]
+        assert str(value.dtype) == spec["dtype"]
+        result.append(
+            value.detach().cpu().contiguous().numpy()
+        )
+    return result
+''')
+adapter.chmod(0o600)
+
+spec = importlib.util.spec_from_file_location(
+    "pzaas_adapter", adapter
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+packed = module.pack(model_in)
+assert len(packed) == len(records)
+
+print("MODEL: GRecBase")
 print("FORWARD ARGUMENTS:", len(args))
-print("MAX GRAPH NAME:", graph_name)
-
-print("\n=== INPUT GROUPS ===")
-for key, value in model_in.items():
-    count = sum(
-        x["path"] == key
-        or x["path"].startswith(key + "[")
-        or x["path"].startswith(key + ".")
-        for x in inputs
-    )
-    print(key, "=>", count, "tensors")
-
-print("\nALIGNMENT MANIFEST: SAVED")
-print("PATH:", target)
+print("ACTIVE INPUT TENSORS:", len(packed))
+print("INPUT SHAPES / DTYPES: VERIFIED")
+print("PZAAS INPUT ADAPTER: PASS")
 print("ORIGINAL DS: UNCHANGED")
-print("MAX GRAPH: UNCHANGED")
-print("PZAAS GRAPH ALIGNMENT: NEXT")
+print("CTA / BPLAN: UNCHANGED")
+print("PZAAS MAX GRAPH ALIGNMENT: NEXT")
 PY

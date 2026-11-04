@@ -1,21 +1,19 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
-P="$PWD/artifacts/v1.472-max/pzaas_max" && \
-V="$P/validation" && \
+M="$PWD/artifacts/v1.472-max" && \
+V="$M/pzaas_max/validation" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never --network none \
---memory 10g \
---tmpfs /tmp:rw,size=1g \
+--memory 10g --tmpfs /tmp:rw,size=1g \
 -e HOME=/tmp \
 -e PYTHONDONTWRITEBYTECODE=1 \
--v "$P:/pzaas:ro" \
--v "$V:/validation:rw" \
--w /pzaas \
+-e PYTHONPATH=/models \
+-v "$M:/models:ro" \
+-v "$V:/validation:ro" \
+-w /models \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
-import sys
 import traceback
-import importlib
 import numpy as np
 
 from max.driver import CPU
@@ -23,14 +21,12 @@ from max.dtype import DType
 from max.engine import InferenceSession
 from max.graph import DeviceRef, Graph, TensorType, ops
 
-print("=== PZAAS REAL MAX FUSION PARITY ===", flush=True)
+print("=== PZAAS REAL MAX FUSION RETRY ===", flush=True)
 
 try:
-    sys.path.insert(0, "/pzaas")
+    from pzaas_max import grecbase_fusion_full_head_72_max as m
 
-    m = importlib.import_module(
-        "grecbase_fusion_full_head_72_max"
-    )
+    print("PZAAS PACKAGE IMPORT: PASS", flush=True)
 
     fusion = np.load(
         "/validation/pzaas_fusion_input.npy",
@@ -56,14 +52,11 @@ try:
         assert weight.shape == (256,)
 
         gamma = ops.constant(
-            weight,
-            dtype=DType.float32,
-            device=device
+            weight, dtype=DType.float32, device=device
         )
 
         variance = ops.reshape(
-            ops.mean(x * x, axis=-1),
-            [1, 8, 1]
+            ops.mean(x * x, axis=-1), [1, 8, 1]
         )
 
         return x * ops.rsqrt(variance + 1e-6) * gamma
@@ -84,7 +77,7 @@ try:
     )[None, None, :, :].astype(np.float32)
 
     with Graph(
-        "pzaas_real_fusion_parity",
+        "pzaas_real_fusion",
         input_types=(
             TensorType(
                 DType.float32,
@@ -95,7 +88,6 @@ try:
     ) as graph:
 
         x = graph.inputs[0]
-
         x = norm(x, "moe_norm1")
 
         pos = ops.constant(
@@ -113,17 +105,17 @@ try:
         x = block(x, pos)
         x = norm(x, "moe_norm2")
         x = ops.reshape(x, [1, 2048])
-
         graph.output(x)
 
-    print("PZAAS MAX FUSION GRAPH: PASS", flush=True)
+    print("MAX FUSION GRAPH: PASS", flush=True)
 
     session = InferenceSession(devices=[CPU()])
     model = session.load(graph)
 
     print("REAL MAX CPU COMPILATION: PASS", flush=True)
 
-    result = model.execute(fusion)[0].to_numpy()
+    outputs = model.execute(fusion)
+    result = outputs[0].to_numpy()
 
     assert result.shape == reference.shape
     assert np.isfinite(result).all()
@@ -143,19 +135,19 @@ try:
     )
 
     print(
-        "REAL MAX FUSION PARITY:",
+        "PZAAS REAL MAX FUSION PARITY:",
         "PASS" if parity else "FAILED"
     )
+
     print("ORIGINAL DS: UNCHANGED")
     print("CTA / BPLAN: UNCHANGED")
 
     if not parity:
         raise SystemExit(1)
 
-    print("FULL PZAAS MAX PARITY: PENDING")
-    print("NATIVE MAX HTTP: PENDING")
+    print("FULL PZAAS MAX PARITY: NEXT")
 
 except Exception:
     traceback.print_exc()
-    raise SystemExit("PZAAS MAX FUSION TEST: BLOCKED")
+    raise SystemExit("PZAAS FUSION RETRY: BLOCKED")
 PY

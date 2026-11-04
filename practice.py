@@ -11,6 +11,7 @@ podman --root /application1/podman/storage \
 run --rm -i --pull=never --network none \
 --memory 10g --tmpfs /tmp:rw,size=1g \
 -e HOME=/tmp \
+-e XDG_CACHE_HOME=/tmp/cache \
 -e PYTHONDONTWRITEBYTECODE=1 \
 -e PYTHONPATH=/models \
 -v "$M:/models:ro" \
@@ -18,13 +19,12 @@ run --rm -i --pull=never --network none \
 -w /models \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
-
 import traceback
-from pathlib import Path
 import numpy as np
 import torch
+from pathlib import Path
 
-print("=== PZAAS SEQUENCE FINAL PARITY ===", flush=True)
+print("=== PZAAS SEQUENCE WEIGHT FIX + PARITY ===", flush=True)
 
 try:
     from max.driver import CPU
@@ -36,32 +36,37 @@ try:
     from pzaas_max.parallel_transformer_block_2layers import ParallelTransformerBlockMAX
     from pzaas_max.sequence_postprocess_max import SequencePostprocessMAX
 
-    W = Path("/models/pzaas_max/pzaas_base_weights")
-    assert W.is_dir()
+    root = Path("/models/pzaas_max/pzaas_base_weights")
+    assert root.is_dir(), root
 
-    weights = {
-        p.stem: np.ascontiguousarray(
-            np.load(p, allow_pickle=False)
-        )
-        for p in W.glob("*.npy")
+    original = {
+        p.stem: np.ascontiguousarray(np.load(p, allow_pickle=False))
+        for p in root.glob("*.npy")
     }
 
-    assert len(weights) == 208, len(weights)
+    assert len(original) == 208, len(original)
 
-    print("ORIGINAL WEIGHTS:", len(weights))
+    weights = dict(original)
 
-    # Register aliases without modifying weight files.
-    aliases = {}
+    # Build compatible names without changing trained weights.
+    for name, array in original.items():
+        variants = {
+            name,
+            name.replace(".fn.", "."),
+        }
 
-    for name, value in list(weights.items()):
-        if name.endswith(".weight"):
-            alias = name[:-7]
-            if alias not in weights:
-                aliases[alias] = value
+        for key in list(variants):
+            if key.endswith(".weight"):
+                variants.add(key[:-7])
 
-    weights.update(aliases)
+        for key in variants:
+            if key in weights:
+                if not np.array_equal(weights[key], array):
+                    raise ValueError(f"Alias conflict: {key}")
+            else:
+                weights[key] = array
 
-    print("WEIGHT ALIASES:", len(aliases))
+    print("ORIGINAL WEIGHTS:", len(original))
     print("TOTAL REGISTRY KEYS:", len(weights))
 
     required = [
@@ -69,53 +74,41 @@ try:
         "sequence_transformer.item_embedding",
         "sequence_transformer.item_meta_embedding",
         "sequence_transformer.item_pre_embedding",
-        "sequence_transformer.page_meta_wide_dense",
-        "sequence_transformer.seq_dense",
+        "sequence_transformer.ptransformer.0.fused_attn_ff_proj.weight",
+        "sequence_transformer.ptransformer.1.fused_attn_ff_proj.weight",
     ]
 
-    missing = [k for k in required if k not in weights]
+    missing = [x for x in required if x not in weights]
+    assert not missing, f"Missing names: {missing}"
 
-    if missing:
-        raise RuntimeError(f"Missing registered weights: {missing}")
+    print("WEIGHT REGISTRY FIX: PASS", flush=True)
 
-    print("MAX WEIGHT REGISTRY: PASS", flush=True)
-
-    reference = torch.load(
+    ref = torch.load(
         "/validation/ppa_pytorch_reference_01.pt",
         map_location="cpu",
         weights_only=True
     )
-
-    d = reference["model_in"]
+    d = ref["model_in"]
 
     with np.load(
         "/validation/pzaas_eight_branch_targets.npz",
         allow_pickle=False
     ) as f:
-        keys = list(f.files)
-        matches = [
-            k for k in keys
-            if "sequence" in k.lower()
-        ]
-
-        assert len(matches) == 1, (
-            f"Sequence reference ambiguous: {keys}"
-        )
-
+        keys = [k for k in f.files if "sequence" in k.lower()]
+        assert len(keys) == 1, f"Sequence target keys: {f.files}"
         expected = np.ascontiguousarray(
-            f[matches[0]].astype(np.float32)
+            f[keys[0]].astype(np.float32)
         )
 
-    def inp(name):
+    def tensor(name):
         return np.ascontiguousarray(
-            d[name].detach().cpu()
-            .numpy().astype(np.int64)
+            d[name].detach().cpu().numpy().astype(np.int64)
         )
 
-    page = inp("page_in")
-    item = inp("item_in")
-    meta = inp("item_meta_in")
-    valid = inp("vl_in")
+    page = tensor("page_in")
+    item = tensor("item_in")
+    meta = tensor("item_meta_in")
+    length = tensor("vl_in")
 
     wide = np.ascontiguousarray(
         d["page_meta_wide_in"][0]
@@ -124,123 +117,87 @@ try:
         .reshape(1, 50, 1)
     )
 
-    inv = weights[
+    inv = original[
         "sequence_transformer.ptransformer.0.fn.rotary_emb.inv_freq"
     ].astype(np.float32)
 
-    angles = np.arange(
-        50, dtype=np.float32
-    )[:, None] * inv[None, :]
-
+    angles = np.arange(50, dtype=np.float32)[:, None] * inv[None, :]
     position = np.ascontiguousarray(
-        np.concatenate(
-            [angles, angles], axis=-1
-        ).reshape(1, 1, 50, 256)
+        np.concatenate([angles, angles], axis=-1)
+        .reshape(1, 1, 50, 256)
     )
-
-    print("PYTORCH INPUTS: PASS", flush=True)
 
     device = DeviceRef.CPU()
 
     with Graph(
-        "pzaas_sequence_registry_fixed",
+        "pzaas_sequence_fixed_registry",
         input_types=[
-            TensorType(DType.int64, [1,50], device=device),
-            TensorType(DType.int64, [1,50], device=device),
-            TensorType(DType.int64, [1,50], device=device),
-            TensorType(DType.float32, [1,50,1], device=device),
-            TensorType(DType.float32, [1,1,50,256], device=device),
+            TensorType(DType.int64, [1, 50], device=device),
+            TensorType(DType.int64, [1, 50], device=device),
+            TensorType(DType.int64, [1, 50], device=device),
+            TensorType(DType.float32, [1, 50, 1], device=device),
+            TensorType(DType.float32, [1, 1, 50, 256], device=device),
             TensorType(DType.int64, [1], device=device),
         ]
     ) as graph:
 
-        pg, it, im, pw, pos, length = graph.inputs
+        pg, it, im, pw, pos, valid = graph.inputs
 
         features = ParallelTransformerMAEPMAX(
-            dtype=DType.float32,
-            device=device
+            dtype=DType.float32, device=device
         )
-
         block0 = ParallelTransformerBlockMAX(
-            dtype=DType.float32,
-            device=device,
-            layer_idx=0
+            dtype=DType.float32, device=device, layer_idx=0
         )
-
         block1 = ParallelTransformerBlockMAX(
-            dtype=DType.float32,
-            device=device,
-            layer_idx=1
+            dtype=DType.float32, device=device, layer_idx=1
         )
-
         post = SequencePostprocessMAX(
-            dtype=DType.float32,
-            device=device
+            dtype=DType.float32, device=device
         )
 
         x = features(pg, it, im, it, pw)
-        x = x + block0(x, pos, length)
-        x = x + block1(x, pos, length)
+        x = x + block0(x, pos, valid)
+        x = x + block1(x, pos, valid)
 
         graph.output(post(x))
 
-    print("MAX SEQUENCE GRAPH: PASS", flush=True)
+    print("MAX GRAPH: PASS", flush=True)
 
-    session = InferenceSession(devices=[CPU()])
-
-    model = session.load(
+    model = InferenceSession(devices=[CPU()]).load(
         graph,
         weights_registry=weights
     )
 
-    print("REAL MAX COMPILE + WEIGHT BIND: PASS", flush=True)
+    print("MAX COMPILATION + WEIGHT BINDING: PASS", flush=True)
 
     actual = model.execute(
-        page,
-        item,
-        meta,
-        wide,
-        position,
-        valid
+        page, item, meta, wide, position, length
     )[0].to_numpy()
 
-    print("MAX OUTPUT:", actual.shape)
-    print("PYTORCH OUTPUT:", expected.shape)
+    print("MAX SHAPE:", actual.shape)
+    print("PYTORCH SHAPE:", expected.shape)
 
-    assert actual.shape == expected.shape, (
-        "Output shape mismatch"
-    )
-
-    assert np.isfinite(actual).all(), (
-        "MAX output contains NaN/Inf"
-    )
+    assert actual.shape == expected.shape
+    assert np.isfinite(actual).all()
 
     diff = np.abs(actual - expected)
 
     print("MAX ABS DIFF:", float(diff.max()))
     print("MEAN ABS DIFF:", float(diff.mean()))
 
-    parity = np.allclose(
-        actual,
-        expected,
-        atol=1e-3,
-        rtol=1e-3
-    )
-
-    if not parity:
-        print("FIRST 8 MAX:", actual.ravel()[:8])
-        print("FIRST 8 PYTORCH:", expected.ravel()[:8])
-        raise AssertionError("Numerical parity mismatch")
-
-    np.save(
-        "/validation/pzaas_sequence_max.npy",
-        actual,
-        allow_pickle=False
-    )
-
-    print("SEQUENCE NUMERICAL PARITY: PASS")
-    print("PZAAS ALL EIGHT BRANCHES: PASS")
-    print("NEXT: FULL MODEL PARITY AND NATIVE SERVING")
+    if np.allclose(actual, expected, atol=1e-3, rtol=1e-3):
+        np.save(
+            "/validation/pzaas_sequence_max.npy",
+            actual,
+            allow_pickle=False
+        )
+        print("PZAAS SEQUENCE PARITY: PASS")
+        print("NEXT: FULL MODEL PARITY")
+    else:
+        print("PZAAS SEQUENCE NUMERICAL PARITY: FAIL")
+        print("FIRST MAX VALUES:", actual.ravel()[:8])
+        print("FIRST PYTORCH VALUES:", expected.ravel()[:8])
 
 except Exception:
     traceback.print_exc()

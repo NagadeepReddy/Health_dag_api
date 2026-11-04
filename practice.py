@@ -1,88 +1,119 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import tarfile
+import json
 import ast
-import io
 
-root = Path.cwd()
-maxdir = root / "artifacts/v1.472-max/pzaas_max"
-validation = maxdir / "validation"
-validation.mkdir(parents=True, exist_ok=True)
+root = Path("artifacts/v1.472-max/pzaas_max")
+schema_file = root / "validation/pzaas_forward_schema.json"
+target = root / "pzaas_input_signature.py"
 
-archive = validation / "PZAAS_MAX_SOURCE_REVIEW.tar.gz"
+print("=== PZAAS NATIVE MAX GRAPH ALIGNMENT ===")
 
-ds = root / "artifacts/v1.472/utils/dependency-utils/models.py"
-pipeline = root / "artifacts/v1.472/core-artifact/pipeline.py"
+schema = json.loads(schema_file.read_text())
+records = schema["tensors"]
 
-assert ds.is_file()
-assert pipeline.is_file()
-assert maxdir.is_dir()
+assert schema["model"] == "GRecBase"
+assert len(records) == 159
 
-with tarfile.open(archive, "w:gz") as tar:
+allowed = {
+    "torch.int64": "int64",
+    "torch.int32": "int32",
+    "torch.float32": "float32",
+    "torch.float16": "float16",
+    "torch.float64": "float64",
+}
 
-    # Only PZAAS MAX integration Python source.
-    count = 0
-    for p in sorted(maxdir.rglob("*.py")):
-        if "__pycache__" in p.parts:
-            continue
-        tar.add(p, arcname=str(p.relative_to(root)))
-        count += 1
+for r in records:
+    assert r["dtype"] in allowed, r
+    assert all(isinstance(x, int) and x > 0
+               for x in r["shape"]), r
 
-    # Original GRecBase implementation, read-only.
-    source = ds.read_text()
-    tree = ast.parse(source)
+source = '''
+import json
+from pathlib import Path
+from max.dtype import DType
+from max.graph import TensorType
 
-    classes = [
-        n for n in tree.body
-        if isinstance(n, ast.ClassDef)
-        and n.name == "GRecBase"
-    ]
-    assert len(classes) == 1
+SCHEMA = json.loads(
+    (Path(__file__).parent /
+     "validation/pzaas_forward_schema.json").read_text()
+)
 
-    code = ast.get_source_segment(source, classes[0])
-    assert code
+DTYPES = {
+    "torch.int64": DType.int64,
+    "torch.int32": DType.int32,
+    "torch.float32": DType.float32,
+    "torch.float16": DType.float16,
+    "torch.float64": DType.float64,
+}
 
-    data = code.encode()
-    info = tarfile.TarInfo("reference/GRecBase_original.py.txt")
-    info.size = len(data)
-    tar.addfile(info, io.BytesIO(data))
-
-    # Existing verified input mapping metadata.
-    for name in (
-        "pzaas_alignment_manifest.json",
-        "pzaas_forward_schema.json",
-    ):
-        p = validation / name
-        assert p.is_file(), f"Missing: {name}"
-        tar.add(p, arcname="reference/" + name)
-
-    # Original loader and model selection.
-    src = pipeline.read_text()
-    lines = src.splitlines()
-    selected = "\n".join(
-        f"{i+1}: {line}"
-        for i, line in enumerate(lines)
-        if (
-            "self.model_base =" in line
-            or "def loadBaseModel(" in line
-            or "model_suffix=" in line
+def input_types(device):
+    return [
+        TensorType(
+            DTYPES[r["dtype"]],
+            r["shape"],
+            device=device
         )
+        for r in SCHEMA["tensors"]
+    ]
+
+def pack(model_in):
+    arrays = []
+    for r in SCHEMA["tensors"]:
+        value = model_in[r["key"]]
+        for index in r["indices"]:
+            value = value[index]
+        assert list(value.shape) == r["shape"]
+        assert str(value.dtype) == r["dtype"]
+        arrays.append(
+            value.detach().cpu().contiguous().numpy()
+        )
+    return arrays
+'''
+
+ast.parse(source)
+
+if target.exists():
+    assert target.read_text() == source, (
+        "Existing PZAAS signature differs; preserved"
     )
+else:
+    target.write_text(source)
 
-    data = selected.encode()
-    info = tarfile.TarInfo("reference/model_loader.txt")
-    info.size = len(data)
-    tar.addfile(info, io.BytesIO(data))
-
-archive.chmod(0o600)
-
-print("=== PZAAS MAX SOURCE PACKAGE ===")
-print("MAX PYTHON FILES:", count)
-print("ORIGINAL GRE CBASE: INCLUDED AS REFERENCE")
-print("INPUT MAPPING: INCLUDED")
-print("MODEL WEIGHTS: NOT INCLUDED")
+print("MODEL: GRecBase")
+print("FORWARD ARGUMENTS:", len(schema["forward_arguments"]))
+print("ACTIVE INPUTS:", len(records))
+print("SIGNATURE FILE:", target)
+print("PYTHON SYNTAX: PASS")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("PACKAGE: PASS")
-print("FILE:", archive)
+PY
+
+V="$PWD/artifacts/v1.472-max/pzaas_max"
+
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage \
+run --rm -i --pull=never --network none \
+--memory 3g \
+-e PYTHONDONTWRITEBYTECODE=1 \
+-v "$V:/pzaas:ro" \
+-w /pzaas \
+--entrypoint /opt/venv/bin/python \
+localhost/cta-max-faiss:local -u - <<'PY'
+import sys
+sys.path.insert(0, "/pzaas")
+
+from max.driver import CPU
+from pzaas_input_signature import input_types, SCHEMA
+
+types = input_types(CPU())
+
+assert len(types) == 159
+
+print("MAX INPUT TYPES: PASS")
+print("PZAAS INPUT COUNT:", len(types))
+print("MODEL:", SCHEMA["model"])
+print("PZAAS MAX INPUT SIGNATURE: PASS")
+print("REAL GRAPH COMPUTATION / PARITY: PENDING")
+print("ORIGINAL DS: UNCHANGED")
 PY

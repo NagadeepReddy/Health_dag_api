@@ -1,63 +1,25 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && \
-V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-run --rm -i --network none --memory 3g \
--e PYTHONDONTWRITEBYTECODE=1 \
--e PYTHONPATH=/validation/python_deps:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
--v "$PWD:/workspace:ro" \
--v "$V:/validation:rw" \
--v /vzwhome/sajjna8:/wheels:ro \
--w /workspace \
---entrypoint /bin/sh \
-localhost/cta-max-faiss:local -ec '
-set -- /wheels/joblib-*.whl /wheels/scikit_learn-*.whl
+$ErrorActionPreference = "Stop"
+$dest = "$env:USERPROFILE\Downloads\PZAAS_wheels"
 
-for f do
-    test -f "$f" || {
-        echo "MISSING WHEEL: $f"
-        exit 2
-    }
-done
+py -m pip download --no-deps --only-binary=:all: `
+  "cloudpickle==3.1.1" -d "$dest"
 
-/opt/venv/bin/python -m pip install \
-  --no-index --no-deps --no-cache-dir \
-  --target /validation/python_deps "$@"
+if ($LASTEXITCODE -ne 0) {
+    throw "Download failed"
+}
 
-/opt/venv/bin/python - <<'"'"'PY'"'"'
-import sys, types
-import einops, joblib, sklearn
+$wheel = Get-ChildItem "$dest\cloudpickle-3.1.1-*.whl" |
+    Select-Object -First 1
 
-print("EINOPS: PASS", einops.__version__)
-print("JOBLIB: PASS", joblib.__version__)
-print("SCIKIT-LEARN: PASS", sklearn.__version__)
+if (-not $wheel) {
+    throw "Wheel not found"
+}
 
-for name in (
-    "apscheduler",
-    "apscheduler.schedulers",
-    "apscheduler.schedulers.background",
-    "apscheduler.triggers",
-    "apscheduler.triggers.interval",
-):
-    m = types.ModuleType(name)
-    m.__path__ = []
-    sys.modules[name] = m
+scp "$($wheel.FullName)" `
+  "sajjna8@10.119.98.21:/vzwhome/sajjna8/"
 
-class BackgroundScheduler:
-    def __init__(self, *a, **kw): pass
-    def add_job(self, *a, **kw): pass
-    def start(self): pass
+if ($LASTEXITCODE -ne 0) {
+    throw "Transfer failed"
+}
 
-class IntervalTrigger:
-    def __init__(self, *a, **kw): pass
-
-sys.modules["apscheduler.schedulers.background"].BackgroundScheduler = BackgroundScheduler
-sys.modules["apscheduler.triggers.interval"].IntervalTrigger = IntervalTrigger
-
-from pipeline import pipeline
-
-print("PZAAS ORIGINAL DS IMPORT: PASS")
-print("ORIGINAL DS: UNCHANGED")
-print("REAL INPUT CAPTURE: NEXT")
-PY
-'
+Write-Host "PZAAS CLOUDPICKLE TRANSFER: PASS"

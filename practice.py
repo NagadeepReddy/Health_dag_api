@@ -1,22 +1,36 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && {
-  echo "=== LOCAL DS MODULES ==="
-  for m in bplan dynamic_offer fwa helper ngd_pros pricing pros_plan_perk rt_churn; do
-    find artifacts/v1.472 -type d -name "$m" -print | head -3
-  done
+cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
+ROOT=/application1/podman/storage
+RUN=/run/containers/storage
 
-  echo "=== MODEL RUNTIME IMAGES ==="
-  podman --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    images --format '{{.Repository}}:{{.Tag}}' |
-    grep -Ei 'pzaas|pytorch|torch|triton|mlserver|truefoundry|modular|max|model-serving|python' |
-    grep -Ev 'gateway|aggregator' | sort -u | head -40
+echo "=== EXISTING MODEL RUNTIME DEPENDENCIES ==="
 
-  echo "=== AVAILABLE OFFLINE PACKAGES ==="
-  find /application1 /opt \
-    -type f \( -iname 'einops*.whl' \
-    -o -iname 'apscheduler*.whl' \
-    -o -iname 'scikit_learn*.whl' \) \
-    -print 2>/dev/null | head -20
+podman --root "$ROOT" --runroot "$RUN" \
+  images --format '{{.Repository}}:{{.Tag}}' |
+grep -E 'cta-max-faiss:local|modular/max-full:latest|tritonserver:24.09-py3' |
+sort -u | head -5 |
+while IFS= read -r img; do
+  echo "=== IMAGE: $img ==="
 
-  echo "RUNTIME DISCOVERY: COMPLETE"
-}
+  podman --root "$ROOT" --runroot "$RUN" \
+    run --rm --pull=never --network none \
+    --memory 2g --entrypoint /bin/sh "$img" -c '
+python3 - <<PY
+import importlib.util
+
+for name in [
+    "torch", "max", "einops",
+    "apscheduler", "transformers",
+    "faiss", "sklearn", "joblib"
+]:
+    try:
+        found = importlib.util.find_spec(name)
+        print(name, "AVAILABLE" if found else "MISSING")
+    except Exception:
+        print(name, "MISSING")
+PY
+' 2>&1 | tail -14
+done
+
+echo "RUNTIME DEPENDENCY CHECK: COMPLETE"
+echo "ORIGINAL DS: UNCHANGED"
+SH

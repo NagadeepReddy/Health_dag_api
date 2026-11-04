@@ -5,17 +5,18 @@ podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never --network none \
 --memory 10g --tmpfs /tmp:rw,size=1g \
--e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+-e HOME=/tmp \
+-e PYTHONDONTWRITEBYTECODE=1 \
 -e PYTHONPATH=/models \
 -v "$M:/models:ro" \
--v "$V:/validation:ro" \
+-v "$V:/validation:rw" \
 -w /models \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
 import traceback
-from pathlib import Path
 import numpy as np
 import torch
+from pathlib import Path
 
 from max.driver import CPU
 from max.dtype import DType
@@ -23,7 +24,7 @@ from max.engine import InferenceSession
 from max.graph import DeviceRef, Graph, TensorType, ops
 from pzaas_max import grecbase_fusion_full_head_72_max as m
 
-print("=== PZAAS REAL MAX SIBLING PARITY ===", flush=True)
+print("=== PZAAS SIBLING FIX + REAL MAX PARITY ===", flush=True)
 
 try:
     ref = torch.load(
@@ -53,39 +54,30 @@ try:
 
     for i in range(10):
         for j in range(3):
-            values.append(
-                np.ascontiguousarray(
-                    deep[:, j, i].numpy().astype(np.int64)
-                )
-            )
+            values.append(np.ascontiguousarray(
+                deep[:, j, i].numpy().astype(np.int64)
+            ))
             shapes.append([1])
 
-        values.append(
-            np.ascontiguousarray(
-                wide[:, :, i].numpy().astype(np.int64)
-            )
-        )
+        values.append(np.ascontiguousarray(
+            wide[:, :, i].numpy().astype(np.int64)
+        ))
         shapes.append([1, 18])
 
-    values.append(
-        np.ascontiguousarray(
-            valid.numpy().astype(np.int64)
-        )
-    )
+    values.append(np.ascontiguousarray(
+        valid.numpy().astype(np.int64)
+    ))
     shapes.append([1])
-
-    print("SIBLING INPUT MAPPING: PASS", flush=True)
 
     device = DeviceRef.CPU()
 
     with Graph(
-        "pzaas_real_sibling",
+        "pzaas_sibling_cast_fixed",
         input_types=[
             TensorType(DType.int64, s, device=device)
             for s in shapes
         ]
     ) as graph:
-
         inputs = graph.inputs
         siblings = []
 
@@ -116,15 +108,17 @@ try:
         mean = ops.sum(stack, axis=1) / (
             length + epsilon
         )
+
         maximum = ops.max(stack, axis=1)
 
         result = ops.concat(
-            [mean, maximum], axis=1
+            [mean, maximum],
+            axis=1
         )
 
         graph.output(result)
 
-    print("SIBLING MAX GRAPH: PASS", flush=True)
+    print("SIBLING GRAPH BUILD: PASS", flush=True)
 
     weights = {
         p.stem: np.ascontiguousarray(
@@ -134,6 +128,7 @@ try:
     }
 
     assert len(weights) == 208
+    print("208 WEIGHTS: PASS", flush=True)
 
     session = InferenceSession(devices=[CPU()])
     model = session.load(
@@ -141,7 +136,7 @@ try:
         weights_registry=weights
     )
 
-    print("SIBLING MAX CPU COMPILATION: PASS", flush=True)
+    print("REAL MAX CPU COMPILATION: PASS", flush=True)
 
     actual = model.execute(*values)[0].to_numpy()
 
@@ -159,19 +154,29 @@ try:
     print("PYTORCH OUTPUT:", expected.shape)
     print("MAX ABS DIFF:", float(diff.max()))
     print("MEAN ABS DIFF:", float(diff.mean()))
+
     print(
         "SIBLING PARITY:",
-        "PASS" if parity else "FAILED"
+        "PASS" if parity else "FAILED",
+        flush=True
     )
-    print("ORIGINAL DS: UNCHANGED")
-    print("CTA / BPLAN: UNCHANGED")
 
     if not parity:
         raise SystemExit(1)
 
+    np.save(
+        "/validation/pzaas_sibling_max.npy",
+        actual,
+        allow_pickle=False
+    )
+
+    print("ORIGINAL DS: UNCHANGED")
+    print("CTA / BPLAN: UNCHANGED")
     print("REMAINING FOUR BRANCHES: NEXT")
+    print("FULL PZAAS GRAPH PARITY: PENDING")
+    print("NATIVE HTTP: PENDING")
 
 except Exception:
     traceback.print_exc()
-    raise SystemExit("PZAAS SIBLING TEST: BLOCKED")
+    raise SystemExit("PZAAS SIBLING PARITY: BLOCKED")
 PY

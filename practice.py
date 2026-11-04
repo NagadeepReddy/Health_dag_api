@@ -1,51 +1,60 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-from pathlib import Path
 import json
+from pathlib import Path
 
-root = Path("artifacts/v1.472")
-p = root / "core-artifact/pipeline.py"
-lines = p.read_text().splitlines()
+root = Path("artifacts/v1.472/samples")
 
-print("=== EXACT DS FAILURE CONTEXT ===")
-for n in range(3985, 4031):
-    print(f"{n}: {lines[n-1]}")
-
-print("\n=== WEB INTERACTION REFERENCES ===")
-for n in range(3646, 4689):
-    if "webInteraction_name" in lines[n-1]:
-        print(f"{n}: {lines[n-1].strip()[:180]}")
-
-print("\n=== SAMPLE INPUT NULL AUDIT ===")
-body = json.loads(
-    (root / "samples/sanity_input.json").read_text()
-)
-
-count = 0
+print("=== PZAAS REAL INPUT PREFLIGHT ===")
 
 def walk(obj, path="$"):
-    global count
     if isinstance(obj, dict):
-        if "webInteraction_name" in obj:
-            count += 1
-            v = obj["webInteraction_name"]
-            page = obj.get("page")
-            print(
-                path,
-                "TYPE:", type(v).__name__,
-                "PAGE TYPE:", type(page).__name__,
-                "PAGE NAME:",
-                page.get("name") if isinstance(page, dict) else None
-            )
+        yield path, obj
         for k, v in obj.items():
-            walk(v, f"{path}.{k}")
+            yield from walk(v, f"{path}.{k}")
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
-            walk(v, f"{path}[{i}]")
+            yield from walk(v, f"{path}[{i}]")
 
-walk(body)
+valid = []
 
-print("WEB INTERACTION FIELDS:", count)
-print("DIAGNOSIS: COMPLETE")
-print("FILES MODIFIED: NONE")
+for file in sorted(root.glob("*.json")):
+    if "output" in file.name.lower():
+        continue
+
+    try:
+        data = json.loads(file.read_text())
+    except (ValueError, OSError) as e:
+        print(file.name, "INVALID JSON:", type(e).__name__)
+        continue
+
+    affected = []
+
+    for path, obj in walk(data):
+        page = obj.get("page")
+        if not isinstance(page, dict):
+            continue
+
+        name = page.get("name", "")
+        if not isinstance(name, str):
+            continue
+
+        if name.lower() not in ("gridwall_smartphones", "deals"):
+            continue
+
+        value = obj.get("webinteraction_name")
+
+        if not isinstance(value, str):
+            affected.append((path, name, type(value).__name__))
+
+    print(file.name, "INVALID WEB INTERACTIONS:", len(affected))
+
+    for path, name, kind in affected[:5]:
+        print(" ", path, "| page:", name, "| value type:", kind)
+
+    if not affected:
+        valid.append(file.name)
+
+print("\nPREFLIGHT-COMPATIBLE SAMPLES:", valid)
 print("ORIGINAL DS: UNCHANGED")
+print("MAX GRAPH: UNCHANGED")
 PY

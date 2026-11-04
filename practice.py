@@ -8,7 +8,11 @@ podman --root /application1/podman/storage \
 -v "$PWD:/workspace:ro" \
 -w /workspace \
 --entrypoint python3 localhost/cta-max-faiss:local -u - <<'PY'
+import json
 import traceback
+from pathlib import Path
+import numpy as np
+
 from max.graph import DeviceRef
 from max.driver import CPU
 from max.engine import InferenceSession
@@ -23,24 +27,57 @@ try:
     graph = build_grecbase_fusion_graph_order_correct(
         DeviceRef.CPU()
     )
-    print("PZAAS GRAPH BUILD: PASS", flush=True)
+    print("GRAPH BUILD: PASS", flush=True)
 
-    session = InferenceSession(devices=[CPU()])
+    root = Path(
+        "/workspace/artifacts/v1.472-max/pzaas_max/pzaas_base_weights"
+    )
+    manifest = json.loads(
+        (root / "manifest.json").read_text()
+    )
 
-    if not callable(getattr(session, "load", None)):
-        raise RuntimeError(
-            "Installed MAX session has no load() API"
+    registry = {}
+    missing = []
+
+    required = list(graph._weights.keys())
+    print("GRAPH WEIGHTS REQUIRED:", len(required), flush=True)
+
+    for name in required:
+        key = name if name in manifest else name + ".weight"
+
+        if key not in manifest:
+            missing.append(name)
+            continue
+
+        entry = manifest[key]
+        path = root / entry["file"]
+
+        array = np.array(
+            np.load(path, allow_pickle=False, mmap_mode="r"),
+            copy=True,
+            order="C"
         )
 
-    print("STARTING MAX CPU COMPILATION", flush=True)
-    model = session.load(graph)
+        if tuple(array.shape) != tuple(entry["shape"]):
+            raise ValueError(f"Shape mismatch: {key}")
+
+        registry[name] = array
+        print("REGISTERED:", name, array.shape, flush=True)
+
+    if missing:
+        raise ValueError(f"Unmapped MAX weights: {missing}")
+
+    print("WEIGHTS REGISTRY: PASS", flush=True)
+    print("STARTING REAL CPU COMPILATION", flush=True)
+
+    session = InferenceSession(devices=[CPU()])
+    model = session.load(graph, weights_registry=registry)
 
     print("PZAAS MAX CPU COMPILATION: PASS", flush=True)
     print("MODEL TYPE:", type(model).__name__)
     print("DEVICE: CPU")
-    print("MODEL: PZAAS v1.472")
-    print("INFERENCE: PENDING")
-    print("PARITY: PENDING")
+    print("ORIGINAL DS: UNCHANGED")
+    print("INFERENCE / PARITY: PENDING")
     print("NATIVE HTTP: PENDING")
 
 except Exception:

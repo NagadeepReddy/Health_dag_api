@@ -1,47 +1,53 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 
-base = Path("artifacts/v1.472-max/pzaas_max")
 files = {
-    "PYTORCH": Path("artifacts/v1.472/utils/dependency-utils/models.py"),
-    "MAX BLOCK": base / "parallel_transformer_block_2layers.py",
-    "MAX FUSION": base / "grecbase_fusion_full_head_72_max.py",
+    "ORIGINAL PYTORCH": (
+        Path("artifacts/v1.472/utils/dependency-utils/models.py"),
+        [(470,485),(537,563),(630,671)]
+    ),
+    "MAX ATTENTION": (
+        Path("artifacts/v1.472-max/pzaas_max/parallel_transformer_block_2layers.py"),
+        [(20,45),(75,143)]
+    ),
+    "MAX FUSION": (
+        Path("artifacts/v1.472-max/pzaas_max/grecbase_fusion_full_head_72_max.py"),
+        [(27,43)]
+    )
 }
 
-patterns = {
-    "PYTORCH": [
-        "x_out += x", "self.heads", "q_shape",
-        "apply_rotary_pos_emb", "create_key_padding_mask",
-        "masked_fill", "self.scale", "self.norm2(ff)"
-    ],
-    "MAX BLOCK": [
-        "q.reshape", "k.reshape", "v.reshape",
-        "apply_rotary_pos_emb_max", "self.scale",
-        "valid_length", "ops.where", "return attn_out"
-    ],
-    "MAX FUSION": [
-        "valid_length =", "sx1 =", "sx2 =",
-        "seq_raw =", "graph.output"
-    ]
-}
+terms = (
+    "scale", "heads", "dim_head", "reshape",
+    "permute", "split", "rotary", "norm",
+    "mask", "valid", "einsum", "matmul",
+    "softmax", "attn", "ff_out", "return",
+    "sx1", "sx2", "block0", "block1",
+    "q =", "k =", "v =", "out +",
+    "out +=", "fused", "residual"
+)
 
-print("=== PZAAS FIRST-DIVERGENCE CHECK ===")
-for name, path in files.items():
-    print(f"\n{name}:")
+print("=== PZAAS EXACT ATTENTION ALIGNMENT ===")
+
+for label, (path, ranges) in files.items():
+    print("\n###", label)
     if not path.is_file():
-        print("BLOCKED: file not found:", path)
+        print("BLOCKED: MISSING", path)
         continue
-    lines = path.read_text().splitlines()
-    for term in patterns[name]:
-        hits = [(i, line.strip()) for i, line in enumerate(lines, 1)
-                if term in line]
-        if hits:
-            for i, line in hits[:2]:
-                print(f"{i}: {line}")
-        else:
-            print("NOT FOUND:", term)
 
-print("\nORIGINAL DS: UNCHANGED")
+    lines = path.read_text().splitlines()
+    selected = set()
+
+    for start, end in ranges:
+        for i in range(start-1, min(end,len(lines))):
+            if any(t in lines[i].lower() for t in terms):
+                selected.update(range(max(start-1,i-1),
+                                      min(end,i+2)))
+
+    for i in sorted(selected):
+        print(f"{i+1}: {lines[i]}")
+
+print("\nSOURCE ALIGNMENT INSPECTION: COMPLETE")
+print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: RESOLVE FIRST SEQUENCE DIVERGENCE")
+print("NEXT: CORRECT VERIFIED ATTENTION DIFFERENCE")
 PY

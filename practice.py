@@ -11,15 +11,16 @@ import re
 import numpy as np
 import torch
 from pathlib import Path
+
 from max.graph import DeviceRef
 from pzaas_max.grecbase_fusion_full_head_72_max import (
     build_grecbase_fusion_graph_order_correct
 )
 from pzaas_max.pzaas_weight_loader import load_weight
 
-root = Path("artifacts/v1.472-max/pzaas_max/validation")
+print("=== PZAAS EXACT 72-INPUT FIX ===", flush=True)
 
-print("=== PZAAS CORRECTED EXACT 72-INPUT PACKING ===", flush=True)
+root = Path("artifacts/v1.472-max/pzaas_max/validation")
 
 p = torch.load(
     root / "ppa_model_input_exact.pt",
@@ -30,62 +31,65 @@ p = torch.load(
 with np.load(root / "ppa_tensor_inputs.npz", allow_pickle=False) as z:
     auxiliary = {k: z[k].copy() for k in z.files}
 
-def arr(x):
+def array(x):
     if isinstance(x, torch.Tensor):
         return x.detach().cpu().numpy()
     return np.asarray(x)
 
-def flatten(x):
+def leaves(x):
     if isinstance(x, dict):
         for value in x.values():
-            yield from flatten(value)
+            yield from leaves(value)
     elif isinstance(x, (list, tuple)):
         for value in x:
-            yield from flatten(value)
+            yield from leaves(value)
     else:
-        yield arr(x)
+        yield array(x)
 
 def get(name, count=1):
     if name in p:
-        values = list(flatten(p[name]))
+        values = list(leaves(p[name]))
     elif name in auxiliary:
         values = [auxiliary[name]]
-        print("RECOVERED FROM NPZ:", name)
     else:
-        raise RuntimeError(f"Missing saved input: {name}")
+        raise RuntimeError(
+            f"Missing input {name}; available NPZ keys: "
+            f"{sorted(auxiliary)}"
+        )
 
     if len(values) != count:
         raise RuntimeError(
             f"{name}: expected {count}, found {len(values)}"
         )
+
     return values
 
-graph = build_grecbase_fusion_graph_order_correct(DeviceRef.CPU())
+graph = build_grecbase_fusion_graph_order_correct(
+    DeviceRef.CPU()
+)
+
 assert len(graph.inputs) == 72
 print("MAX GRAPH: PASS")
 
 packed = []
 
-# Task and jet inputs: 0-4
 packed += get("task_in", 2)
 packed += get("ihq_in")
 packed += get("jet_name_in")
 packed += get("jet_status_in")
 
-# Context inputs: 5-22
 packed += get("deep_in", 17)
 
-wide = np.concatenate([
-    x.reshape(1, 1) for x in get("wide_in", 127)
-], axis=1).astype(np.float32)
+wide = np.concatenate(
+    [x.reshape(1, 1) for x in get("wide_in", 127)],
+    axis=1
+).astype(np.float32)
 
 packed.append(wide)
 
-# NLP: 23-24
 packed += get("input_ids")
 packed += get("attention_mask")
 
-# Sequence: 25-29
 packed += get("page_in")
 packed += get("item_in")
 packed += get("item_meta_in")
@@ -95,7 +99,7 @@ packed.append(
     page_wide.reshape(1, 50, 1).astype(np.float32)
 )
 
-inv = arr(load_weight(
+inv = array(load_weight(
     "sequence_transformer.ptransformer.0.fn.rotary_emb.inv_freq"
 )).astype(np.float32).reshape(-1)
 
@@ -105,7 +109,6 @@ freq = np.arange(50, dtype=np.float32)[:, None] * inv[None, :]
 pos = np.concatenate([freq, freq], axis=-1)
 packed.append(pos.reshape(1, 1, 50, 256))
 
-# Siblings: 30-69
 sdeep = get("sibling_deep_in")[0]
 swide = get("sibling_wide_in")[0]
 
@@ -117,28 +120,29 @@ for i in range(10):
         packed.append(sdeep[:, j, i])
     packed.append(swide[:, :, i])
 
-# Final length inputs: 70-71
-# Corrected lookup automatically uses saved NPZ.
-packed += get("v1_in")
-packed += get("sibling_v1_in")
+# Correct spelling: lowercase L, not digit 1.
+packed += get("vl_in")
+packed += get("sibling_vl_in")
 
 assert len(packed) == 72
-print("PACKED INPUT COUNT: 72/72 PASS")
+print("EXACT INPUT COUNT: 72/72 PASS")
+print("VALID LENGTH INPUTS: FOUND")
 
 verified = []
 errors = []
 
 for i, (value, tensor) in enumerate(zip(packed, graph.inputs)):
     spec = str(tensor.type)
+
     dm = re.search(r"dtype=(int64|float32)", spec)
     sm = re.search(r"shape=\[([^\]]+)\]", spec)
 
-    if not dm or not sm:
-        errors.append((i, "Unknown graph signature", spec))
+    if dm is None or sm is None:
+        errors.append((i, "Unsupported graph signature", spec))
         continue
 
-    dtype = np.dtype(dm.group(1))
-    shape = tuple(
+    expected_dtype = np.dtype(dm.group(1))
+    expected_shape = tuple(
         int(x) for x in re.findall(
             r"Dim\((\d+)\)", sm.group(1)
         )
@@ -146,15 +150,23 @@ for i, (value, tensor) in enumerate(zip(packed, graph.inputs)):
 
     value = np.asarray(value)
 
-    if value.shape != shape:
-        errors.append((i, "shape", value.shape, shape))
+    if value.shape != expected_shape:
+        errors.append(
+            (i, "SHAPE", value.shape, expected_shape)
+        )
         continue
 
-    if not np.can_cast(value.dtype, dtype, casting="safe"):
-        errors.append((i, "dtype", str(value.dtype), str(dtype)))
+    if not np.can_cast(
+        value.dtype, expected_dtype, casting="safe"
+    ):
+        errors.append(
+            (i, "DTYPE", str(value.dtype), str(expected_dtype))
+        )
         continue
 
-    verified.append(value.astype(dtype, copy=False))
+    verified.append(
+        value.astype(expected_dtype, copy=False)
+    )
 
 if errors:
     print("VALIDATION: BLOCKED")
@@ -162,40 +174,43 @@ if errors:
         print("MISMATCH:", error)
     raise SystemExit(1)
 
-print("ALL 72 SHAPES: PASS")
-print("ALL 72 DTYPES: PASS")
+assert len(verified) == 72
+
+print("ALL 72 INPUT SHAPES: PASS")
+print("ALL 72 INPUT DTYPES: PASS")
 
 output = root / "ppa_packed_inputs_72_verified.npz"
 
 data = {
-    f"input_{i:02d}": v
-    for i, v in enumerate(verified)
+    f"input_{i:02d}": value
+    for i, value in enumerate(verified)
 }
 
 if output.exists():
-    with np.load(output, allow_pickle=False) as z:
-        same = (
-            set(z.files) == set(data)
+    with np.load(output, allow_pickle=False) as old:
+        identical = (
+            set(old.files) == set(data)
             and all(
-                np.array_equal(z[k], v, equal_nan=True)
-                for k, v in data.items()
+                old[k].dtype == value.dtype
+                and old[k].shape == value.shape
+                and np.array_equal(old[k], value)
+                for k, value in data.items()
             )
         )
-    if not same:
+    if not identical:
         raise RuntimeError(
-            "Existing packed inputs differ; not overwriting"
+            "Existing packed file differs; refusing overwrite"
         )
-    print("EXISTING PACKED INPUTS: VERIFIED")
+    print("PACKED INPUTS: EXISTING FILE VERIFIED")
 else:
     np.savez_compressed(output, **data)
     print("PACKED INPUTS: SAVED")
 
-print("\n=== FINAL RESULTS ===")
-print("MAX GRAPH: PASS")
-print("EXACT 72 INPUTS: PASS")
-print("SHAPE / DTYPE: PASS")
-print("OUTPUT:", output)
+print("=== PZAAS RESULTS ===")
+print("GRAPH: PASS")
+print("72 INPUTS: PASS")
+print("SHAPES AND DTYPES: PASS")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: REAL MAX NUMERICAL PARITY")
+print("NEXT: REAL MAX EXECUTION AND NUMERICAL PARITY")
 PY

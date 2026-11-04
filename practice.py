@@ -14,18 +14,15 @@ run --rm -i --pull=never \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
 import sys, types, json, os, traceback
-import numpy as np
-
 os.umask(0o077)
 
-print("=== PZAAS EXACT DS INPUT CAPTURE ===", flush=True)
+print("=== PZAAS REAL PYTORCH REFERENCE ===", flush=True)
 
 try:
     import torch
     import sklearn
     assert sklearn.__version__ == "1.6.1"
 
-    # Offline validation: no background scheduler.
     for name in (
         "apscheduler",
         "apscheduler.schedulers",
@@ -38,10 +35,10 @@ try:
         sys.modules[name] = m
 
     class BackgroundScheduler:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **kw): pass
 
     class IntervalTrigger:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **kw): pass
 
     sys.modules[
         "apscheduler.schedulers.background"
@@ -52,10 +49,10 @@ try:
 
     from pipeline import pipeline
 
+    # Offline validation only; no source-file changes.
     pipeline.schedule_pull = lambda self: None
 
     ds = pipeline()
-
     if not getattr(ds, "loaded", False):
         ds.load()
 
@@ -64,46 +61,47 @@ try:
     with open("artifacts/v1.472/samples/ppa_input.json") as f:
         body = json.load(f)
 
-    result = ds.preprocess(body)
-    model_in = result[0]
-
-    assert isinstance(model_in, dict)
+    prepared = ds.preprocess(body)
+    assert isinstance(prepared, (tuple, list))
+    assert len(prepared) == 7, (
+        "Unexpected preprocessing contract",
+        len(prepared)
+    )
 
     print("ORIGINAL DS PREPROCESS: PASS", flush=True)
 
-    # Preserve exact tensors, lists, strings and dtypes.
-    target = "/validation/ppa_model_input_exact.pt"
-    torch.save(model_in, target)
+    with torch.no_grad():
+        output = ds.inference(*prepared)
 
-    arrays = {}
+    print("REAL PYTORCH INFERENCE: PASS", flush=True)
 
-    for name, value in model_in.items():
+    target = "/validation/ppa_pytorch_reference.pt"
+    torch.save(output, target)
+    os.chmod(target, 0o600)
+
+    def describe(value, prefix="output", depth=0):
+        if depth > 2:
+            return
         if isinstance(value, torch.Tensor):
-            arrays[name] = value.detach().cpu().numpy()
-            print("TENSOR:", name, tuple(value.shape), value.dtype)
+            print(prefix, tuple(value.shape), value.dtype)
+        elif isinstance(value, dict):
+            print(prefix, "dict fields:", len(value))
+            for k, v in list(value.items())[:20]:
+                describe(v, prefix + "." + str(k), depth + 1)
+        elif isinstance(value, (tuple, list)):
+            print(prefix, type(value).__name__, len(value))
+            for i, v in enumerate(value[:8]):
+                describe(v, prefix + "." + str(i), depth + 1)
         else:
-            print("PRESERVED:", name, type(value).__name__)
+            print(prefix, type(value).__name__)
 
-    np.savez_compressed(
-        "/validation/ppa_tensor_inputs.npz",
-        **arrays
-    )
+    describe(output)
 
-    # Verify the exact saved structure.
-    restored = torch.load(
-        target, map_location="cpu", weights_only=True
-    )
-
-    assert restored.keys() == model_in.keys()
-
-    print("PZAAS EXACT INPUT CAPTURE: PASS")
-    print("TOTAL FIELDS:", len(model_in))
-    print("NUMERIC TENSOR FIELDS:", len(arrays))
-    print("OTHER FIELDS:", len(model_in) - len(arrays))
-    print("ORIGINAL DS FILES: UNCHANGED")
-    print("REAL MAX INFERENCE / PARITY: NEXT")
+    print("PZAAS PYTORCH REFERENCE: SAVED")
+    print("ORIGINAL DS: UNCHANGED")
+    print("REAL MAX NUMERICAL PARITY: NEXT")
 
 except Exception:
     traceback.print_exc()
-    raise SystemExit("PZAAS INPUT CAPTURE: BLOCKED")
+    raise SystemExit("PZAAS PYTORCH REFERENCE: BLOCKED")
 PY

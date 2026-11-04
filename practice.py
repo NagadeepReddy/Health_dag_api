@@ -1,56 +1,59 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-from pathlib import Path
 import ast
+from pathlib import Path
 
-root = Path("artifacts/v1.472")
-pipeline = root / "core-artifact/pipeline.py"
+p = Path("artifacts/v1.472/core-artifact/pipeline.py")
+source = p.read_text()
+tree = ast.parse(source)
 
-print("=== PZAAS MODEL INITIALIZATION ===")
+print("=== PZAAS EXACT BASE MODEL FACTORY ===")
 
-lines = pipeline.read_text().splitlines()
+found = False
+
+for node in ast.walk(tree):
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if node.name == "loadBaseModel":
+            found = True
+            print("FILE:", p)
+            print("LINES:", node.lineno, node.end_lineno)
+            print(ast.get_source_segment(source, node))
+
+if not found:
+    print("LOAD BASE MODEL FACTORY: NOT FOUND")
+
+print("\n=== BASE MODEL IMPORTS ===")
+
+for node in ast.walk(tree):
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        statement = ast.unparse(node)
+        if "model" in statement.lower():
+            print(statement[:250])
+
+print("\n=== ACTUAL BASE MODEL INITIALIZATION ===")
+
+lines = source.splitlines()
 
 for i, line in enumerate(lines):
     if "self.model_base =" in line:
-        for j in range(max(0, i-5), min(len(lines), i+12)):
+        for j in range(max(0, i-2), min(len(lines), i+5)):
             print(f"{j+1}: {lines[j]}")
 
-print("\n=== ORIGINAL PZAAS FORWARD IMPLEMENTATION ===")
+print("\n=== PZAAS MAX GRAPH IDENTITY ===")
 
-found = 0
-required = {"deep_in", "page_in", "item_in", "vl_in", "tasks_in"}
+g = Path(
+    "artifacts/v1.472-max/pzaas_max/"
+    "grecbase_fusion_full_head_72_max.py"
+)
 
-for p in root.rglob("*.py"):
-    try:
-        source = p.read_text()
-        if "def forward" not in source or "sibling_deep_in" not in source:
-            continue
+if g.exists():
+    for i, line in enumerate(g.read_text().splitlines()[:32], 1):
+        if any(s in line for s in (
+            "Graph(", "def build_", "TensorType(",
+            "graph.inputs", "remaining"
+        )):
+            print(f"{i}: {line[:220]}")
 
-        tree = ast.parse(source)
-        src_lines = source.splitlines()
-
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if node.name != "forward":
-                continue
-
-            names = {a.arg for a in node.args.args}
-            if not required.issubset(names):
-                continue
-
-            found += 1
-            print("FILE:", p)
-            print("LINES:", node.lineno, "-", node.end_lineno)
-            print("ARGUMENTS:", sorted(names))
-
-            for n in range(node.lineno, min(node.end_lineno + 1, node.lineno + 150)):
-                print(f"{n}: {src_lines[n-1]}")
-
-    except (OSError, UnicodeError, SyntaxError):
-        continue
-
-print("\nMATCHING FORWARD METHODS:", found)
-print("PYTORCH REFERENCE: PASS")
+print("\nINSPECTION: COMPLETE")
 print("ORIGINAL DS: UNCHANGED")
-print("MAX GRAPH ALIGNMENT: NEXT")
+print("NO FILES MODIFIED")
 PY

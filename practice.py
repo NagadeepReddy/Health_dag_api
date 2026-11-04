@@ -7,7 +7,9 @@ run --rm -i --network none \
 -e PYTHONPATH=/application1/sajjna8/rt-pzaas-v1.0/artifacts/v1.472-max \
 --entrypoint /bin/sh \
 localhost/cta-max-faiss:local -c 'exec python3 -' <<'PY'
-import importlib, traceback, re
+import importlib
+import re
+import traceback
 from pathlib import Path
 import numpy as np
 import torch
@@ -15,7 +17,7 @@ from max.driver import CPU
 from max.engine import InferenceSession
 from max.graph import DeviceRef
 
-print("=== PZAAS CORRECTED WEIGHT BINDING + PARITY ===", flush=True)
+print("=== PZAAS WEIGHT ALIAS FIX + FULL PARITY ===", flush=True)
 
 try:
     mod = importlib.import_module(
@@ -34,109 +36,145 @@ try:
     missing = []
 
     for name, entry in graph._weights.items():
-        weight = entry.weight
-        shape = tuple(int(d) for d in weight.shape)
+        shape = tuple(int(x) for x in entry.weight.shape)
 
+        alias = re.sub(
+            r"(sequence_transformer\.ptransformer\.[01])\.(?!fn\.)",
+            r"\1.fn.",
+            name
+        )
+
+        candidates = list(dict.fromkeys([name, alias]))
         arr = None
-        for candidate in (name, name + ".weight", name + ".g"):
+        errors = []
+
+        for candidate in candidates:
             try:
-                value = loader.load_weight(candidate, shape)
-                value = np.ascontiguousarray(value)
-                if value.shape == shape:
-                    arr = value
-                    break
-            except (KeyError, ValueError, FileNotFoundError):
-                continue
+                value = np.asarray(
+                    loader.load_weight(candidate, shape)
+                )
+                if value.shape != shape:
+                    raise ValueError(
+                        f"{value.shape} != {shape}"
+                    )
+                arr = np.ascontiguousarray(value)
+                if candidate != name:
+                    print("ALIAS:", name, "<-", candidate)
+                break
+            except Exception as exc:
+                errors.append(
+                    f"{candidate}: {type(exc).__name__}: {exc}"
+                )
 
         if arr is None:
-            missing.append((name, shape))
+            missing.append((name, errors))
         else:
             registry[name] = arr
 
     print("GRAPH WEIGHTS:", len(graph._weights))
-    print("WEIGHTS BOUND:", len(registry))
-    print("MISSING:", missing[:10])
+    print("BOUND WEIGHTS:", len(registry))
+    print("MISSING WEIGHTS:", len(missing))
 
     if missing:
+        for name, errors in missing:
+            print("MISSING:", name)
+            for error in errors:
+                print(" ", error[:180])
         raise RuntimeError("Weight binding incomplete")
 
-    print("WEIGHT BINDING: PASS", flush=True)
+    assert len(registry) == 17
+    print("ALL 17 WEIGHTS: PASS", flush=True)
 
     session = InferenceSession(devices=[CPU()])
     model = session.load(
-        graph, weights_registry=registry
+        graph,
+        weights_registry=registry
     )
     print("REAL MAX CPU COMPILATION: PASS", flush=True)
 
-    folder = Path("artifacts/v1.472-max/pzaas_max/validation")
+    folder = Path(
+        "artifacts/v1.472-max/pzaas_max/validation"
+    )
     input_path = folder / "ppa_tensor_inputs.npz"
-    reference_path = folder / "ppa_pytorch_reference_01.pt"
+    ref_path = folder / "ppa_pytorch_reference_01.pt"
 
     with np.load(input_path, allow_pickle=False) as data:
         keys = list(data.files)
 
-        def idx(k):
+        def index(key):
             match = re.fullmatch(
-                r"(?:arr_|input_|tensor_)?(\d+)", k
+                r"(?:arr_|input_|tensor_)?(\d+)", key
             )
             return int(match.group(1)) if match else None
 
-        indices = [idx(k) for k in keys]
+        indices = [index(key) for key in keys]
+
         if (
             len(keys) != len(graph.inputs)
-            or any(i is None for i in indices)
+            or any(x is None for x in indices)
             or sorted(indices) != list(range(len(keys)))
         ):
             raise RuntimeError(
-                f"Input order needs verification: {keys[:10]}"
+                "Saved input order not verified: "
+                + str(keys[:12])
             )
 
         inputs = [
-            np.ascontiguousarray(data[k])
-            for k in sorted(keys, key=idx)
+            np.ascontiguousarray(data[key])
+            for key in sorted(keys, key=index)
         ]
 
     print("INPUT MAPPING: PASS", flush=True)
 
-    result = model.execute(*inputs)
-    if len(result) != 1:
-        raise RuntimeError("Unexpected MAX output count")
+    outputs = model.execute(*inputs)
+    assert len(outputs) == 1
 
-    actual = result[0].to_numpy()
+    actual = outputs[0].to_numpy()
+    print("MAX EXECUTION: PASS", flush=True)
 
-    ref = torch.load(
-        reference_path,
+    reference = torch.load(
+        ref_path,
         map_location="cpu",
         weights_only=True
     )
 
-    if isinstance(ref, dict):
-        candidates = [
-            v for v in ref.values()
-            if isinstance(v, torch.Tensor)
-            and tuple(v.shape) == tuple(actual.shape)
-        ]
-        if len(candidates) != 1:
-            raise RuntimeError("Reference output ambiguous")
-        ref = candidates[0]
+    def find_tensors(value):
+        if isinstance(value, torch.Tensor):
+            yield value
+        elif isinstance(value, dict):
+            for child in value.values():
+                yield from find_tensors(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                yield from find_tensors(child)
 
-    expected = ref.detach().cpu().numpy()
+    candidates = [
+        tensor for tensor in find_tensors(reference)
+        if tuple(tensor.shape) == tuple(actual.shape)
+    ]
 
-    if actual.shape != expected.shape:
+    if len(candidates) != 1:
         raise RuntimeError(
-            f"Shape mismatch: {actual.shape} vs {expected.shape}"
+            "Reference output not uniquely identified: "
+            + str(len(candidates))
         )
+
+    expected = candidates[0].detach().cpu().numpy()
 
     diff = np.abs(actual - expected)
     passed = np.allclose(
-        actual, expected, atol=1e-3, rtol=1e-3
+        actual, expected,
+        rtol=1e-3,
+        atol=1e-3
     )
 
     print("OUTPUT SHAPE:", actual.shape)
     print("MAX ABS DIFF:", float(diff.max()))
     print("MEAN ABS DIFF:", float(diff.mean()))
-    print("FULL NUMERICAL PARITY:",
-          "PASS" if passed else "FAIL")
+    print(
+        "FULL NUMERICAL PARITY:",
+        "PASS" if passed else "FAIL"
+    )
 
 except Exception as exc:
     print("RETEST: BLOCKED")

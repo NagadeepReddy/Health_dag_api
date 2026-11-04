@@ -12,17 +12,17 @@ run --rm -i --pull=never --network none \
 -w /models \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
-import traceback
-from pathlib import Path
 import numpy as np
 import torch
+import traceback
+from pathlib import Path
 from max.driver import CPU
 from max.dtype import DType
 from max.engine import InferenceSession
 from max.graph import DeviceRef, Graph, TensorType, ops
 from pzaas_max import grecbase_fusion_full_head_72_max as m
 
-print("=== PZAAS SIBLING OUTPUT DIAGNOSTIC ===", flush=True)
+print("=== PZAAS SIBLING SHAPE + PARITY ===", flush=True)
 
 try:
     ref = torch.load(
@@ -40,6 +40,10 @@ try:
     deep = d["sibling_deep_in"]
     wide = d["sibling_wide_in"]
     valid = d["sibling_vl_in"]
+
+    assert tuple(deep.shape) == (1, 3, 10)
+    assert tuple(wide.shape) == (1, 18, 10)
+    assert tuple(valid.shape) == (1,)
 
     values, shapes = [], []
 
@@ -60,12 +64,10 @@ try:
     ))
     shapes.append([1])
 
-    print("VALID SIBLING COUNT:", valid.tolist(), flush=True)
-
     device = DeviceRef.CPU()
 
     with Graph(
-        "pzaas_sibling_diagnostic",
+        "pzaas_sibling_flattened",
         input_types=[
             TensorType(DType.int64, s, device=device)
             for s in shapes
@@ -102,11 +104,16 @@ try:
         )
         maximum = ops.max(stack, axis=1)
 
-        graph.output(
-            ops.concat([mean, maximum], axis=1)
+        combined = ops.concat(
+            [mean, maximum], axis=1
         )
 
-    print("MAX GRAPH: PASS", flush=True)
+        # Correct shape without changing numerical values
+        result = ops.reshape(combined, [1, 256])
+
+        graph.output(result)
+
+    print("MAX GRAPH SHAPE FIX: PASS", flush=True)
 
     weights = {
         p.stem: np.ascontiguousarray(
@@ -115,62 +122,61 @@ try:
         for p in Path(m.WDIR).glob("*.npy")
     }
 
+    assert len(weights) == 208
+
     session = InferenceSession(devices=[CPU()])
     model = session.load(
         graph, weights_registry=weights
     )
 
-    print("MAX CPU COMPILATION: PASS", flush=True)
+    print("REAL MAX CPU COMPILATION: PASS", flush=True)
 
     actual = model.execute(*values)[0].to_numpy()
 
-    print("ACTUAL SHAPE:", actual.shape)
-    print("EXPECTED SHAPE:", expected.shape)
-    print("ACTUAL DTYPE:", actual.dtype)
-    print("EXPECTED DTYPE:", expected.dtype)
+    print("MAX SHAPE:", actual.shape)
+    print("PYTORCH SHAPE:", expected.shape)
 
-    print("ACTUAL FINITE:", bool(np.isfinite(actual).all()))
-    print("EXPECTED FINITE:", bool(np.isfinite(expected).all()))
-    print("NAN COUNT:", int(np.isnan(actual).sum()))
-    print("INF COUNT:", int(np.isinf(actual).sum()))
+    assert actual.shape == expected.shape
+    assert np.isfinite(actual).all()
 
-    finite = actual[np.isfinite(actual)]
+    diff = np.abs(actual - expected)
 
-    if finite.size:
-        print("ACTUAL FINITE MIN:", float(finite.min()))
-        print("ACTUAL FINITE MAX:", float(finite.max()))
+    print("MAX ABS DIFF:", float(diff.max()))
+    print("MEAN ABS DIFF:", float(diff.mean()))
 
-    if actual.shape != expected.shape:
-        print("FAILURE: OUTPUT SHAPE MISMATCH")
-    elif not np.isfinite(actual).all():
-        print("FAILURE: NON-FINITE MAX OUTPUT")
+    print(
+        "MEAN HALF MAX DIFF:",
+        float(diff[:, :128].max())
+    )
+    print(
+        "MAX HALF MAX DIFF:",
+        float(diff[:, 128:].max())
+    )
+
+    passed = np.allclose(
+        actual, expected,
+        atol=1e-3, rtol=1e-3
+    )
+
+    print(
+        "SIBLING NUMERICAL PARITY:",
+        "PASS" if passed else "FAILED"
+    )
+
+    if passed:
+        np.save(
+            "/validation/pzaas_sibling_max.npy",
+            actual, allow_pickle=False
+        )
+        print("FOUR BRANCHES: PASS")
+        print("REMAINING FOUR BRANCHES: NEXT")
     else:
-        diff = np.abs(actual - expected)
-        print("MAX ABS DIFF:", float(diff.max()))
-        print("MEAN ABS DIFF:", float(diff.mean()))
-
-        passed = np.allclose(
-            actual, expected,
-            atol=1e-3, rtol=1e-3
-        )
-
-        print(
-            "SIBLING PARITY:",
-            "PASS" if passed else "FAILED"
-        )
-
-        if passed:
-            np.save(
-                "/validation/pzaas_sibling_max.npy",
-                actual, allow_pickle=False
-            )
-            print("REMAINING FOUR BRANCHES: NEXT")
+        print("SIBLING VALUES NEED ALIGNMENT")
 
     print("ORIGINAL DS: UNCHANGED")
     print("CTA / BPLAN: UNCHANGED")
-    print("DIAGNOSTIC: COMPLETE")
 
 except Exception:
     traceback.print_exc()
-    raise SystemExit("SIBLING DIAGNOSTIC: BLOCKED")
+    raise SystemExit("PZAAS SIBLING TEST: BLOCKED")
 PY

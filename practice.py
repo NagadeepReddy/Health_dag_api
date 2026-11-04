@@ -1,58 +1,62 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import re
+import zipfile, re
 
-root = Path.cwd()
-graph = root / "artifacts/v1.472-max/pzaas_max/grecbase_fusion_full_head_72_max.py"
+print("=== PZAAS ORIGINAL TRAINED WEIGHT DISCOVERY ===")
 
-print("=== PZAAS SIX-LAYER WEIGHT AUDIT ===")
-assert graph.is_file(), f"Missing graph: {graph}"
-
-src = graph.read_text()
-compile(src, str(graph), "exec")
-print("PYTHON SYNTAX: PASS")
-
-for i in range(6):
-    declarations = re.findall(
-        rf"\bblock{i}\s*=\s*ParallelTransformerBlockMAX\(",
-        src
-    )
-    calls = re.findall(rf"\bblock{i}\s*\(", src)
-    print(f"LAYER {i}: declaration={len(declarations)}, calls={len(calls)}")
-
-print("FINAL SX6:", bool(re.search(r"postprocess\s*\(\s*sx6\s*\)", src)))
-
-locations = [
-    Path("/models/pzaas_max/pzaas_base_weights"),
-    root / "artifacts/v1.472-max/pzaas_max",
-    root / "artifacts/v1.472-max",
+roots = [
+    Path("artifacts/v1.472"),
+    Path("artifacts/v1.472-max"),
+    Path("/models/pzaas_max"),
 ]
 
-files = {}
-for directory in locations:
-    if directory.is_dir():
-        for p in directory.rglob("*.npy"):
-            files[str(p.resolve())] = p
+pattern = re.compile(
+    rb'(?:ptransformer|ptramsformer|transformer)\.(\d+)\.'
+)
 
-print("VISIBLE WEIGHT FILES:", len(files))
+found = set()
+checkpoints = []
 
-counts = {}
-for i in range(6):
-    matches = [
-        p for p in files.values()
-        if re.search(rf"(?:ptransformer|ptramsformer|transformer)\.{i}\.", p.name)
-    ]
-    counts[i] = len(matches)
-    print(f"TRAINED LAYER {i} WEIGHTS:", len(matches))
-    for p in matches[:3]:
-        print(" ", p.name)
+for root in roots:
+    if not root.exists():
+        continue
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        if p.suffix == ".npy":
+            found.update(int(x) for x in pattern.findall(
+                p.name.encode()
+            ))
+        elif p.suffix in (".pt", ".pth", ".ckpt"):
+            checkpoints.append(p)
 
-print("=== RESULTS ===")
-print("GRAPH SOURCE: VERIFIED")
-print("SIX-LAYER WEIGHT COVERAGE:",
-      "VISIBLE" if all(counts.values()) else "NOT YET VERIFIED")
-print("MAX CPU COMPILATION: PENDING RETEST")
-print("FULL MODEL PARITY: PENDING")
+print("EXPORTED WEIGHT LAYERS:", sorted(found))
+print("CHECKPOINTS FOUND:", len(checkpoints))
+
+for p in checkpoints:
+    layers = set()
+    try:
+        if zipfile.is_zipfile(p):
+            with zipfile.ZipFile(p) as z:
+                for name in z.namelist():
+                    if name.endswith(".pkl"):
+                        layers.update(
+                            int(x) for x in pattern.findall(z.read(name))
+                        )
+        else:
+            layers.update(
+                int(x) for x in pattern.findall(p.read_bytes())
+            )
+        print("CHECKPOINT:", p)
+        print("TRAINED LAYERS:", sorted(layers))
+    except Exception as e:
+        print("INSPECTION ERROR:", type(e).__name__, str(e)[:150])
+
+print("=== FINAL ===")
+print("EXPECTED LAYERS:", list(range(6)))
+print("MISSING EXPORTED LAYERS:",
+      sorted(set(range(6)) - found))
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
+print("NEXT: EXTRACT MISSING TRAINED WEIGHTS OR VERIFY MODEL DEPTH")
 PY

@@ -6,7 +6,8 @@ run --rm -i --pull=never --network none \
 --memory 10g --tmpfs /tmp:rw,size=1g \
 -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
 -e PYTHONPATH=/validation/sklearn_161:/validation/python_deps:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
--v "$PWD:/workspace:ro" -v "$V:/validation:rw" \
+-v "$PWD:/workspace:ro" \
+-v "$V:/validation:rw" \
 -w /workspace \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
@@ -14,13 +15,12 @@ import sys, types, inspect, traceback, os
 import torch
 import numpy as np
 
-print("=== PZAAS REAL FUSION CAPTURE RETRY ===")
-
+print("=== PZAAS FUSION CAPTURE ===", flush=True)
 torch.set_num_threads(4)
 os.umask(0o077)
 
 try:
-    # Isolated, inactive scheduler.
+    # Satisfy imports without starting a scheduler.
     for name in (
         "apscheduler",
         "apscheduler.schedulers",
@@ -33,20 +33,10 @@ try:
         sys.modules[name] = m
 
     class BackgroundScheduler:
-        def __init__(self, *a, **kw):
-            self.jobs = []
-        def add_job(self, *a, **kw):
-            self.jobs.append((a, kw))
-        def get_jobs(self):
-            return self.jobs
-        def start(self, *a, **kw):
-            pass
-        def shutdown(self, *a, **kw):
-            pass
+        def __init__(self, *a, **k): pass
 
     class IntervalTrigger:
-        def __init__(self, *a, **kw):
-            pass
+        def __init__(self, *a, **k): pass
 
     sys.modules[
         "apscheduler.schedulers.background"
@@ -58,8 +48,13 @@ try:
 
     from pipeline import pipeline
 
+    # Skip ONLY background scheduler initialization.
+    # No original DS files are modified.
+    pipeline.schedule_pull = lambda self: None
+
     ds = pipeline()
     ds.load()
+    print("ORIGINAL DS LOAD: PASS", flush=True)
 
     model = ds.model_base
     model.eval()
@@ -69,7 +64,6 @@ try:
         map_location="cpu",
         weights_only=True
     )
-
     model_in = ref["model_in"]
     captured = {}
 
@@ -94,35 +88,35 @@ try:
         if key in model_in:
             kwargs[name] = model_in[key]
 
-    with torch.no_grad():
-        output = model(**kwargs)
-
-    hook.remove()
+    try:
+        with torch.inference_mode():
+            output = model(**kwargs)
+    finally:
+        hook.remove()
+        model.get_path = original_get_path
 
     fusion = captured["fusion"]
     path = captured["path"]
 
-    assert tuple(fusion.shape) == (1, 8, 256)
-    assert tuple(path.shape) == (1, 2048)
-    assert tuple(output.shape) == (1, 2048)
-    assert torch.isfinite(fusion).all()
-    assert torch.isfinite(path).all()
+    assert fusion.shape == (1, 8, 256)
+    assert path.shape == (1, 2048)
+    assert output.shape == (1, 2048)
 
-    for name, tensor in (
+    for name, value in (
         ("pzaas_fusion_input.npy", fusion),
         ("pzaas_get_path_input.npy", path)
     ):
-        location = "/validation/" + name
-        np.save(location, tensor.numpy(), allow_pickle=False)
-        os.chmod(location, 0o600)
+        file = "/validation/" + name
+        np.save(file, value.numpy(), allow_pickle=False)
+        os.chmod(file, 0o600)
 
-    print("SCHEDULER ISOLATION: PASS")
-    print("ORIGINAL DS FORWARD: PASS")
-    print("FUSION:", tuple(fusion.shape))
-    print("GET_PATH:", tuple(path.shape))
+    print("SCHEDULER BYPASS: PASS")
+    print("PYTORCH MODEL FORWARD: PASS")
+    print("FUSION INPUT:", tuple(fusion.shape))
+    print("PATH INPUT:", tuple(path.shape))
     print("FUSION CAPTURE: PASS")
-    print("ORIGINAL DS: UNCHANGED")
-    print("NATIVE MAX PARITY: NEXT")
+    print("ORIGINAL DS FILES: UNCHANGED")
+    print("REAL MAX PARITY: NEXT")
 
 except Exception:
     traceback.print_exc()

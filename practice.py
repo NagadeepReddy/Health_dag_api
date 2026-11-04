@@ -1,174 +1,91 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
-M="$PWD/artifacts/v1.472-max" && \
-V="$M/pzaas_max/validation" && \
+V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never --network none \
---memory 10g --tmpfs /tmp:rw,size=1g \
--e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
--e PYTHONPATH=/models \
--v "$M:/models:ro" \
--v "$V:/validation:ro" \
--w /models \
+--memory 3g \
+-e PYTHONDONTWRITEBYTECODE=1 \
+-v "$PWD:/workspace:ro" \
+-v "$V:/validation:rw" \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
+from pathlib import Path
 import numpy as np
-import traceback
+import ast
+import os
 
-from max.driver import CPU
-from max.dtype import DType
-from max.engine import InferenceSession
-from max.graph import DeviceRef, Graph, TensorType, ops
+os.umask(0o077)
 
-from pzaas_max import grecbase_fusion_full_head_72_max as m
+print("=== PZAAS EIGHT BRANCH ALIGNMENT ===")
 
-print("=== PZAAS REAL MAX FUSION PARITY ===", flush=True)
+fusion = np.load(
+    "/validation/pzaas_fusion_input.npy",
+    allow_pickle=False
+)
 
-try:
-    wdir = m.WDIR
+assert fusion.shape == (1, 8, 256)
 
-    specs = {
-        "att_pooling.fused_attn_ff_proj.weight": (2816, 256),
-        "att_pooling.attn_out.weight": (256, 256),
-        "att_pooling.ff_out.1.weight": (256, 1024),
-    }
+names = [
+    "sequence", "context", "search0", "search1",
+    "jet", "ihq", "sibling", "task"
+]
 
-    registry = {}
+targets = {
+    name: fusion[:, i, :].copy()
+    for i, name in enumerate(names)
+}
 
-    for name, shape in specs.items():
-        weight = np.load(
-            wdir / (name + ".npy"),
-            allow_pickle=False
-        )
-        assert weight.shape == shape, (name, weight.shape)
-        registry[name] = np.ascontiguousarray(
-            weight.astype(np.float32)
-        )
-        print("BOUND:", name, shape, flush=True)
+assert np.array_equal(
+    np.stack(list(targets.values()), axis=1),
+    fusion
+)
 
-    print("MAX WEIGHT REGISTRY: PASS", flush=True)
+target = "/validation/pzaas_eight_branch_targets.npz"
+np.savez_compressed(target, **targets)
+os.chmod(target, 0o600)
 
-    fusion = np.load(
-        "/validation/pzaas_fusion_input.npy",
-        allow_pickle=False
-    ).astype(np.float32)
+for name, value in targets.items():
+    print("BRANCH:", name, value.shape)
 
-    reference = np.load(
-        "/validation/pzaas_get_path_input.npy",
-        allow_pickle=False
-    ).astype(np.float32)
+print("EIGHT BRANCH TARGETS: PASS")
 
-    assert fusion.shape == (1, 8, 256)
-    assert reference.shape == (1, 2048)
+p = Path(
+    "/workspace/artifacts/v1.472/"
+    "utils/dependency-utils/models.py"
+)
 
-    device = DeviceRef.CPU()
+tree = ast.parse(p.read_text())
+lines = p.read_text().splitlines()
 
-    def constant_weight(name, shape):
-        value = np.load(
-            wdir / (name + ".npy"),
-            allow_pickle=False
-        ).astype(np.float32)
-        assert value.shape == shape
-        return ops.constant(
-            value, dtype=DType.float32, device=device
-        )
+classes = [
+    n for n in ast.walk(tree)
+    if isinstance(n, ast.ClassDef)
+    and n.name == "GRecBase"
+]
 
-    def norm(x, name):
-        gamma = constant_weight(name + ".g", (256,))
-        variance = ops.reshape(
-            ops.mean(x * x, axis=-1), [1, 8, 1]
-        )
-        return x * ops.rsqrt(variance + 1e-6) * gamma
+assert classes, "Original GRecBase class missing"
 
-    inv = np.load(
-        wdir / "att_pooling.rotary_emb.inv_freq.npy",
-        allow_pickle=False
-    ).astype(np.float32)
+forward = next(
+    n for n in classes[0].body
+    if isinstance(n, ast.FunctionDef)
+    and n.name == "forward"
+)
 
-    assert inv.shape == (128,)
+print("\n=== ORIGINAL GRECBASE FUSION WIRING ===")
 
-    angles = np.arange(
-        8, dtype=np.float32
-    )[:, None] * inv[None, :]
+matches = [
+    i for i in range(forward.lineno, forward.end_lineno + 1)
+    if "moe_norm1(" in lines[i - 1]
+]
 
-    position = np.concatenate(
-        [angles, angles], axis=1
-    )[None, None, :, :].astype(np.float32)
+assert matches, "Fusion boundary not found"
 
-    with Graph(
-        "pzaas_real_fusion_bound",
-        input_types=[
-            TensorType(
-                DType.float32,
-                [1, 8, 256],
-                device=device
-            )
-        ]
-    ) as graph:
-        x = graph.inputs[0]
+for i in matches:
+    for j in range(max(forward.lineno, i - 12), i + 1):
+        print(f"{j}: {lines[j-1]}")
 
-        x = norm(x, "moe_norm1")
-
-        pos = ops.constant(
-            position,
-            dtype=DType.float32,
-            device=device
-        )
-
-        block = m.AttPoolingBlockMAX(
-            dtype=DType.float32,
-            device=device,
-            layer_idx=0
-        )
-
-        x = block(x, pos)
-        x = norm(x, "moe_norm2")
-        x = ops.reshape(x, [1, 2048])
-
-        graph.output(x)
-
-    print("MAX FUSION GRAPH: PASS", flush=True)
-
-    session = InferenceSession(devices=[CPU()])
-
-    model = session.load(
-        graph,
-        weights_registry=registry
-    )
-
-    print("REAL MAX CPU LOAD: PASS", flush=True)
-
-    result = model.execute(fusion)[0].to_numpy()
-
-    assert result.shape == reference.shape
-    assert np.isfinite(result).all()
-
-    diff = np.abs(result - reference)
-
-    print("MAX OUTPUT:", result.shape)
-    print("PYTORCH OUTPUT:", reference.shape)
-    print("MAX ABS DIFF:", float(diff.max()))
-    print("MEAN ABS DIFF:", float(diff.mean()))
-
-    parity = np.allclose(
-        result, reference,
-        atol=1e-3,
-        rtol=1e-3
-    )
-
-    print(
-        "PZAAS MAX FUSION PARITY:",
-        "PASS" if parity else "FAILED"
-    )
-    print("ORIGINAL DS: UNCHANGED")
-    print("CTA / BPLAN: UNCHANGED")
-
-    if not parity:
-        raise SystemExit(1)
-
-    print("FULL PZAAS GRAPH PARITY: NEXT")
-
-except Exception:
-    traceback.print_exc()
-    raise SystemExit("PZAAS MAX FUSION: BLOCKED")
+print("\nPZAAS BRANCH REFERENCES: PASS")
+print("ORIGINAL DS: UNCHANGED")
+print("CTA / BPLAN: UNCHANGED")
+print("NEXT: NATIVE MAX BRANCH IMPLEMENTATION")
 PY

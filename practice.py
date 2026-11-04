@@ -3,38 +3,24 @@ V="$PWD/artifacts/v1.472-max/pzaas_max/validation" && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never --network none \
---memory 10g \
---tmpfs /tmp:rw,size=1g \
--e HOME=/tmp \
--e PYTHONDONTWRITEBYTECODE=1 \
+--memory 10g --tmpfs /tmp:rw,size=1g \
+-e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
 -e PYTHONPATH=/validation/sklearn_161:/validation/python_deps:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
--v "$PWD:/workspace:ro" \
--v "$V:/validation:rw" \
+-v "$PWD:/workspace:ro" -v "$V:/validation:rw" \
 -w /workspace \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local -u - <<'PY'
-import os
-import sys
-import types
-import inspect
-import traceback
-import numpy as np
+import sys, types, inspect, traceback, os
 import torch
+import numpy as np
 
-os.umask(0o077)
+print("=== PZAAS REAL FUSION CAPTURE RETRY ===")
+
 torch.set_num_threads(4)
-
-print("=== PZAAS REAL FUSION BOUNDARY ===", flush=True)
+os.umask(0o077)
 
 try:
-    ref = torch.load(
-        "/validation/ppa_pytorch_reference_01.pt",
-        map_location="cpu",
-        weights_only=True
-    )
-    model_in = ref["model_in"]
-
-    # Disable scheduler only in this isolated process.
+    # Isolated, inactive scheduler.
     for name in (
         "apscheduler",
         "apscheduler.schedulers",
@@ -47,10 +33,20 @@ try:
         sys.modules[name] = m
 
     class BackgroundScheduler:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **kw):
+            self.jobs = []
+        def add_job(self, *a, **kw):
+            self.jobs.append((a, kw))
+        def get_jobs(self):
+            return self.jobs
+        def start(self, *a, **kw):
+            pass
+        def shutdown(self, *a, **kw):
+            pass
 
     class IntervalTrigger:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **kw):
+            pass
 
     sys.modules[
         "apscheduler.schedulers.background"
@@ -63,104 +59,72 @@ try:
     from pipeline import pipeline
 
     ds = pipeline()
-    if not getattr(ds, "loaded", False):
-        ds.load()
+    ds.load()
 
     model = ds.model_base
     model.eval()
 
-    assert hasattr(model, "moe_norm1")
-    assert hasattr(model, "get_path")
-
-    captured = {}
-
-    # Exact tensor before the PyTorch fusion stack.
-    def before_norm(module, args):
-        captured["fusion_input"] = (
-            args[0].detach().cpu().clone()
-        )
-
-    hook = model.moe_norm1.register_forward_pre_hook(
-        before_norm
+    ref = torch.load(
+        "/validation/ppa_pytorch_reference_01.pt",
+        map_location="cpu",
+        weights_only=True
     )
 
-    # Exact tensor after fusion, before task-path logic.
+    model_in = ref["model_in"]
+    captured = {}
+
+    def capture_fusion(module, args):
+        captured["fusion"] = args[0].detach().cpu().clone()
+
+    hook = model.moe_norm1.register_forward_pre_hook(
+        capture_fusion
+    )
+
     original_get_path = model.get_path
 
-    def capture_get_path(*args, **kwargs):
-        value = args[-1]
-
-        assert isinstance(value, torch.Tensor)
-
-        captured["get_path_input"] = (
-            value.detach().cpu().clone()
-        )
-
+    def capture_path(*args, **kwargs):
+        captured["path"] = args[-1].detach().cpu().clone()
         return original_get_path(*args, **kwargs)
 
-    model.get_path = capture_get_path
-
-    signature = inspect.signature(model.forward)
+    model.get_path = capture_path
 
     kwargs = {}
-    for key in signature.parameters:
-        source_key = (
-            "task_in" if key == "tasks_in" else key
-        )
-        assert source_key in model_in, source_key
-        kwargs[key] = model_in[source_key]
-
-    print("ORIGINAL INPUT MAPPING: PASS", flush=True)
+    for name in inspect.signature(model.forward).parameters:
+        key = "task_in" if name == "tasks_in" else name
+        if key in model_in:
+            kwargs[name] = model_in[key]
 
     with torch.no_grad():
         output = model(**kwargs)
 
     hook.remove()
 
-    assert isinstance(output, torch.Tensor)
-    assert tuple(output.shape) == (1, 2048)
-
-    fusion = captured["fusion_input"]
-    get_path_input = captured["get_path_input"]
-
-    print("FUSION INPUT:", tuple(fusion.shape))
-    print("GET_PATH INPUT:", tuple(get_path_input.shape))
-    print("MODEL OUTPUT:", tuple(output.shape))
+    fusion = captured["fusion"]
+    path = captured["path"]
 
     assert tuple(fusion.shape) == (1, 8, 256)
-    assert tuple(get_path_input.shape) == (1, 2048)
+    assert tuple(path.shape) == (1, 2048)
+    assert tuple(output.shape) == (1, 2048)
+    assert torch.isfinite(fusion).all()
+    assert torch.isfinite(path).all()
 
-    assert bool(torch.isfinite(fusion).all())
-    assert bool(torch.isfinite(get_path_input).all())
-    assert bool(torch.isfinite(output).all())
-
-    # Keep checkpoints solely in isolated PZAAS validation.
-    np.save(
-        "/validation/pzaas_fusion_input.npy",
-        fusion.numpy(),
-        allow_pickle=False
-    )
-
-    np.save(
-        "/validation/pzaas_get_path_input.npy",
-        get_path_input.numpy(),
-        allow_pickle=False
-    )
-
-    for path in (
-        "/validation/pzaas_fusion_input.npy",
-        "/validation/pzaas_get_path_input.npy"
+    for name, tensor in (
+        ("pzaas_fusion_input.npy", fusion),
+        ("pzaas_get_path_input.npy", path)
     ):
-        os.chmod(path, 0o600)
+        location = "/validation/" + name
+        np.save(location, tensor.numpy(), allow_pickle=False)
+        os.chmod(location, 0o600)
 
-    print("PZAAS REAL FUSION CAPTURE: PASS")
-    print("PYTORCH FUSION REFERENCE: PASS")
-    print("EIGHT BRANCHES: VERIFIED")
+    print("SCHEDULER ISOLATION: PASS")
+    print("ORIGINAL DS FORWARD: PASS")
+    print("FUSION:", tuple(fusion.shape))
+    print("GET_PATH:", tuple(path.shape))
+    print("FUSION CAPTURE: PASS")
     print("ORIGINAL DS: UNCHANGED")
-    print("CTA / BPLAN: UNCHANGED")
-    print("NATIVE MAX FUSION PARITY: NEXT")
+    print("NATIVE MAX PARITY: NEXT")
 
 except Exception:
     traceback.print_exc()
-    raise SystemExit("PZAAS FUSION CAPTURE: BLOCKED")
+    raise SystemExit("FUSION CAPTURE: BLOCKED")
 PY

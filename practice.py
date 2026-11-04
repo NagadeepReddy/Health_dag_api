@@ -1,103 +1,109 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 || exit 1
 
 python3 - <<'PY'
-import ast
-import re
 from pathlib import Path
+import ast
 
-root = Path.cwd()
-ds = root / "artifacts/v1.472"
-mx = root / "artifacts/v1.472-max/pzaas_max"
+print("=== PZAAS ORIGINAL SEQUENCE SOURCE ===")
 
-print("=== PZAAS SEQUENCE PARITY ROOT-CAUSE INSPECTION ===")
+roots = [
+    Path("artifacts/v1.472"),
+    Path("/workspace/artifacts/v1.472"),
+]
 
-def locate_class(folder, classname):
-    for p in folder.rglob("*.py"):
+seen = set()
+found = 0
+
+for root in roots:
+    if not root.is_dir():
+        print("PATH UNAVAILABLE:", root)
+        continue
+
+    for p in root.rglob("*.py"):
+        path = str(p.resolve())
+        if path in seen:
+            continue
+        seen.add(path)
+
         try:
             source = p.read_text(errors="replace")
-            if "class " + classname not in source:
-                continue
+        except OSError:
+            continue
+
+        if not any(x in source for x in (
+            "class ParallelTransformerMAEP",
+            "page_full_out",
+            "item_full_out",
+        )):
+            continue
+
+        try:
             tree = ast.parse(source)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef) and node.name == classname:
-                    return p, source.splitlines(), node
-        except (OSError, SyntaxError, UnicodeError):
-            continue
-    return None
-
-def inspect_class(title, folder, classname, methods, limit):
-    print("\n===", title, "===")
-    found = locate_class(folder, classname)
-    if not found:
-        print("CLASS NOT FOUND:", classname)
-        return
-
-    path, lines, cls = found
-    print("FILE:", path.relative_to(root))
-
-    pattern = re.compile(
-        r"embedding|item_pre|page_full|item_full|"
-        r"torch\.cat|ops\.concat|transformer|"
-        r"ptransformer|block[01]|"
-        r"residual|rotary|norm|pool|"
-        r"seq_dense|position|return|"
-        r"leaky|self\.ff|self\.attn|"
-        r"self\.moe|num_layers",
-        re.I
-    )
-
-    for method in methods:
-        funcs = [
-            n for n in cls.body
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and n.name == method
-        ]
-        if not funcs:
-            print("METHOD NOT FOUND:", method)
+        except SyntaxError:
             continue
 
-        node = funcs[0]
-        print("METHOD:", method, "LINES:", node.lineno, "-", node.end_lineno)
+        lines = source.splitlines()
 
-        selected = [
-            (i, lines[i-1].strip())
-            for i in range(node.lineno, node.end_lineno + 1)
-            if pattern.search(lines[i-1])
-            and not lines[i-1].lstrip().startswith("#")
-        ]
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if "ParallelTransformer" not in node.name:
+                continue
 
-        for number, line in selected[:limit]:
-            print(f"{number}: {line[:160]}")
+            found += 1
+            print("\nFILE:", p)
+            print("CLASS:", node.name)
 
-        if len(selected) > limit:
-            print("ADDITIONAL MATCHING LINES:", len(selected) - limit)
+            methods = [
+                n for n in node.body
+                if isinstance(n, ast.FunctionDef)
+                and n.name in ("__init__", "forward")
+            ]
 
-inspect_class(
-    "ORIGINAL PYTORCH SEQUENCE",
-    ds, "ParallelTransformerMAEP",
-    ["__init__", "forward"], 35
-)
+            for method in methods:
+                print("\nMETHOD:", method.name)
+                print("LINES:", method.lineno, "-", method.end_lineno)
 
-inspect_class(
-    "MAX SEQUENCE FEATURES",
-    mx, "ParallelTransformerMAEPMAX",
-    ["__call__"], 25
-)
+                if method.name == "__init__":
+                    keywords = (
+                        "num_layers", "transformer",
+                        "embedding", "seq_dense",
+                        "pooling", "page_meta",
+                    )
+                else:
+                    keywords = (
+                        "page_", "item_", "wide_",
+                        "torch.cat", "transformer",
+                        "pooling", "seq_dense",
+                        "return", "norm",
+                    )
 
-inspect_class(
-    "MAX TRANSFORMER BLOCK",
-    mx, "ParallelTransformerBlockMAX",
-    ["__call__"], 30
-)
+                selected = [
+                    i for i in range(
+                        method.lineno,
+                        method.end_lineno + 1
+                    )
+                    if any(
+                        k in lines[i-1].lower()
+                        for k in keywords
+                    )
+                ]
 
-inspect_class(
-    "MAX POSTPROCESS",
-    mx, "SequencePostprocessMAX",
-    ["__call__"], 20
-)
+                for i in selected[:65]:
+                    print(f"{i}: {lines[i-1].strip()[:170]}")
 
-print("\nPARITY TRIAGE: SOURCE COMPARISON COMPLETE")
-print("ORIGINAL DS: UNCHANGED")
+                if len(selected) > 65:
+                    print("MORE MATCHING LINES:", len(selected)-65)
+
+print("\nMATCHING CLASSES:", found)
+
+if found:
+    print("ORIGINAL SEQUENCE SOURCE: LOCATED")
+    print("NEXT: ALIGN FIRST DIVERGENT MAX OPERATION")
+else:
+    print("ORIGINAL SEQUENCE SOURCE: NOT LOCATED")
+    print("NEXT: RESOLVE ORIGINAL SOURCE PATH")
+
+print("FILES MODIFIED: 0")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: CORRECT FIRST DIVERGENT OPERATION")
 PY

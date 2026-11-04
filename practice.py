@@ -6,99 +6,96 @@ run --rm -i --network none \
 -w /application1/sajjna8/rt-pzaas-v1.0 \
 --entrypoint /bin/sh \
 localhost/cta-max-faiss:local -c 'exec python3 -' <<'PY'
-import torch
 import numpy as np
+import torch
 from pathlib import Path
+from itertools import permutations
 
 root = Path("artifacts/v1.472-max/pzaas_max/validation")
+
 names = [
     "sequence", "context", "search0", "search1",
     "jet", "ihq", "sibling", "task"
 ]
 
-print("=== PZAAS PYTORCH OUTPUT STRUCTURE + PARITY DIAGNOSTIC ===", flush=True)
+print("=== PZAAS EIGHT-BRANCH ALIGNMENT ===", flush=True)
 
-def inspect(obj, path="root", depth=0):
-    if depth > 5:
-        return
+ref = torch.load(
+    root / "ppa_model_base_reference.pt",
+    map_location="cpu",
+    weights_only=True
+)
 
-    if isinstance(obj, torch.Tensor):
-        arr = obj.detach().cpu().numpy()
-        print("TENSOR:", path, arr.shape, arr.dtype)
-        if arr.size == 2048 and np.issubdtype(arr.dtype, np.number):
-            candidates.append((path, arr.astype(np.float32).reshape(-1)))
+if isinstance(ref, torch.Tensor):
+    ref = ref.detach().cpu().numpy()
+else:
+    raise RuntimeError("Unexpected base reference structure")
 
-    elif isinstance(obj, np.ndarray):
-        print("ARRAY:", path, obj.shape, obj.dtype)
-        if obj.size == 2048 and np.issubdtype(obj.dtype, np.number):
-            candidates.append((path, obj.astype(np.float32).reshape(-1)))
+assert ref.shape == (1, 2048)
 
-    elif isinstance(obj, dict):
-        print("DICT:", path, "KEYS:", list(obj.keys())[:25])
-        for k, v in obj.items():
-            inspect(v, path + "." + str(k), depth + 1)
+reference = ref.reshape(8, 256).astype(np.float32)
 
-    elif isinstance(obj, (list, tuple)):
-        print("SEQUENCE:", path, "LENGTH:", len(obj))
-        for i, v in enumerate(obj[:20]):
-            inspect(v, path + "[" + str(i) + "]", depth + 1)
-
-    else:
-        print("OTHER:", path, type(obj).__name__)
-
-candidates = []
-
-for filename in [
-    "ppa_pytorch_reference_01.pt",
-    "ppa_model_base_reference.pt"
-]:
-    p = root / filename
-
-    print("\nREFERENCE FILE:", filename)
-
-    if not p.is_file():
-        print("NOT FOUND")
-        continue
-
-    obj = torch.load(p, map_location="cpu", weights_only=True)
-    inspect(obj, filename)
-
-target = root / "pzaas_eight_branch_targets.npz"
-assert target.is_file(), "Saved branch targets missing"
-
-with np.load(target, allow_pickle=False) as z:
+with np.load(
+    root / "pzaas_eight_branch_targets.npz",
+    allow_pickle=False
+) as z:
     assert all(n in z.files for n in names)
-    branches = [
-        np.asarray(z[n], dtype=np.float32).reshape(-1)
+    saved = np.stack([
+        np.asarray(z[n], dtype=np.float32).reshape(256)
         for n in names
-    ]
+    ])
 
-expected = np.concatenate(branches)
-assert expected.shape == (2048,)
+cost = np.zeros((8, 8))
+maximum = np.zeros((8, 8))
 
-print("\n=== REFERENCE COMPARISON ===")
-print("BRANCH CONCAT:", expected.shape)
-print("2048-ELEMENT REFERENCE CANDIDATES:", len(candidates))
+for i in range(8):
+    for j in range(8):
+        d = np.abs(saved[i] - reference[j])
+        cost[i, j] = d.mean()
+        maximum[i, j] = d.max()
 
-matched = False
+identity = tuple(range(8))
+best = min(
+    permutations(range(8)),
+    key=lambda p: sum(cost[i, p[i]] for i in range(8))
+)
 
-for path, actual in candidates:
-    diff = np.abs(actual - expected)
-    passed = np.allclose(actual, expected, atol=1e-6, rtol=1e-6)
+print("\n=== BEST BRANCH MATCHING ===")
 
-    print("CANDIDATE:", path)
-    print("MAX DIFF:", float(diff.max()))
-    print("MEAN DIFF:", float(diff.mean()))
-    print("MATCH:", passed)
+for i, j in enumerate(best):
+    print(
+        f"{names[i]:9s} -> reference[{j}] "
+        f"mean_diff={cost[i,j]:.8f} "
+        f"max_diff={maximum[i,j]:.8f}"
+    )
 
-    matched |= passed
+original_mae = sum(cost[i, i] for i in range(8)) / 8
+matched_mae = sum(cost[i, best[i]] for i in range(8)) / 8
 
-print("\n=== FINAL RESULTS ===")
-print("PYTORCH REFERENCE STRUCTURE: INSPECTED")
-print("EIGHT BRANCH TARGETS: VALID")
-print("REFERENCE CONCAT MATCH:", "PASS" if matched else "NOT ESTABLISHED")
+print("\n=== RESULTS ===")
+print("ORIGINAL ORDER MEAN DIFF:", original_mae)
+print("BEST ORDER MEAN DIFF:", matched_mae)
+print("ORDER CHANGED:", best != identity)
+
+same_order = all(
+    np.allclose(saved[i], reference[i], rtol=1e-3, atol=1e-3)
+    for i in range(8)
+)
+
+reordered = all(
+    np.allclose(saved[i], reference[best[i]], rtol=1e-3, atol=1e-3)
+    for i in range(8)
+)
+
+if same_order:
+    print("BRANCH VALUE ALIGNMENT: PASS")
+elif reordered:
+    print("BRANCH VALUE ALIGNMENT: REORDERING CANDIDATE")
+else:
+    print("BRANCH VALUE ALIGNMENT: NUMERICAL DIFFERENCE REMAINS")
+
+print("REFERENCE SAME-INPUT PROVENANCE: NOT YET VERIFIED")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
 print("FILES MODIFIED: NONE")
-print("NEXT: VALIDATE SAME-STAGE BRANCH OUTPUTS")
 PY

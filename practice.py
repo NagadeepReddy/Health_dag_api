@@ -1,79 +1,47 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-import ast
 from pathlib import Path
 
-root = Path("artifacts/v1.472")
-original = root / "utils/dependency-utils/models.py"
-maxdir = Path("artifacts/v1.472-max/pzaas_max")
+base = Path("artifacts/v1.472-max/pzaas_max")
+files = {
+    "PYTORCH": Path("artifacts/v1.472/utils/dependency-utils/models.py"),
+    "MAX BLOCK": base / "parallel_transformer_block_2layers.py",
+    "MAX FUSION": base / "grecbase_fusion_full_head_72_max.py",
+}
 
-print("=== PZAAS TWO-LAYER SEQUENCE ALIGNMENT ===")
+patterns = {
+    "PYTORCH": [
+        "x_out += x", "self.heads", "q_shape",
+        "apply_rotary_pos_emb", "create_key_padding_mask",
+        "masked_fill", "self.scale", "self.norm2(ff)"
+    ],
+    "MAX BLOCK": [
+        "q.reshape", "k.reshape", "v.reshape",
+        "apply_rotary_pos_emb_max", "self.scale",
+        "valid_length", "ops.where", "return attn_out"
+    ],
+    "MAX FUSION": [
+        "valid_length =", "sx1 =", "sx2 =",
+        "seq_raw =", "graph.output"
+    ]
+}
 
-def inspect(path, classes, methods, limit=65):
+print("=== PZAAS FIRST-DIVERGENCE CHECK ===")
+for name, path in files.items():
+    print(f"\n{name}:")
     if not path.is_file():
-        print("MISSING:", path)
-        return
-
-    source = path.read_text()
-    lines = source.splitlines()
-    tree = ast.parse(source)
-
-    print("\nFILE:", path)
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        if node.name not in classes:
-            continue
-
-        for fn in node.body:
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if fn.name not in methods:
-                continue
-
-            print("\nCLASS:", node.name)
-            print("METHOD:", fn.name)
-
-            selected = lines[fn.lineno-1:fn.end_lineno]
-
-            if len(selected) > limit:
-                selected = selected[:limit]
-                print("SHOWING FIRST", limit, "LINES")
-
-            for i, line in enumerate(selected, fn.lineno):
+        print("BLOCKED: file not found:", path)
+        continue
+    lines = path.read_text().splitlines()
+    for term in patterns[name]:
+        hits = [(i, line.strip()) for i, line in enumerate(lines, 1)
+                if term in line]
+        if hits:
+            for i, line in hits[:2]:
                 print(f"{i}: {line}")
+        else:
+            print("NOT FOUND:", term)
 
-inspect(
-    original,
-    {"ParallelTransformerBlock", "Residual", "RotaryEmbedding"},
-    {"forward"},
-    65
-)
-
-inspect(
-    original,
-    {"ParallelTransformerAEP"},
-    {"forward"},
-    105
-)
-
-inspect(
-    maxdir / "parallel_transformer_block_2layers.py",
-    {"AttPoolingBlockMAX", "ParallelTransformerBlockMAX"},
-    {"__call__", "forward"},
-    100
-)
-
-inspect(
-    maxdir / "sequence_transformer_max.py",
-    {"ParallelTransformerMAEPMAX", "SequenceTransformerMAX"},
-    {"__call__", "forward"},
-    100
-)
-
-print("\nTRAINED DEPTH: 2")
-print("CHECKPOINT WEIGHTS: 208/208 PASS")
-print("NEXT: CORRECT FIRST DIFFERENT SEQUENCE OPERATION")
-print("ORIGINAL DS: UNCHANGED")
+print("\nORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
+print("NEXT: RESOLVE FIRST SEQUENCE DIVERGENCE")
 PY

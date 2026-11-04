@@ -5,7 +5,6 @@ podman --root /application1/podman/storage \
 --tmpfs /tmp:rw,size=1g \
 -e PYTHONDONTWRITEBYTECODE=1 \
 -e PYTHONPATH=/workspace/artifacts/v1.472-max \
--e TMPDIR=/tmp \
 -v "$PWD:/workspace:ro" \
 -w /workspace \
 --entrypoint python3 localhost/cta-max-faiss:local -u - <<'PY'
@@ -24,18 +23,24 @@ try:
     graph = build_grecbase_fusion_graph_order_correct(
         DeviceRef.CPU()
     )
-
-    print("GRAPH BUILD: PASS", flush=True)
-    print("STARTING REAL MAX CPU COMPILATION", flush=True)
+    print("PZAAS GRAPH BUILD: PASS", flush=True)
 
     session = InferenceSession(devices=[CPU()])
-    compiled = session.compile(graph)
+
+    if not callable(getattr(session, "load", None)):
+        raise RuntimeError(
+            "Installed MAX session has no load() API"
+        )
+
+    print("STARTING MAX CPU COMPILATION", flush=True)
+    model = session.load(graph)
 
     print("PZAAS MAX CPU COMPILATION: PASS", flush=True)
-    print("COMPILED TYPE:", type(compiled).__name__)
-    print("MODEL: PZAAS v1.472")
+    print("MODEL TYPE:", type(model).__name__)
     print("DEVICE: CPU")
-    print("NUMERICAL PARITY: PENDING")
+    print("MODEL: PZAAS v1.472")
+    print("INFERENCE: PENDING")
+    print("PARITY: PENDING")
     print("NATIVE HTTP: PENDING")
 
 except Exception:

@@ -2,136 +2,150 @@ cd /application1/sajjna8/rt-pzaas-v1.0 && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
 run --rm -i --pull=never --network=none \
--v "$PWD:/workspace" -w /workspace \
+-v "$PWD:/workspace:ro" -w /workspace \
 --entrypoint python localhost/cta-max-faiss:local - <<'PY'
-import sys, types, re, inspect, importlib.util, traceback
 from pathlib import Path
+from collections.abc import Mapping
+import torch
+import numpy as np
+import re
+import traceback
 
-print("=== PZAAS RUNTIME RECOVERY ===", flush=True)
-
-class NoOp:
-    def __init__(self, *args, **kwargs):
-        pass
-    def add_job(self, *args, **kwargs):
-        return self
-    def get_job(self, *args, **kwargs):
-        return self
-    def modify(self, *args, **kwargs):
-        return self
-    def start(self, *args, **kwargs):
-        pass
-    def shutdown(self, *args, **kwargs):
-        pass
-
-names = [
-    "apscheduler",
-    "apscheduler.schedulers",
-    "apscheduler.schedulers.background",
-    "apscheduler.triggers",
-    "apscheduler.triggers.interval",
-    "apscheduler.triggers.cron",
-    "apscheduler.triggers.date",
-]
-
-for name in names:
-    module = types.ModuleType(name)
-    module.__path__ = []
-    sys.modules[name] = module
-
-sys.modules["apscheduler.schedulers.background"].BackgroundScheduler = NoOp
-sys.modules["apscheduler.triggers.interval"].IntervalTrigger = NoOp
-sys.modules["apscheduler.triggers.cron"].CronTrigger = NoOp
-sys.modules["apscheduler.triggers.date"].DateTrigger = NoOp
-
-print("SCHEDULER IMPORT SHIMS: PASS")
+print("=== PZAAS DIRECT CHECKPOINT / MAX WEIGHT PARITY ===", flush=True)
 
 root = Path("/workspace")
-source = root / "artifacts/v1.472/core-artifact"
-
-sys.path[:0] = [str(source), str(source.parent)]
-
-class CaptureDone(Exception):
-    pass
+checkpoint = root / "artifacts/v1.472/core-artifact/model_0_base.pt"
+max_root = root / "artifacts/v1.472-max/pzaas_max"
 
 try:
-    spec = importlib.util.spec_from_file_location(
-        "pzaas_capture",
-        source / "pipeline.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-
-    print("PIPELINE IMPORT: PASS")
-
-    classes = [
-        obj for obj in vars(module).values()
-        if inspect.isclass(obj)
-        and obj.__module__ == module.__name__
-        and callable(getattr(obj, "loadBaseModel", None))
-        and callable(getattr(obj, "load", None))
-    ]
-
-    print("LOADER CLASSES:", [c.__name__ for c in classes])
-
-    assert len(classes) == 1, "Loader class not unique"
-
-    cls = classes[0]
-    original = cls.loadBaseModel
-
-    def capture(self, *args, **kwargs):
-        result = original(self, *args, **kwargs)
-
-        suffix = str(kwargs.get(
-            "model_suffix",
-            args[1] if len(args) > 1 else ""
-        ))
-
-        if suffix != "base":
-            return result
-
-        model = result[0] if isinstance(result, tuple) else result
-
-        state = model.state_dict()
-
-        layers = sorted({
-            int(match.group(1))
-            for key in state
-            if (match := re.search(
-                r"ptransformer\.(\d+)\.", key
-            ))
-        })
-
-        print("RUNTIME MODEL:", type(model).__name__)
-        print("RUNTIME LAYERS:", layers)
-        print("RUNTIME TENSORS:", len(state))
-
-        for layer in range(6):
-            keys = [
-                k for k in state
-                if f"ptransformer.{layer}." in k
-            ]
-            print(f"LAYER {layer}: {len(keys)} tensors")
-
-        print("REFERENCE EXPORTED TRAINED LAYERS: [0, 1]")
-        print("INITIALIZED IS NOT NECESSARILY TRAINED")
-        print("RUNTIME INSPECTION: PASS")
-        raise CaptureDone()
-
-    cls.loadBaseModel = capture
+    assert checkpoint.is_file(), f"Missing checkpoint: {checkpoint}"
+    assert max_root.is_dir(), f"Missing MAX directory: {max_root}"
 
     try:
-        cls().load()
-    except CaptureDone:
-        print("RUNTIME CAPTURE: PASS")
+        obj = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    except Exception:
+        obj = torch.load(checkpoint, map_location="cpu", weights_only=False)
+
+    candidates = []
+
+    def collect(value, label="root", depth=0):
+        if isinstance(value, torch.nn.Module):
+            collect(value.state_dict(), label + ".state_dict", depth + 1)
+        elif isinstance(value, Mapping):
+            tensors = {
+                str(k): v for k, v in value.items()
+                if isinstance(v, torch.Tensor)
+            }
+            if tensors:
+                candidates.append((label, tensors))
+            if depth < 4:
+                for k, v in value.items():
+                    if isinstance(v, Mapping) or isinstance(v, torch.nn.Module):
+                        collect(v, label + "." + str(k), depth + 1)
+
+    collect(obj)
+    assert candidates, "No tensor state dictionary found"
+
+    label, state = max(candidates, key=lambda x: len(x[1]))
+    print("CHECKPOINT LOAD: PASS")
+    print("STATE SOURCE:", label)
+    print("TRAINED TENSORS:", len(state))
+
+    pattern = re.compile(r"(?:^|\.)ptransformer\.(\d+)\.")
+    layers = sorted({
+        int(m.group(1))
+        for key in state
+        if (m := pattern.search(key))
+    })
+
+    print("TRAINED TRANSFORMER LAYERS:", layers)
+
+    for layer in layers:
+        count = sum(
+            f"ptransformer.{layer}." in k
+            for k in state
+        )
+        print(f"LAYER {layer} TRAINED TENSORS: {count}")
+
+    files = list(max_root.rglob("*.npy"))
+    print("EXPORTED NPY FILES FOUND:", len(files))
+
+    by_name = {}
+    for p in files:
+        by_name.setdefault(p.stem, []).append(p)
+
+    matched = 0
+    mismatched = []
+    unresolved = []
+
+    for key, tensor in state.items():
+        names = [
+            key,
+            key.removeprefix("module."),
+            key.removeprefix("model."),
+            key.removeprefix("model_base."),
+        ]
+
+        paths = []
+        for name in names:
+            paths.extend(by_name.get(name, []))
+
+        paths = list(dict.fromkeys(paths))
+
+        if len(paths) != 1:
+            unresolved.append(key)
+            continue
+
+        try:
+            actual = np.load(paths[0], allow_pickle=False)
+            expected = tensor.detach().cpu().numpy()
+
+            if actual.shape != expected.shape:
+                mismatched.append((key, "shape mismatch"))
+                continue
+
+            if not np.allclose(
+                actual, expected,
+                rtol=1e-6, atol=1e-6,
+                equal_nan=True
+            ):
+                diff = np.max(np.abs(
+                    actual.astype(np.float64) -
+                    expected.astype(np.float64)
+                ))
+                mismatched.append((key, f"max diff {diff}"))
+                continue
+
+            matched += 1
+
+        except Exception as exc:
+            mismatched.append((key, str(exc)))
+
+    print("EXACT WEIGHT MATCHES:", matched)
+    print("WEIGHT MISMATCHES:", len(mismatched))
+    print("UNRESOLVED WEIGHT NAMES:", len(unresolved))
+
+    for item in mismatched[:10]:
+        print("MISMATCH:", item)
+
+    for item in unresolved[:10]:
+        print("UNRESOLVED:", item)
+
+    if mismatched:
+        print("WEIGHT PARITY: FAIL")
+    elif unresolved:
+        print("WEIGHT PARITY: PARTIAL - MAPPING INCOMPLETE")
     else:
-        print("RUNTIME CAPTURE: BASE MODEL NOT INTERCEPTED")
+        print("WEIGHT PARITY: PASS")
+
+    print("EFFECTIVE TRAINED DEPTH:", len(layers))
+    print("FULL MODEL NUMERICAL PARITY: NOT YET VERIFIED")
 
 except Exception:
-    traceback.print_exc(limit=5)
-    print("RUNTIME CAPTURE: BLOCKED")
+    traceback.print_exc(limit=6)
+    print("CHECKPOINT VALIDATION: BLOCKED")
 
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: VERIFY WEIGHT PROVENANCE BEFORE FULL PARITY")
+print("NEXT: RESOLVE EXACT MAX SEQUENCE DIVERGENCE")
 PY

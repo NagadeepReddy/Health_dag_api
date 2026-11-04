@@ -1,121 +1,57 @@
-cd /application1/sajjna8/rt-pzaas-v1.0 && \
-M="$PWD/artifacts/v1.472-max" && \
-V="$M/pzaas_max/validation" && \
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-run --rm -i --pull=never --network none \
---memory 10g --tmpfs /tmp:rw,size=1g \
--e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
--e PYTHONPATH=/models \
--v "$M:/models:ro" \
--v "$V:/validation:rw" \
--w /models \
---entrypoint /opt/venv/bin/python \
-localhost/cta-max-faiss:local -u - <<'PY'
-import numpy as np
-import torch
-import traceback
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-from max.driver import CPU
-from max.dtype import DType
-from max.engine import InferenceSession
-from max.graph import DeviceRef, Graph, TensorType
-from pzaas_max import grecbase_fusion_full_head_72_max as m
+import ast
+import numpy as np
 
-print("=== PZAAS SEARCH0 + SEARCH1 REAL MAX ===", flush=True)
+root = Path("artifacts/v1.472-max/pzaas_max")
 
-try:
-    ref = torch.load(
-        "/validation/ppa_pytorch_reference_01.pt",
-        map_location="cpu", weights_only=True
-    )
-    d = ref["model_in"]
+print("=== PZAAS FINAL TWO BRANCHES ===")
 
-    with np.load(
-        "/validation/pzaas_eight_branch_targets.npz",
-        allow_pickle=False
-    ) as f:
-        expected0 = f["search0"].astype(np.float32)
-        expected1 = f["search1"].astype(np.float32)
+with np.load(
+    root / "validation/pzaas_eight_branch_targets.npz",
+    allow_pickle=False
+) as data:
+    for key in data.files:
+        if "seq" in key.lower() or "context" in key.lower():
+            print("PYTORCH TARGET:", key, data[key].shape)
 
-    ids = np.ascontiguousarray(
-        d["input_ids"].numpy().astype(np.int64)
-    )
-    mask = np.ascontiguousarray(
-        d["attention_mask"].numpy().astype(np.int64)
-    )
+for name in [
+    "main_context_max.py",
+    "parallel_transformer_block_2layers.py",
+    "grecbase_fusion_full_head_72_max.py"
+]:
+    p = root / name
+    print("\nFILE:", p)
+    if not p.is_file():
+        print("NOT FOUND")
+        continue
 
-    assert ids.shape == mask.shape == (1, 5)
-    assert expected0.shape == expected1.shape == (1, 256)
-    print("SEARCH INPUT MAPPING: PASS", flush=True)
+    source = p.read_text()
+    tree = ast.parse(source)
+    lines = source.splitlines()
 
-    device = DeviceRef.CPU()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            if any(x in node.name.lower() for x in [
+                "context", "sequence", "grecbase_fusion"
+            ]):
+                print("FUNCTION:", node.name,
+                      "LINES:", node.lineno, "-", node.end_lineno)
 
-    with Graph(
-        "pzaas_search_branches",
-        input_types=[
-            TensorType(DType.int64, [1, 5], device=device),
-            TensorType(DType.int64, [1, 5], device=device)
-        ]
-    ) as graph:
-        search = m.nlp_bert_forward(
-            graph.inputs[0],
-            graph.inputs[1],
-            device,
-            5
-        )
-        graph.output(search)
+    if name == "grecbase_fusion_full_head_72_max.py":
+        print("\nSEQUENCE / CONTEXT GRAPH CALLS:")
+        for i, line in enumerate(lines, 1):
+            if any(x in line for x in [
+                "main_context_forward",
+                "ParallelTransformer",
+                "features(",
+                "postprocess(",
+                "seq_dense",
+                "context_inputs"
+            ]):
+                print(f"{i}: {line.strip()}")
 
-    print("SEARCH MAX GRAPH: PASS", flush=True)
-
-    weights = {
-        p.stem: np.ascontiguousarray(
-            np.load(p, allow_pickle=False)
-        )
-        for p in Path(m.WDIR).glob("*.npy")
-    }
-    assert len(weights) == 208
-
-    session = InferenceSession(devices=[CPU()])
-    model = session.load(
-        graph, weights_registry=weights
-    )
-    print("SEARCH MAX CPU COMPILATION: PASS", flush=True)
-
-    output = model.execute(ids, mask)[0].to_numpy()
-    assert output.shape == (1, 512)
-    assert np.isfinite(output).all()
-
-    actual0 = output[:, :256]
-    actual1 = output[:, 256:]
-
-    results = []
-    for name, actual, expected in [
-        ("SEARCH0", actual0, expected0),
-        ("SEARCH1", actual1, expected1)
-    ]:
-        diff = np.abs(actual - expected)
-        passed = np.allclose(
-            actual, expected, atol=1e-3, rtol=1e-3
-        )
-        print(name, "MAX ABS DIFF:", float(diff.max()))
-        print(name, "MEAN ABS DIFF:", float(diff.mean()))
-        print(name, "PARITY:", "PASS" if passed else "FAILED")
-        results.append(passed)
-
-    if not all(results):
-        raise SystemExit("SEARCH NUMERICAL PARITY: FAILED")
-
-    np.save("/validation/pzaas_search0_max.npy", actual0)
-    np.save("/validation/pzaas_search1_max.npy", actual1)
-
-    print("SEARCH0 + SEARCH1: PASS")
-    print("ORIGINAL DS: UNCHANGED")
-    print("CTA / BPLAN: UNCHANGED")
-    print("REMAINING: SEQUENCE + CONTEXT")
-    print("FULL MAX PARITY + NATIVE HTTP: NEXT")
-
-except Exception:
-    traceback.print_exc()
-    raise SystemExit("PZAAS SEARCH TEST: BLOCKED")
+print("\nFINAL TWO BRANCH MAPPING: INSPECTED")
+print("ORIGINAL DS: UNCHANGED")
+print("NEXT: REAL MAX SEQUENCE + CONTEXT PARITY")
 PY

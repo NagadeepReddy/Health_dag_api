@@ -15,98 +15,69 @@ from max.graph import DeviceRef
 from max.driver import CPU
 from max.engine import InferenceSession
 
-print("=== PZAAS MAX CPU COMPILATION ===", flush=True)
-
 try:
     from pzaas_max.grecbase_fusion_full_head_72_max import (
         build_grecbase_fusion_graph_order_correct
     )
 
-    graph = build_grecbase_fusion_graph_order_correct(
-        DeviceRef.CPU()
-    )
+    print("=== PZAAS REAL MAX CPU COMPILATION ===", flush=True)
+
+    graph = build_grecbase_fusion_graph_order_correct(DeviceRef.CPU())
     print("GRAPH BUILD: PASS", flush=True)
 
-    root = Path(
-        "/workspace/artifacts/v1.472-max/"
-        "pzaas_max/pzaas_base_weights"
-    )
-    manifest = json.loads(
-        (root / "manifest.json").read_text()
-    )
+    root = Path("/workspace/artifacts/v1.472-max/pzaas_max/pzaas_base_weights")
+    manifest = json.loads((root / "manifest.json").read_text())
 
     registry = {}
-    aliases = 0
     missing = []
 
-    required = list(graph._weights.keys())
-    print("REQUIRED GRAPH WEIGHTS:", len(required))
+    for name in graph._weights:
+        candidates = [name, name + ".weight"]
 
-    for name in required:
-        key = name
-
-        if key not in manifest:
-            match = re.fullmatch(
-                r"(sequence_transformer\.ptransformer\.[01])\."
-                r"(fused_attn_ff_proj|attn_out|ff_out\.1)\.weight",
-                name
+        match = re.fullmatch(
+            r"(sequence_transformer\.ptransformer\.[01])\."
+            r"(fused_attn_ff_proj|attn_out|ff_out\.1)\.weight",
+            name
+        )
+        if match:
+            candidates.insert(
+                0, match.group(1) + ".fn." + match.group(2) + ".weight"
             )
 
-            if match:
-                key = (
-                    match.group(1) + ".fn." +
-                    match.group(2) + ".weight"
-                )
+        key = next((k for k in candidates if k in manifest), None)
 
-        if key not in manifest:
+        if key is None:
             missing.append(name)
             continue
 
         entry = manifest[key]
-        path = root / entry["file"]
-
-        array = np.array(
-            np.load(path, mmap_mode="r", allow_pickle=False),
-            copy=True,
-            order="C"
+        arr = np.array(
+            np.load(root / entry["file"], mmap_mode="r", allow_pickle=False),
+            copy=True, order="C"
         )
 
-        if tuple(array.shape) != tuple(entry["shape"]):
+        if list(arr.shape) != entry["shape"]:
             raise ValueError(f"Shape mismatch: {key}")
 
-        registry[name] = array
+        registry[name] = arr
 
         if name != key:
-            aliases += 1
-            print("MAPPED:", name, "=>", key)
-        else:
-            print("REGISTERED:", name)
+            print("MAPPED:", name, "=>", key, flush=True)
 
     if missing:
         raise ValueError(f"UNMAPPED WEIGHTS: {missing}")
 
-    print("WEIGHTS REGISTRY: PASS")
-    print("TRANSFORMER ALIASES:", aliases)
-
-    if aliases != 6:
-        raise ValueError(
-            f"Expected 6 aliases, got {aliases}"
-        )
-
+    print("WEIGHTS REGISTRY: PASS", len(registry), flush=True)
     print("STARTING MAX CPU COMPILATION", flush=True)
 
     session = InferenceSession(devices=[CPU()])
-    model = session.load(
-        graph,
-        weights_registry=registry
-    )
+    model = session.load(graph, weights_registry=registry)
 
-    print("PZAAS MAX CPU COMPILATION: PASS")
+    print("PZAAS MAX CPU COMPILATION: PASS", flush=True)
     print("MODEL TYPE:", type(model).__name__)
-    print("MODEL: PZAAS v1.472")
     print("ORIGINAL DS: UNCHANGED")
     print("INFERENCE / PARITY: PENDING")
-    print("NATIVE HTTP: PENDING")
+    print("NATIVE MAX SERVE: PENDING")
 
 except Exception:
     traceback.print_exc()

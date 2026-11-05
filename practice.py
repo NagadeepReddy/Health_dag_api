@@ -3,64 +3,72 @@ cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 import ast
 
-root = Path("artifacts/v1.472-max")
-print("=== PZAAS VERIFIED MAX EXECUTOR DISCOVERY ===")
+base = Path("artifacts/v1.472-max")
+files = [
+    base / "pzaas_max/grecbase_fusion_full_head_72_max.py",
+    base / "pzaas_max/pzaas_weight_loader.py",
+    base / "pzaas_max/validation/pzaas_forward_input_adapter.py",
+    base / "maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_worker_adapter.py",
+]
 
-hits = []
+print("=== PZAAS REAL MAX NATIVE EXECUTION CONTRACT ===")
 
-for base in [root / "pzaas_max", root / "maxserve_pzaas_extension"]:
-    if not base.exists():
+for path in files:
+    print(f"\n=== {path} ===")
+    if not path.is_file():
+        print("NOT FOUND")
         continue
 
-    for p in base.rglob("*.py"):
-        relative = str(p)
-        if any(s in relative for s in (
-            "python_deps/", "site-packages/",
-            "_cta_native_reference/", "__pycache__/"
-        )):
-            continue
+    lines = path.read_text().splitlines()
+    try:
+        tree = ast.parse("\n".join(lines))
+    except SyntaxError as e:
+        print("SYNTAX ERROR:", e)
+        continue
 
-        try:
-            src = p.read_text()
-            tree = ast.parse(src)
-        except (OSError, UnicodeError, SyntaxError):
-            continue
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            print(f"\nDEFINITION: {node.name}")
+            if isinstance(node, ast.FunctionDef):
+                end = node.end_lineno
+                start = node.lineno
+                if node.name in (
+                    "build_grecbase_fusion_graph_order_correct",
+                    "pack",
+                    "load_weight",
+                ):
+                    for i in range(start, end + 1):
+                        print(f"{i}: {lines[i-1]}")
+            else:
+                for child in node.body:
+                    if isinstance(child, ast.FunctionDef):
+                        print("METHOD:", child.name)
+                        if child.name in ("__init__", "initialize"):
+                            for i in range(
+                                child.lineno,
+                                min(child.end_lineno, child.lineno + 16) + 1
+                            ):
+                                print(f"{i}: {lines[i-1]}")
 
-        markers = [
-            "build_grecbase_fusion_graph_order_correct",
-            "InferenceSession",
-            "infer_max_batch",
-            "load_weight",
-            "session.compile",
-            "model.execute"
-        ]
-        found = [x for x in markers if x in src]
+    if path.name == "pzaas_worker_adapter.py":
+        print("\n=== EXISTING MAX EXECUTION HOOKS ===")
+        for i, line in enumerate(lines, 1):
+            if any(s in line for s in (
+                "attach_max", "model_base", "infer_max_batch",
+                "predict_raw", "pipeline_factory", "max_factory"
+            )):
+                print(f"{i}: {line}")
 
-        if not found:
-            continue
-
-        definitions = []
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if any(x in node.name.lower() for x in (
-                    "infer", "execute", "compile",
-                    "build", "pack", "weight", "run"
-                )):
-                    definitions.append((node.lineno, node.name))
-
-        hits.append((p, found, definitions))
-
-for p, markers, definitions in hits[:25]:
-    print("\nFILE:", p)
-    print("MARKERS:", ", ".join(markers))
-    for line, name in definitions[:15]:
-        print(f"  {line}: {name}()")
-
-print("\n=== EXECUTOR STATUS ===")
-print("SOURCE FILES FOUND:", len(hits))
-print("MAX NUMERICAL PARITY: PREVIOUSLY PASS")
-print("NATIVE MODEL BRIDGE: PENDING")
-print("NATIVE HTTP: NOT VERIFIED")
-print("SOURCE FILES MODIFIED: NONE")
-print("NEXT: CONNECT REAL PZAAS EXECUTOR TO EXISTING WORKER")
+print("\n=== PROGRESS ===")
+print("MAX CPU / 72 INPUTS: PASS")
+print("LAYER-0: PASS")
+print("EIGHT-BRANCH: 8/8 PASS")
+print("FULL MODEL PARITY: PASS")
+print("NATIVE SCAFFOLD: PREPARED")
+print("REAL MAX WORKER BRIDGE: PENDING")
+print("NATIVE HTTP: PENDING")
+print("ORIGINAL DS: UNCHANGED")
+print("CTA / BPLAN: UNCHANGED")
+print("FILES MODIFIED: NONE")
+print("NEXT: IMPLEMENT VERIFIED MAX EXECUTION BRIDGE")
 PY

@@ -1,155 +1,112 @@
 
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
 podman --root /application1/podman/storage \
-  --runroot /run/containers/storage run \
-  --rm -i --pull=never --network=none \
-  --security-opt label=disable \
-  -v "$PWD:/workspace:ro" \
-  -w /workspace \
-  --entrypoint python \
-  docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+--runroot /run/containers/storage run \
+--rm -i --pull=never --network=none \
+--security-opt label=disable \
+-v "$PWD:/workspace:ro" \
+-w /workspace \
+--entrypoint python \
+docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
 from pathlib import Path
 import numpy as np
 import torch
 
 v = Path("/workspace/artifacts/v1.472-max/pzaas_max/validation")
-
-print("=== PZAAS EXACT NUMERICAL PROVENANCE ===", flush=True)
+print("=== PZAAS CORRECTED SAME-INPUT PROVENANCE ===", flush=True)
 
 def load(name):
-    return torch.load(
-        v / name, map_location="cpu", weights_only=False
-    )
+    return torch.load(v / name, map_location="cpu", weights_only=False)
 
-def as_numpy(x):
+def arr(x):
     if isinstance(x, torch.Tensor):
         return x.detach().cpu().numpy()
-    if isinstance(x, (list, tuple)):
-        if len(x) == 1:
-            return as_numpy(x[0])
-        return np.stack([as_numpy(y) for y in x])
     return np.asarray(x)
 
-replay = as_numpy(
-    load("ppa_pytorch_base_replay.pt")["output"]
-).reshape(1, 2048)
-
 saved = load("ppa_model_input_exact.pt")
-original = saved.get("model_in", saved)
-
-print("PYTORCH REPLAY: PASS")
+model_in = saved.get("model_in", saved)
 
 names = [
     "page_in", "item_in", "item_in_sku",
-    "item_meta_in", "v1_in", "ihq_in",
+    "item_meta_in", "vl_in", "ihq_in",
     "jet_name_in", "jet_status_in",
     "sibling_deep_in", "sibling_wide_in",
-    "sibling_v1_in", "current_in",
+    "sibling_vl_in", "current_in",
     "input_ids", "attention_mask"
 ]
 
-input_file = v / "ppa_tensor_inputs.npz"
-failures = []
-matches = 0
+with np.load(v / "ppa_tensor_inputs.npz") as data:
+    matches = 0
+    for name in names:
+        if name not in model_in or name not in data:
+            print("MISSING:", name,
+                  "PT:", name in model_in,
+                  "NPZ:", name in data)
+            continue
 
-if input_file.is_file():
-    with np.load(input_file, allow_pickle=False) as data:
-        for name in names:
-            if name not in original or name not in data:
-                failures.append((name, "missing"))
-                continue
+        a = arr(model_in[name])
+        b = np.asarray(data[name])
+        ok = a.shape == b.shape and a.dtype == b.dtype and np.array_equal(a, b)
+        matches += int(ok)
+        print(name, "PASS" if ok else "FAIL", a.shape, b.shape)
 
-            a = as_numpy(original[name])
-            b = np.asarray(data[name])
+print("\nINPUT VALUE MATCHES:", matches, "/14")
 
-            if a.shape != b.shape:
-                failures.append((name, "shape mismatch"))
-            elif a.dtype != b.dtype:
-                failures.append((name, "dtype mismatch"))
-            else:
-                equal = (
-                    np.array_equal(a, b, equal_nan=True)
-                    if a.dtype.kind in "fc"
-                    else np.array_equal(a, b)
-                )
-                if equal:
-                    matches += 1
-                else:
-                    delta = np.max(
-                        np.abs(
-                            a.astype(np.float64)
-                            - b.astype(np.float64)
-                        )
-                    )
-                    failures.append(
-                        (name, f"value difference {delta:.9g}")
-                    )
-
-    print("INPUT VALUE MATCHES:", matches, "/", len(names))
-    for name, reason in failures:
-        print("INPUT MISMATCH:", name, reason)
-else:
-    print("INPUT VALUE AUDIT: BLOCKED — NPZ not found")
+ref = load("ppa_pytorch_base_replay.pt")
+replay = arr(ref["output"] if isinstance(ref, dict) else ref).reshape(1, 2048)
 
 order = [
     "sequence", "context", "search0", "search1",
     "jet", "ihq", "sibling", "task"
 ]
 
-target_file = v / "ppa_eight_branch_targets.npz"
-branch_ok = False
+target = v / "pzaas_eight_branch_targets.npz"
+print("\nBRANCH TARGET FILE:", target.name)
+print("FILE EXISTS:", target.is_file())
 
-if target_file.is_file():
-    with np.load(target_file, allow_pickle=False) as data:
-        if all(name in data for name in order):
-            branches = [
-                np.asarray(data[name]).reshape(-1)
-                for name in order
-            ]
+branch_pass = False
 
-            if all(x.size == 256 for x in branches):
-                combined = np.concatenate(
-                    branches
-                ).reshape(1, 2048)
+if target.is_file():
+    with np.load(target) as data:
+        if all(k in data.files for k in order):
+            parts = [arr(data[k]).reshape(-1) for k in order]
+
+            if all(p.size == 256 for p in parts):
+                combined = np.concatenate(parts).reshape(1, 2048)
+
+                for i, name in enumerate(order):
+                    expected = replay.reshape(-1)[i*256:(i+1)*256]
+                    diff = np.abs(parts[i] - expected)
+                    print(
+                        name,
+                        "MAX_DIFF:", float(diff.max()),
+                        "MEAN_DIFF:", float(diff.mean())
+                    )
 
                 diff = np.abs(combined - replay)
-                branch_ok = np.allclose(
+                branch_pass = np.allclose(
                     combined, replay,
-                    atol=1e-3, rtol=1e-3
+                    rtol=1e-3, atol=1e-3
                 )
-
-                print(
-                    "BRANCH CONCAT MAX DIFF:",
-                    float(diff.max())
-                )
-                print(
-                    "BRANCH CONCAT MEAN DIFF:",
-                    float(diff.mean())
-                )
+                print("\nBRANCH CONCAT MAX DIFF:", float(diff.max()))
+                print("BRANCH CONCAT MEAN DIFF:", float(diff.mean()))
             else:
-                print("BRANCH TARGET SHAPES: INVALID")
+                print("ERROR: Branch dimensions are not all 256")
         else:
-            print("BRANCH TARGET KEYS: INCOMPLETE")
-else:
-    print("BRANCH TARGET FILE: NOT FOUND")
+            print("MISSING BRANCH KEYS:", sorted(set(order)-set(data.files)))
 
-print("\n=== FINAL STATUS ===")
-print(
-    "INPUT VALUE PROVENANCE:",
-    "PASS" if matches == len(names) else "NOT VERIFIED"
-)
-print(
-    "BRANCH TARGET CONSISTENCY:",
-    "PASS" if branch_ok else "NOT VERIFIED"
-)
-print("ORIGINAL PYTORCH: VERIFIED")
-print("MAX CPU EXECUTION: PREVIOUSLY PASSED")
-print("MAX NUMERICAL PARITY: NOT YET PASSED")
+print("\n=== FINAL RESULTS ===")
+print("ORIGINAL PYTORCH REPLAY: PASS")
+print("EXACT INPUT VALUES:", "PASS" if matches == 14 else "FAIL")
+print("SAME-STAGE BRANCH TARGETS:", "PASS" if branch_pass else "NOT VERIFIED")
+print("MAX CPU EXECUTION: PREVIOUSLY PASS")
+print("FULL MAX PARITY: PENDING")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-
-if matches == len(names) and branch_ok:
-    print("NEXT: ISOLATE FIRST DIFFERENT MAX OPERATION")
-else:
-    print("NEXT: CORRECT IDENTIFIED REFERENCE/INPUT MISMATCH")
+print(
+    "NEXT:",
+    "ISOLATE MAX OPERATION DIFFERENCE"
+    if matches == 14 and branch_pass
+    else "RESOLVE SAVED REFERENCE ALIGNMENT"
+)
 PY

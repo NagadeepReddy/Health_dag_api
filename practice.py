@@ -4,66 +4,88 @@ from pathlib import Path
 import ast
 
 root = Path.cwd()
-ext = root / "artifacts/v1.472-max/maxserve_pzaas_extension"
+mx = root / "artifacts/v1.472-max"
+ext = mx / "maxserve_pzaas_extension"
 native = ext / "pzaas_native_serve_dev"
 
-print("=== PZAAS NATIVE MODEL BRIDGE CONTRACT ===")
+print("=== PZAAS FINAL NATIVE CONTRACT CHECK ===")
 
-def show(path, limit):
-    print("\nFILE:", path)
+targets = [
+    ext / "pzaas_pipeline_model.py",
+    ext / "pzaas_max_model_adapter.py",
+    native / "pzaas_native_worker_adapter.py",
+    native / "pzaas_worker_adapter.py",
+    native / "pzaas_worker_registration.py",
+    mx / "pzaas_max_model_adapter.py",
+]
+
+for path in targets:
+    print("\nFILE:", path.relative_to(root))
     if not path.is_file():
-        print("NOT FOUND")
-        return
-    for i, line in enumerate(path.read_text().splitlines()[:limit], 1):
-        print(f"{i}: {line}")
-
-show(native / "pzaas_spawn_worker.py", 115)
-show(native / "pzaas_architecture_registration.py", 100)
-
-print("\n=== EXISTING CTA MODEL BRIDGE REFERENCE ===")
-
-candidates = list(ext.rglob("cta_pipeline_model.py"))
-
-cta_repo = Path(
-    "/application1/sajjna8/rt-pzaas-cta-offers-v1"
-)
-
-if cta_repo.is_dir() and not candidates:
-    candidates = list(
-        (cta_repo / "artifacts/v1.168-max")
-        .rglob("cta_pipeline_model.py")
-    )
-
-if candidates:
-    show(candidates[0], 180)
-else:
-    print("CTA MODEL BRIDGE SOURCE: NOT LOCATED")
-
-print("\n=== PZAAS MODEL CLASS AVAILABILITY ===")
-
-found = []
-for p in native.glob("*.py"):
-    try:
-        tree = ast.parse(p.read_text())
-    except (SyntaxError, UnicodeError):
+        print("STATUS: MISSING")
         continue
+
+    print("STATUS: FOUND")
+    source = path.read_text()
+    tree = ast.parse(source)
+    lines = source.splitlines()
+
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
-            if node.name == "PZAASMAXModel":
-                found.append(str(p))
+            print("CLASS:", node.name)
+            for method in node.body:
+                if isinstance(
+                    method,
+                    (ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    print("  METHOD:", method.name,
+                          "LINE:", method.lineno)
+        elif isinstance(node, (
+            ast.FunctionDef,
+            ast.AsyncFunctionDef
+        )):
+            print("FUNCTION:", node.name,
+                  "LINE:", node.lineno)
 
-print("PZAASMAXModel:", found or "NOT IMPLEMENTED IN NATIVE PACKAGE")
+    if path.name in (
+        "pzaas_pipeline_model.py",
+        "pzaas_worker_adapter.py",
+        "pzaas_native_worker_adapter.py",
+        "pzaas_max_model_adapter.py",
+    ):
+        print("--- IMPLEMENTATION ---")
+        for i, line in enumerate(lines[:105], 1):
+            print(f"{i}: {line}")
 
-print("\n=== CURRENT PROGRESS ===")
+print("\n=== VERIFIED PZAAS MAX GRAPH ===")
+graph = mx / "pzaas_max/grecbase_fusion_full_head_72_max.py"
+print("GRAPH EXISTS:", graph.is_file())
+
+if graph.is_file():
+    tree = ast.parse(graph.read_text())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            print("ENTRY:", node.name,
+                  "LINE:", node.lineno)
+
+print("\n=== NATIVE IMPORT PATHS ===")
+for name, path in {
+    "actual MAX package": mx / "pzaas_max",
+    "factory's MAX development path": ext / "pzaas_max_dev",
+    "native serving package": native,
+}.items():
+    print(name, "FOUND" if path.is_dir() else "MISSING")
+
+print("\n=== PROGRESS ===")
+print("LAYER-0: PASS")
+print("EIGHT BRANCHES: 8/8 PASS")
+print("FULL MODEL PARITY: PASS")
 print("MAX CPU: PASS")
-print("LAYER-0 PARITY: PASS")
-print("EIGHT-BRANCH PARITY: 8/8 PASS")
-print("FULL-MODEL PARITY: PASS")
 print("NATIVE SCAFFOLD: PREPARED")
-print("PZAAS MODEL BRIDGE: PENDING")
+print("FACTORY / WORKER CONTRACT: PENDING")
 print("NATIVE HTTP: NOT VERIFIED")
-print("FILES MODIFIED: NONE")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: IMPLEMENT PZAAS-SPECIFIC MODEL BRIDGE")
+print("FILES MODIFIED: NONE")
+print("NEXT: REPAIR PZAAS NATIVE FACTORY AND WORKER WIRING")
 PY

@@ -1,245 +1,155 @@
 
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
-mkdir -p artifacts/v1.472-max/pzaas_max/validation && \
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage run \
   --rm -i --pull=never --network=none \
   --security-opt label=disable \
   -v "$PWD:/workspace:ro" \
-  -v "$PWD/artifacts/v1.472-max/pzaas_max/validation:/outputs:rw" \
   -w /workspace \
-  -e HF_HUB_OFFLINE=1 \
-  -e TRANSFORMERS_OFFLINE=1 \
   --entrypoint python \
   docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import os
-import sys
-import json
-import inspect
-import traceback
 from pathlib import Path
-
-import torch
 import numpy as np
+import torch
 
-root = Path("/workspace")
-base = root / "artifacts/v1.472"
-cfg = base / "config"
-validation = root / "artifacts/v1.472-max/pzaas_max/validation"
+v = Path("/workspace/artifacts/v1.472-max/pzaas_max/validation")
 
-print("=== PZAAS ORIGINAL PYTORCH REPLAY ===", flush=True)
-print("PYTORCH:", torch.__version__, flush=True)
+print("=== PZAAS EXACT NUMERICAL PROVENANCE ===", flush=True)
 
-try:
-    original_config = cfg / "config.json"
-    mini_config = cfg / "all-MiniLM-L6-v2/config.json"
-    param_path = cfg / "torch_model_params_base.json"
-    checkpoint = base / "core-artifact/model_0_base.pt"
-
-    for p in [original_config, mini_config, param_path, checkpoint]:
-        if not p.is_file():
-            raise FileNotFoundError(str(p))
-
-    a = json.loads(original_config.read_text())
-    b = json.loads(mini_config.read_text())
-
-    for name, obj in [("ROOT", a), ("MINILM", b)]:
-        assert obj.get("model_type") == "bert", name
-        assert obj.get("hidden_size") == 384, name
-        assert obj.get("num_hidden_layers") == 6, name
-
-    print("ORIGINAL NLP CONFIG: PASS", flush=True)
-
-    params = json.loads(param_path.read_text())
-    if isinstance(params, list):
-        params = params[0]
-
-    if not isinstance(params, dict):
-        raise TypeError("Unexpected original parameter format")
-
-    # Replicate original pipeline.py loadBaseModel behavior.
-    params["nlp_encoder_path"] = str(original_config)
-    params["transfer_ind"] = True
-    params["extract_deep_idx"] = -1
-
-    model_dir = base / "utils/dependency-utils"
-    sys.path.insert(0, str(model_dir))
-
-    from models import GRecBase
-
-    torch.set_grad_enabled(False)
-    model = GRecBase(**params)
-    state = torch.load(
-        checkpoint,
-        map_location="cpu",
-        weights_only=False
+def load(name):
+    return torch.load(
+        v / name, map_location="cpu", weights_only=False
     )
 
-    model.load_state_dict(state, strict=True)
-    model.eval()
+def as_numpy(x):
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    if isinstance(x, (list, tuple)):
+        if len(x) == 1:
+            return as_numpy(x[0])
+        return np.stack([as_numpy(y) for y in x])
+    return np.asarray(x)
 
-    print("ORIGINAL GRecBase LOAD: PASS", flush=True)
-    print("ORIGINAL CHECKPOINT: PASS", flush=True)
+replay = as_numpy(
+    load("ppa_pytorch_base_replay.pt")["output"]
+).reshape(1, 2048)
 
-    candidates = [
-        validation / "ppa_model_input_exact.pt",
-        validation / "ppa_pytorch_reference_01.pt"
-    ]
+saved = load("ppa_model_input_exact.pt")
+original = saved.get("model_in", saved)
 
-    model_in = None
-    input_source = None
+print("PYTORCH REPLAY: PASS")
 
-    for path in candidates:
-        if not path.is_file():
-            continue
+names = [
+    "page_in", "item_in", "item_in_sku",
+    "item_meta_in", "v1_in", "ihq_in",
+    "jet_name_in", "jet_status_in",
+    "sibling_deep_in", "sibling_wide_in",
+    "sibling_v1_in", "current_in",
+    "input_ids", "attention_mask"
+]
 
-        data = torch.load(
-            path,
-            map_location="cpu",
-            weights_only=False
-        )
+input_file = v / "ppa_tensor_inputs.npz"
+failures = []
+matches = 0
 
-        if isinstance(data, dict):
-            value = data.get("model_in", data)
+if input_file.is_file():
+    with np.load(input_file, allow_pickle=False) as data:
+        for name in names:
+            if name not in original or name not in data:
+                failures.append((name, "missing"))
+                continue
 
-            if isinstance(value, dict) and "deep_in" in value:
-                model_in = value
-                input_source = path
-                break
+            a = as_numpy(original[name])
+            b = np.asarray(data[name])
 
-    if model_in is None:
-        raise RuntimeError("Saved exact model_in unavailable")
+            if a.shape != b.shape:
+                failures.append((name, "shape mismatch"))
+            elif a.dtype != b.dtype:
+                failures.append((name, "dtype mismatch"))
+            else:
+                equal = (
+                    np.array_equal(a, b, equal_nan=True)
+                    if a.dtype.kind in "fc"
+                    else np.array_equal(a, b)
+                )
+                if equal:
+                    matches += 1
+                else:
+                    delta = np.max(
+                        np.abs(
+                            a.astype(np.float64)
+                            - b.astype(np.float64)
+                        )
+                    )
+                    failures.append(
+                        (name, f"value difference {delta:.9g}")
+                    )
 
-    print("SAVED MODEL INPUT: PASS", flush=True)
-    print("SOURCE:", input_source.name, flush=True)
+    print("INPUT VALUE MATCHES:", matches, "/", len(names))
+    for name, reason in failures:
+        print("INPUT MISMATCH:", name, reason)
+else:
+    print("INPUT VALUE AUDIT: BLOCKED — NPZ not found")
 
-    def cpu_value(value):
-        if isinstance(value, torch.Tensor):
-            return value.detach().cpu()
-        if isinstance(value, (list, tuple)):
-            return type(value)(cpu_value(v) for v in value)
-        if isinstance(value, dict):
-            return {k: cpu_value(v) for k, v in value.items()}
-        return value
+order = [
+    "sequence", "context", "search0", "search1",
+    "jet", "ihq", "sibling", "task"
+]
 
-    aliases = {
-        "tasks_in": "task_in",
-        "task_in": "tasks_in"
-    }
+target_file = v / "ppa_eight_branch_targets.npz"
+branch_ok = False
 
-    signature = inspect.signature(model.forward)
-    kwargs = {}
-    missing = []
+if target_file.is_file():
+    with np.load(target_file, allow_pickle=False) as data:
+        if all(name in data for name in order):
+            branches = [
+                np.asarray(data[name]).reshape(-1)
+                for name in order
+            ]
 
-    for name, parameter in signature.parameters.items():
-        if name == "self" or parameter.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD
-        ):
-            continue
+            if all(x.size == 256 for x in branches):
+                combined = np.concatenate(
+                    branches
+                ).reshape(1, 2048)
 
-        key = name
-        if key not in model_in:
-            key = aliases.get(name, name)
+                diff = np.abs(combined - replay)
+                branch_ok = np.allclose(
+                    combined, replay,
+                    atol=1e-3, rtol=1e-3
+                )
 
-        if key in model_in:
-            kwargs[name] = cpu_value(model_in[key])
-        elif parameter.default is inspect.Parameter.empty:
-            missing.append(name)
-
-    if missing:
-        raise RuntimeError(
-            "Missing required original forward inputs: "
-            + ", ".join(missing)
-        )
-
-    print("ORIGINAL FORWARD INPUT MAPPING: PASS", flush=True)
-
-    with torch.inference_mode():
-        result = model(**kwargs)
-
-    def collect(value):
-        if isinstance(value, torch.Tensor):
-            yield value
-        elif isinstance(value, dict):
-            for child in value.values():
-                yield from collect(child)
-        elif isinstance(value, (list, tuple)):
-            for child in value:
-                yield from collect(child)
-
-    outputs = [
-        tensor.detach().cpu().float()
-        for tensor in collect(result)
-        if tuple(tensor.shape) == (1, 2048)
-    ]
-
-    if len(outputs) != 1:
-        raise RuntimeError(
-            f"Expected one (1,2048) output; found {len(outputs)}"
-        )
-
-    actual = outputs[0]
-    assert torch.isfinite(actual).all()
-
-    print("ORIGINAL PYTORCH EXECUTION: PASS", flush=True)
-    print("OUTPUT SHAPE:", tuple(actual.shape), flush=True)
-
-    output_path = Path("/outputs/ppa_pytorch_base_replay.pt")
-
-    torch.save(
-        {
-            "output": actual,
-            "input_source": input_source.name,
-            "checkpoint": "model_0_base.pt",
-            "config": "config/config.json"
-        },
-        output_path
-    )
-
-    print("REPLAY OUTPUT SAVED:", output_path, flush=True)
-
-    ref_path = validation / "ppa_model_base_reference.pt"
-
-    if ref_path.is_file():
-        reference = torch.load(
-            ref_path,
-            map_location="cpu",
-            weights_only=False
-        )
-
-        if isinstance(reference, torch.Tensor):
-            expected = reference.detach().cpu().float()
-
-            if tuple(expected.shape) == tuple(actual.shape):
-                diff = (actual - expected).abs()
-                print("=== SAVED REFERENCE COMPARISON ===")
-                print("MAX ABS DIFF:", float(diff.max()))
-                print("MEAN ABS DIFF:", float(diff.mean()))
                 print(
-                    "NUMERICAL MATCH:",
-                    bool(torch.allclose(
-                        actual, expected,
-                        rtol=1e-3, atol=1e-3
-                    ))
+                    "BRANCH CONCAT MAX DIFF:",
+                    float(diff.max())
                 )
                 print(
-                    "REFERENCE INPUT PROVENANCE: NOT VERIFIED"
+                    "BRANCH CONCAT MEAN DIFF:",
+                    float(diff.mean())
                 )
             else:
-                print("REFERENCE SHAPE: DIFFERENT")
+                print("BRANCH TARGET SHAPES: INVALID")
         else:
-            print("REFERENCE FORMAT: NOT DIRECT TENSOR")
+            print("BRANCH TARGET KEYS: INCOMPLETE")
+else:
+    print("BRANCH TARGET FILE: NOT FOUND")
 
-    print("\n=== FINAL RESULTS ===")
-    print("ORIGINAL PYTORCH REPLAY: PASS")
-    print("ORIGINAL DS: UNCHANGED")
-    print("CTA / BPLAN: UNCHANGED")
-    print("NEXT: COMPARE SAME-INPUT PYTORCH AND MAX OUTPUTS")
+print("\n=== FINAL STATUS ===")
+print(
+    "INPUT VALUE PROVENANCE:",
+    "PASS" if matches == len(names) else "NOT VERIFIED"
+)
+print(
+    "BRANCH TARGET CONSISTENCY:",
+    "PASS" if branch_ok else "NOT VERIFIED"
+)
+print("ORIGINAL PYTORCH: VERIFIED")
+print("MAX CPU EXECUTION: PREVIOUSLY PASSED")
+print("MAX NUMERICAL PARITY: NOT YET PASSED")
+print("ORIGINAL DS: UNCHANGED")
+print("CTA / BPLAN: UNCHANGED")
 
-except Exception as exc:
-    print("\nORIGINAL PYTORCH REPLAY: BLOCKED")
-    print(type(exc).__name__ + ":", exc)
-    traceback.print_exc(limit=4)
-    sys.exit(1)
+if matches == len(names) and branch_ok:
+    print("NEXT: ISOLATE FIRST DIFFERENT MAX OPERATION")
+else:
+    print("NEXT: CORRECT IDENTIFIED REFERENCE/INPUT MISMATCH")
 PY

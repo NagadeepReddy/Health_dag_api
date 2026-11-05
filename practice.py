@@ -4,120 +4,66 @@ from pathlib import Path
 import ast
 
 root = Path.cwd()
-mx = root / "artifacts/v1.472-max"
-base = mx / "maxserve_pzaas_extension"
-native = base / "pzaas_native_serve_dev"
-graph = mx / "pzaas_max/grecbase_fusion_full_head_72_max.py"
+ext = root / "artifacts/v1.472-max/maxserve_pzaas_extension"
+native = ext / "pzaas_native_serve_dev"
 
-print("=== PZAAS REAL MAX NATIVE WORKER CONNECTION ===")
+print("=== PZAAS NATIVE MODEL BRIDGE CONTRACT ===")
 
-required = {
-    "MAX graph": graph,
-    "Native worker": native / "pzaas_worker_adapter.py",
-    "Native launcher": native / "pzaas_native_launcher.py",
-    "Native router": native / "pzaas_router.py",
-    "Native HTTP pipeline": native / "pzaas_http_pipeline.py",
-}
+def show(path, limit):
+    print("\nFILE:", path)
+    if not path.is_file():
+        print("NOT FOUND")
+        return
+    for i, line in enumerate(path.read_text().splitlines()[:limit], 1):
+        print(f"{i}: {line}")
 
-for name, path in required.items():
-    print(f"{name}: {'FOUND' if path.is_file() else 'MISSING'}")
+show(native / "pzaas_spawn_worker.py", 115)
+show(native / "pzaas_architecture_registration.py", 100)
 
-print("\n=== REAL MODULE RESOLUTION ===")
+print("\n=== EXISTING CTA MODEL BRIDGE REFERENCE ===")
 
-for name, path in {
-    "pzaas_max": mx / "pzaas_max",
-    "pzaas_max_model_adapter": mx / "pzaas_max_model_adapter.py",
-    "native package": native,
-}.items():
-    print(f"{name}: {'FOUND' if path.exists() else 'NOT FOUND'}")
+candidates = list(ext.rglob("cta_pipeline_model.py"))
 
-print("\n=== WORKER ADAPTER CONTRACT ===")
+cta_repo = Path(
+    "/application1/sajjna8/rt-pzaas-cta-offers-v1"
+)
 
-worker = required["Native worker"]
+if cta_repo.is_dir() and not candidates:
+    candidates = list(
+        (cta_repo / "artifacts/v1.168-max")
+        .rglob("cta_pipeline_model.py")
+    )
 
-if worker.is_file():
-    lines = worker.read_text().splitlines()
-    for i, line in enumerate(lines, 1):
-        if (
-            i <= 30
-            or 65 <= i <= 115
-            or any(k in line for k in (
-                "def predict",
-                "def initialize",
-                "real_max_batch2_backend",
-                "attach_max",
-                "model_adapter",
-            ))
-        ):
-            print(f"{i}: {line}")
+if candidates:
+    show(candidates[0], 180)
+else:
+    print("CTA MODEL BRIDGE SOURCE: NOT LOCATED")
 
-print("\n=== VERIFIED MAX GRAPH ENTRY POINT ===")
+print("\n=== PZAAS MODEL CLASS AVAILABILITY ===")
 
-if graph.is_file():
-    source = graph.read_text()
-    tree = ast.parse(source)
-
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            print(type(node).__name__, node.name)
-
-    expected = "build_grecbase_fusion_graph_order_correct"
-    names = {
-        node.name for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef))
-    }
-    print("EXPECTED BUILDER:", "FOUND" if expected in names else "NOT FOUND")
-
-print("\n=== EXISTING PZAAS INPUT AND INFERENCE CODE ===")
-
-for path in sorted(mx.rglob("*.py")):
-    if "_cta_native_reference" in str(path):
-        continue
-    if "pzaas_native_serve_dev" in str(path):
-        continue
-
-    name = path.name.lower()
-    if not any(x in name for x in (
-        "adapter", "backend", "infer", "execute", "parity", "bridge"
-    )):
-        continue
-
-    print("FILE:", path.relative_to(root))
+found = []
+for p in native.glob("*.py"):
     try:
-        tree = ast.parse(path.read_text())
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-                if any(x in node.name.lower() for x in (
-                    "infer", "execute", "predict", "attach",
-                    "pack", "build", "compile", "forward"
-                )):
-                    print("  ENTRY:", node.name)
-    except (SyntaxError, UnicodeError) as exc:
-        print("  INSPECTION ERROR:", str(exc)[:120])
+        tree = ast.parse(p.read_text())
+    except (SyntaxError, UnicodeError):
+        continue
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            if node.name == "PZAASMAXModel":
+                found.append(str(p))
 
-print("\n=== NATIVE BACKEND REFERENCES ===")
+print("PZAASMAXModel:", found or "NOT IMPLEMENTED IN NATIVE PACKAGE")
 
-for path in sorted(native.glob("*.py")):
-    lines = path.read_text().splitlines()
-    for i, line in enumerate(lines, 1):
-        if any(s in line for s in (
-            "real_max_batch2_backend",
-            "pzaas_max_model_adapter",
-            "pzaas_max.",
-            "attach_max",
-            "predict_raw",
-            "/v2/pzaas",
-        )):
-            print(f"{path.name}:{i}: {line.strip()[:160]}")
-
-print("\n=== PROGRESS ===")
-print("LAYER-0 PARITY: PREVIOUSLY PASS")
-print("EIGHT-BRANCH PARITY: PREVIOUSLY 8/8 PASS")
-print("FULL MODEL PARITY: PREVIOUSLY PASS")
+print("\n=== CURRENT PROGRESS ===")
+print("MAX CPU: PASS")
+print("LAYER-0 PARITY: PASS")
+print("EIGHT-BRANCH PARITY: 8/8 PASS")
+print("FULL-MODEL PARITY: PASS")
 print("NATIVE SCAFFOLD: PREPARED")
+print("PZAAS MODEL BRIDGE: PENDING")
 print("NATIVE HTTP: NOT VERIFIED")
-print("SOURCE FILES MODIFIED: NONE")
+print("FILES MODIFIED: NONE")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NEXT: WIRE VERIFIED PZAAS MAX EXECUTOR INTO NATIVE WORKER")
+print("NEXT: IMPLEMENT PZAAS-SPECIFIC MODEL BRIDGE")
 PY

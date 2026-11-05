@@ -1,112 +1,161 @@
-
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage run \
 --rm -i --pull=never --network=none \
 --security-opt label=disable \
 -v "$PWD:/workspace:ro" \
+-v "$PWD/artifacts/v1.472-max/pzaas_max/validation:/outputs:rw" \
 -w /workspace \
 --entrypoint python \
 docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
+import sys, json, inspect, traceback
 from pathlib import Path
 import numpy as np
 import torch
 
-v = Path("/workspace/artifacts/v1.472-max/pzaas_max/validation")
-print("=== PZAAS CORRECTED SAME-INPUT PROVENANCE ===", flush=True)
+print("=== PZAAS ORIGINAL SEQUENCE STAGE TRACE ===", flush=True)
+torch.set_num_threads(2)
 
-def load(name):
-    return torch.load(v / name, map_location="cpu", weights_only=False)
+root = Path("/workspace/artifacts/v1.472")
+validation = Path("/workspace/artifacts/v1.472-max/pzaas_max/validation")
 
-def arr(x):
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
+sys.path.insert(0, str(root / "utils/dependency-utils"))
+sys.path.insert(0, str(root / "core-artifact"))
 
-saved = load("ppa_model_input_exact.pt")
-model_in = saved.get("model_in", saved)
+try:
+    from models import GRecBase
 
-names = [
-    "page_in", "item_in", "item_in_sku",
-    "item_meta_in", "vl_in", "ihq_in",
-    "jet_name_in", "jet_status_in",
-    "sibling_deep_in", "sibling_wide_in",
-    "sibling_vl_in", "current_in",
-    "input_ids", "attention_mask"
-]
+    params_path = root / "config/torch_model_params_base.json"
+    params = json.loads(params_path.read_text())
+    if isinstance(params, list):
+        params = params[0]
 
-with np.load(v / "ppa_tensor_inputs.npz") as data:
-    matches = 0
-    for name in names:
-        if name not in model_in or name not in data:
-            print("MISSING:", name,
-                  "PT:", name in model_in,
-                  "NPZ:", name in data)
-            continue
+    params["nlp_encoder_path"] = str(root / "config/config.json")
+    params["transfer_ind"] = True
+    params["extract_deep_idx"] = -1
 
-        a = arr(model_in[name])
-        b = np.asarray(data[name])
-        ok = a.shape == b.shape and a.dtype == b.dtype and np.array_equal(a, b)
-        matches += int(ok)
-        print(name, "PASS" if ok else "FAIL", a.shape, b.shape)
+    model = GRecBase(**params)
 
-print("\nINPUT VALUE MATCHES:", matches, "/14")
+    state = torch.load(
+        root / "core-artifact/model_0_base.pt",
+        map_location="cpu",
+        weights_only=False
+    )
+    model.load_state_dict(state, strict=True)
+    model.eval()
 
-ref = load("ppa_pytorch_base_replay.pt")
-replay = arr(ref["output"] if isinstance(ref, dict) else ref).reshape(1, 2048)
+    print("ORIGINAL MODEL: LOADED")
 
-order = [
-    "sequence", "context", "search0", "search1",
-    "jet", "ihq", "sibling", "task"
-]
+    saved = torch.load(
+        validation / "ppa_model_input_exact.pt",
+        map_location="cpu",
+        weights_only=False
+    )
+    model_in = saved["model_in"]
 
-target = v / "pzaas_eight_branch_targets.npz"
-print("\nBRANCH TARGET FILE:", target.name)
-print("FILE EXISTS:", target.is_file())
+    sig = inspect.signature(model.forward)
+    arguments = {
+        key: value for key, value in model_in.items()
+        if key in sig.parameters
+    }
 
-branch_pass = False
+    print("MATCHED FORWARD ARGUMENTS:", len(arguments))
 
-if target.is_file():
-    with np.load(target) as data:
-        if all(k in data.files for k in order):
-            parts = [arr(data[k]).reshape(-1) for k in order]
+    traces = {}
+    handles = []
 
-            if all(p.size == 256 for p in parts):
-                combined = np.concatenate(parts).reshape(1, 2048)
-
-                for i, name in enumerate(order):
-                    expected = replay.reshape(-1)[i*256:(i+1)*256]
-                    diff = np.abs(parts[i] - expected)
-                    print(
-                        name,
-                        "MAX_DIFF:", float(diff.max()),
-                        "MEAN_DIFF:", float(diff.mean())
-                    )
-
-                diff = np.abs(combined - replay)
-                branch_pass = np.allclose(
-                    combined, replay,
-                    rtol=1e-3, atol=1e-3
+    def capture(name):
+        def hook(module, inputs, output):
+            value = output
+            if isinstance(value, (tuple, list)):
+                value = next(
+                    (x for x in value if isinstance(x, torch.Tensor)),
+                    None
                 )
-                print("\nBRANCH CONCAT MAX DIFF:", float(diff.max()))
-                print("BRANCH CONCAT MEAN DIFF:", float(diff.mean()))
-            else:
-                print("ERROR: Branch dimensions are not all 256")
-        else:
-            print("MISSING BRANCH KEYS:", sorted(set(order)-set(data.files)))
+            if isinstance(value, torch.Tensor):
+                traces[name] = value.detach().float().cpu().numpy().copy()
+                print(
+                    "CAPTURED:", name,
+                    "SHAPE:", traces[name].shape,
+                    flush=True
+                )
+        return hook
 
-print("\n=== FINAL RESULTS ===")
-print("ORIGINAL PYTORCH REPLAY: PASS")
-print("EXACT INPUT VALUES:", "PASS" if matches == 14 else "FAIL")
-print("SAME-STAGE BRANCH TARGETS:", "PASS" if branch_pass else "NOT VERIFIED")
-print("MAX CPU EXECUTION: PREVIOUSLY PASS")
-print("FULL MAX PARITY: PENDING")
-print("ORIGINAL DS: UNCHANGED")
-print("CTA / BPLAN: UNCHANGED")
-print(
-    "NEXT:",
-    "ISOLATE MAX OPERATION DIFFERENCE"
-    if matches == 14 and branch_pass
-    else "RESOLVE SAVED REFERENCE ALIGNMENT"
-)
+    for name, module in model.named_modules():
+        if name == "sequence_transformer" or name.startswith(
+            "sequence_transformer."
+        ):
+            if (
+                name == "sequence_transformer"
+                or "embedding" in name
+                or "dense" in name
+                or "ptransformer" in name
+            ):
+                handles.append(
+                    module.register_forward_hook(capture(name))
+                )
+
+    with torch.inference_mode():
+        output = model(**arguments)
+
+    for handle in handles:
+        handle.remove()
+
+    if isinstance(output, (tuple, list)):
+        output = output[0]
+
+    actual = output.detach().cpu().numpy().reshape(1, 2048)
+
+    replay = torch.load(
+        validation / "ppa_pytorch_base_replay.pt",
+        map_location="cpu",
+        weights_only=False
+    )
+    if isinstance(replay, dict):
+        replay = replay["output"]
+
+    expected = (
+        replay.detach().cpu().numpy()
+        if isinstance(replay, torch.Tensor)
+        else np.asarray(replay)
+    ).reshape(1, 2048)
+
+    diff = np.abs(actual - expected)
+
+    print("PYTORCH OUTPUT:", actual.shape)
+    print("REPLAY MAX DIFF:", float(diff.max()))
+    print("REPLAY MEAN DIFF:", float(diff.mean()))
+
+    if not np.allclose(actual, expected, rtol=1e-3, atol=1e-3):
+        raise RuntimeError("Original replay consistency failed")
+
+    if not traces:
+        raise RuntimeError("No sequence intermediate tensors captured")
+
+    destination = Path("/outputs/ppa_pytorch_sequence_stages.npz")
+    np.savez_compressed(
+        destination,
+        **{
+            name.replace(".", "__"): value
+            for name, value in traces.items()
+        }
+    )
+
+    print("\n=== FINAL RESULTS ===")
+    print("ORIGINAL PYTORCH: PASS")
+    print("SAME-INPUT REPLAY: PASS")
+    print("SEQUENCE STAGES CAPTURED:", len(traces))
+    print("STAGE TRACE:", destination)
+    print("MAX NUMERICAL PARITY: PENDING")
+    print("ORIGINAL DS: UNCHANGED")
+    print("CTA / BPLAN: UNCHANGED")
+    print("NEXT: COMPARE MAX INTERNAL SEQUENCE STAGES")
+
+except Exception as exc:
+    print("\nSTAGE CAPTURE: BLOCKED")
+    print(type(exc).__name__ + ":", exc)
+    traceback.print_exc(limit=4)
+    print("ORIGINAL DS: UNCHANGED")
+    print("CTA / BPLAN: UNCHANGED")
+    raise SystemExit(1)
 PY

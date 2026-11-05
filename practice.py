@@ -1,37 +1,39 @@
 
-$ErrorActionPreference = "Stop"
+cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
+set -euo pipefail
 
-$dest = Join-Path $env:USERPROFILE "Downloads\pzaas_sklearn161"
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
+P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+W=/vzwhome/sajjna8/pzaas_wheels
+D=/application1/max_shared_python_deps
 
-Write-Host "=== DOWNLOAD MATCHING SCIKIT-LEARN 1.6.1 ==="
+test -d "$W"
+mkdir -p "$D/sklearn161"
 
-py -3 -m pip download `
-  --only-binary=:all: `
-  --no-deps `
-  --platform manylinux2014_x86_64 `
-  --python-version 3.12 `
-  --implementation cp `
-  --abi cp312 `
-  --dest $dest `
-  "scikit-learn==1.6.1"
+echo "=== INSTALL SCIKIT-LEARN 1.6.1 OFFLINE ==="
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Download failed"
-}
+"${P[@]}" run --rm --pull=never --network=none \
+  -v "$W:/wheels:ro" \
+  -v "$D:/shared_deps" \
+  -v "$PWD:/workspace:ro" \
+  -e PYTHONPATH=/shared_deps/sklearn161:/shared_deps:/workspace/artifacts/v1.472-max/pzaas_max/validation/python_deps \
+  --entrypoint /bin/sh \
+  localhost/cta-max-faiss:local -ec '
+    set -e
 
-$wheel = Get-ChildItem -Path $dest -Filter "scikit_learn-1.6.1-*.whl" -File |
-    Select-Object -First 1
+    /opt/venv/bin/python -m pip install \
+      --no-index --no-deps \
+      --target=/shared_deps/sklearn161 \
+      /wheels/scikit_learn-1.6.1-*.whl
 
-if (-not $wheel) {
-    throw "Matching wheel not found"
-}
-
-scp $wheel.FullName "sajjna8@10.119.98.21:/vzwhome/sajjna8/pzaas_wheels/"
-
-if ($LASTEXITCODE -ne 0) {
-    throw "Transfer failed"
-}
-
-Write-Host "PZAAS SCIKIT-LEARN 1.6.1 TRANSFER: PASS"
-Write-Host "CTA/BPLAN IMAGE: UNCHANGED"
+    /opt/venv/bin/python -c "
+import sklearn
+from sklearn.compose._column_transformer import _RemainderColsList
+from apscheduler.schedulers.background import BackgroundScheduler
+assert sklearn.__version__ == '1.6.1'
+print('SCIKIT-LEARN 1.6.1: PASS')
+print('PZAAS PREPROCESSOR CLASS: AVAILABLE')
+print('APScheduler: PASS')
+print('CTA/BPLAN IMAGE: UNCHANGED')
+"
+  '
+SH

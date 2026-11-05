@@ -1,37 +1,46 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && {
-echo "=== PZAAS NATIVE RUNTIME READINESS ==="
-
-echo "=== EXISTING MAX IMAGES ==="
+cd /application1/sajjna8/rt-pzaas-v1.0 && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage \
-images --format '{{.Repository}}:{{.Tag}}'
+run --rm -i \
+--pull=never \
+--network=none \
+--memory=12g \
+--pids-limit=512 \
+-v "$PWD:/workspace:ro" \
+-w /workspace \
+-e PYTHONPATH=/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
+--entrypoint /opt/venv/bin/python \
+localhost/cta-max-faiss:local -u - <<'PY'
+import traceback
 
-echo "=== EXISTING CONTAINERS ==="
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+print("=== PZAAS REAL NATIVE WORKER INITIALIZATION ===", flush=True)
 
-echo "=== PZAAS NATIVE LAUNCH FILES ==="
-find artifacts/v1.472-max/maxserve_pzaas_extension \
--maxdepth 3 -type f \
-\( -name '*launcher*.py' -o -name '*entrypoint*' \
--o -name 'Dockerfile*' -o -name '*.sh' \) \
--print
+try:
+    from pzaas_native_serve_dev.pzaas_spawn_worker import PZAASFactoryWrapper
+    print("NATIVE FACTORY IMPORT: PASS", flush=True)
 
-echo "=== NATIVE STARTUP REFERENCES ==="
-grep -RInE \
-'podman run|pzaas_native_launcher|max\.serve|1876[0-9]|/v2/|spawn_worker' \
-artifacts/v1.472-max/maxserve_pzaas_extension \
---include='*.py' --include='*.sh' 2>/dev/null | head -50
+    factory = PZAASFactoryWrapper()
+    print("NATIVE FACTORY: CREATED", flush=True)
 
-echo "=== PROGRESS ==="
-echo "MAX CPU: PASS"
-echo "LAYER-0: PASS"
-echo "EIGHT BRANCHES: 8/8 PASS"
-echo "FULL MODEL PARITY: PASS"
-echo "72-INPUT BRIDGE: PASS"
-echo "NATIVE FACTORY: ALIGNED"
-echo "NATIVE WORKER RUNTIME: PENDING"
-echo "NATIVE HTTP 200: PENDING"
-}
+    pipeline = factory()
+    print("REAL NATIVE WORKER INITIALIZATION: PASS", flush=True)
+
+    adapter = getattr(pipeline, "pzaas_native_adapter", None)
+    assert adapter is not None, "Native worker not attached"
+    print("NATIVE WORKER ATTACHED: PASS", flush=True)
+
+    assert getattr(pipeline, "_pzaas_native_pipeline", False), \
+        "Native pipeline registration missing"
+
+    print("NATIVE PIPELINE REGISTRATION: PASS", flush=True)
+    print("NEXT: START BUILT-IN MAX SERVE AND VERIFY HTTP 200", flush=True)
+
+except Exception:
+    print("NATIVE WORKER INITIALIZATION: BLOCKED", flush=True)
+    traceback.print_exc()
+    raise SystemExit(1)
+
+finally:
+    print("ORIGINAL DS / CTA / BPLAN: NOT MODIFIED BY THIS TEST", flush=True)
+PY

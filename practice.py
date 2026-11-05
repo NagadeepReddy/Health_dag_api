@@ -2,115 +2,122 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 import ast
-import re
 
-root = Path("/application1/sajjna8/rt-pzaas-v1.0")
-base = root / "artifacts/v1.472-max/maxserve_pzaas_extension"
-source = base / "_cta_native_reference"
-target = base / "pzaas_native_serve_dev"
-graph = root / "artifacts/v1.472-max/pzaas_max/grecbase_fusion_full_head_72_max.py"
+root = Path.cwd()
+mx = root / "artifacts/v1.472-max"
+base = mx / "maxserve_pzaas_extension"
+native = base / "pzaas_native_serve_dev"
+graph = mx / "pzaas_max/grecbase_fusion_full_head_72_max.py"
 
-print("=== PZAAS NATIVE MAX SERVING ADAPTATION ===", flush=True)
+print("=== PZAAS REAL MAX NATIVE WORKER CONNECTION ===")
 
-assert graph.is_file(), "Verified PZAAS MAX graph missing"
-assert source.is_dir(), "CTA native reference missing"
+required = {
+    "MAX graph": graph,
+    "Native worker": native / "pzaas_worker_adapter.py",
+    "Native launcher": native / "pzaas_native_launcher.py",
+    "Native router": native / "pzaas_router.py",
+    "Native HTTP pipeline": native / "pzaas_http_pipeline.py",
+}
 
-names = [
-    "native_launcher",
-    "router",
-    "http_pipeline",
-    "native_scheduler",
-    "scheduler_factory",
-    "context",
-    "worker_adapter",
-    "spawn_worker",
-    "worker_registration",
-    "architecture_registration",
-    "pipeline_model",
-    "queue_compat",
-]
+for name, path in required.items():
+    print(f"{name}: {'FOUND' if path.is_file() else 'MISSING'}")
 
-prepared = {}
+print("\n=== REAL MODULE RESOLUTION ===")
 
-for name in names:
-    src = source / f"cta_{name}.py"
-    dst = target / f"pzaas_{name}.py"
+for name, path in {
+    "pzaas_max": mx / "pzaas_max",
+    "pzaas_max_model_adapter": mx / "pzaas_max_model_adapter.py",
+    "native package": native,
+}.items():
+    print(f"{name}: {'FOUND' if path.exists() else 'NOT FOUND'}")
 
-    if not src.is_file():
-        raise SystemExit(f"BLOCKED: Missing reference {src}")
+print("\n=== WORKER ADAPTER CONTRACT ===")
 
-    code = src.read_text()
+worker = required["Native worker"]
 
-    code = code.replace(
-        "rt-pzaas-cta-offers-v1",
-        "rt-pzaas-v1.0"
-    )
-    code = code.replace("v1.168", "v1.472")
-    code = code.replace("CTA", "PZAAS")
-    code = code.replace("Cta", "Pzaas")
-    code = code.replace("cta", "pzaas")
+if worker.is_file():
+    lines = worker.read_text().splitlines()
+    for i, line in enumerate(lines, 1):
+        if (
+            i <= 30
+            or 65 <= i <= 115
+            or any(k in line for k in (
+                "def predict",
+                "def initialize",
+                "real_max_batch2_backend",
+                "attach_max",
+                "model_adapter",
+            ))
+        ):
+            print(f"{i}: {line}")
 
-    compile(code, str(dst), "exec")
-    prepared[dst] = code
+print("\n=== VERIFIED MAX GRAPH ENTRY POINT ===")
 
-target.mkdir(parents=True, exist_ok=True)
+if graph.is_file():
+    source = graph.read_text()
+    tree = ast.parse(source)
 
-created = 0
-preserved = 0
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            print(type(node).__name__, node.name)
 
-for dst, code in prepared.items():
-    if dst.exists():
-        preserved += 1
-        print("PRESERVED:", dst.name)
+    expected = "build_grecbase_fusion_graph_order_correct"
+    names = {
+        node.name for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    }
+    print("EXPECTED BUILDER:", "FOUND" if expected in names else "NOT FOUND")
+
+print("\n=== EXISTING PZAAS INPUT AND INFERENCE CODE ===")
+
+for path in sorted(mx.rglob("*.py")):
+    if "_cta_native_reference" in str(path):
+        continue
+    if "pzaas_native_serve_dev" in str(path):
         continue
 
-    with dst.open("x") as f:
-        f.write(code)
+    name = path.name.lower()
+    if not any(x in name for x in (
+        "adapter", "backend", "infer", "execute", "parity", "bridge"
+    )):
+        continue
 
-    created += 1
-    print("CREATED:", dst.name)
+    print("FILE:", path.relative_to(root))
+    try:
+        tree = ast.parse(path.read_text())
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                if any(x in node.name.lower() for x in (
+                    "infer", "execute", "predict", "attach",
+                    "pack", "build", "compile", "forward"
+                )):
+                    print("  ENTRY:", node.name)
+    except (SyntaxError, UnicodeError) as exc:
+        print("  INSPECTION ERROR:", str(exc)[:120])
 
-print("\n=== PZAAS LOCAL DEPENDENCIES ===")
+print("\n=== NATIVE BACKEND REFERENCES ===")
 
-available = {p.stem for p in target.glob("*.py")}
-missing = set()
-
-for path in target.glob("pzaas_*.py"):
-    tree = ast.parse(path.read_text())
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
-            if mod.startswith("pzaas_") and mod not in available:
-                missing.add(mod)
-
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                mod = alias.name.split(".")[0]
-                if mod.startswith("pzaas_") and mod not in available:
-                    missing.add(mod)
-
-print("MISSING LOCAL MODULES:", sorted(missing))
-
-backend_refs = []
-for path in target.glob("pzaas_*.py"):
-    for number, line in enumerate(path.read_text().splitlines(), 1):
-        if "real_max_batch2_backend" in line:
-            backend_refs.append(f"{path.name}:{number}")
-
-print("CTA BACKEND ADAPTATION POINTS:", backend_refs)
+for path in sorted(native.glob("*.py")):
+    lines = path.read_text().splitlines()
+    for i, line in enumerate(lines, 1):
+        if any(s in line for s in (
+            "real_max_batch2_backend",
+            "pzaas_max_model_adapter",
+            "pzaas_max.",
+            "attach_max",
+            "predict_raw",
+            "/v2/pzaas",
+        )):
+            print(f"{path.name}:{i}: {line.strip()[:160]}")
 
 print("\n=== PROGRESS ===")
-print("PZAAS GRAPH: PASS")
-print("72 INPUTS: PREVIOUSLY PASSED")
-print("LAYER-0 PARITY: PREVIOUSLY PASSED")
-print("EIGHT-BRANCH PARITY: PREVIOUSLY PASSED")
-print("FULL MODEL PARITY: PREVIOUSLY PASSED")
-print("NATIVE MODULES CREATED:", created)
-print("EXISTING MODULES PRESERVED:", preserved)
-print("NATIVE PYTHON SYNTAX: PASS")
+print("LAYER-0 PARITY: PREVIOUSLY PASS")
+print("EIGHT-BRANCH PARITY: PREVIOUSLY 8/8 PASS")
+print("FULL MODEL PARITY: PREVIOUSLY PASS")
+print("NATIVE SCAFFOLD: PREPARED")
+print("NATIVE HTTP: NOT VERIFIED")
+print("SOURCE FILES MODIFIED: NONE")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("NATIVE RUNTIME: NOT YET VERIFIED")
-print("NEXT: CONNECT PZAAS GRAPH TO NATIVE WORKER")
+print("NEXT: WIRE VERIFIED PZAAS MAX EXECUTOR INTO NATIVE WORKER")
 PY

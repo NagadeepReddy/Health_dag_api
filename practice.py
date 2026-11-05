@@ -1,67 +1,74 @@
 
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-import ast
 from pathlib import Path
+import ast
+import re
+import shutil
+import sys
 
-root = Path("artifacts/v1.472-max/maxserve_pzaas_extension")
-native = root / "pzaas_native_serve_dev"
-original = Path("artifacts/v1.472/core-artifact/pipeline.py")
+root = Path.cwd()
+base = root / "artifacts/v1.472-max"
+factory = base / "maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_spawn_worker.py"
+maxpkg = base / "pzaas_max"
+graph = maxpkg / "grecbase_fusion_full_head_72_max.py"
 
-print("=== PZAAS NATIVE WIRING CONTRACT ===")
+print("=== PZAAS NATIVE FACTORY PATH REPAIR ===")
 
-targets = [
-    ("FACTORY", native / "pzaas_spawn_worker.py"),
-    ("WORKER", native / "pzaas_worker_adapter.py"),
-    ("MODEL", native / "pzaas_max_model_adapter.py"),
-    ("PIPELINE MODEL", native / "pzaas_pipeline_model.py"),
-    ("REGISTRATION", native / "pzaas_architecture_registration.py"),
-]
+assert factory.is_file(), f"Factory missing: {factory}"
+assert graph.is_file(), f"Verified MAX graph missing: {graph}"
 
-for label, path in targets:
-    print(f"\n=== {label}: {path} ===")
-    if not path.is_file():
-        print("MISSING")
-        continue
+source = factory.read_text()
+pattern = r'\bext\s*/\s*["\']pzaas_max_dev["\']'
+replacement = 'artifacts / "v1.472-max"'
 
-    source = path.read_text()
-    tree = ast.parse(source)
-    lines = source.splitlines()
+if re.search(pattern, source):
+    corrected = re.sub(pattern, replacement, source)
+    assert corrected != source
+    ast.parse(corrected, filename=str(factory))
 
-    if label in ("FACTORY", "REGISTRATION"):
-        for i, line in enumerate(lines[:100], 1):
-            if line.strip():
-                print(f"{i}: {line}")
-    else:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                print("CLASS:", node.name)
-                for method in node.body:
-                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        print("METHOD:", method.name,
-                              "ARGS:", [a.arg for a in method.args.args])
-        for i, line in enumerate(lines, 1):
-            if any(x in line for x in (
-                "attach_max", "max_factory", "pipeline_factory",
-                "model_base", "def __call__", "def predict",
-                "def initialize", "_pzaas_verified_pack",
-                "PZAASMAXModel.pack", "return result",
-                "return output"
-            )):
-                print(f"{i}: {line.strip()}")
+    backup = factory.with_name(factory.name + ".before_max_path_fix.bak")
+    if not backup.exists():
+        shutil.copy2(factory, backup)
 
-print("\n=== ORIGINAL PIPELINE MODEL CALL ===")
-if original.is_file():
-    lines = original.read_text().splitlines()
-    for i, line in enumerate(lines):
-        if "self.model_base(" in line:
-            for j in range(max(0, i-2), min(len(lines), i+23)):
-                print(f"{j+1}: {lines[j]}")
+    factory.write_text(corrected)
+    print("FACTORY PATH: CORRECTED")
+    print("BACKUP:", backup)
+
+elif replacement in source:
+    print("FACTORY PATH: ALREADY CORRECT")
+
 else:
-    print("ORIGINAL PIPELINE NOT FOUND")
+    raise RuntimeError("Unexpected factory source. No changes made.")
 
-print("\n=== NEXT ===")
-print("WIRE REAL MAX FORWARD INTO NATIVE WORKER")
+sys.path.insert(0, str(base))
+import importlib.util
+
+assert importlib.util.find_spec("pzaas_max") is not None
+print("REAL PZAAS MAX IMPORT PATH: PASS")
+
+native = factory.parent
+for name in [
+    "pzaas_spawn_worker.py",
+    "pzaas_worker_adapter.py",
+    "pzaas_max_model_adapter.py",
+    "pzaas_pipeline_model.py",
+    "pzaas_architecture_registration.py",
+]:
+    path = native / name
+    assert path.is_file(), f"Missing: {path}"
+    ast.parse(path.read_text(), filename=str(path))
+    print(name, "SYNTAX: PASS")
+
+print("\n=== PROGRESS ===")
+print("MAX CPU: PASS (previously verified)")
+print("LAYER-0: PASS (previously verified)")
+print("EIGHT BRANCHES: 8/8 PASS (previously verified)")
+print("FULL MODEL PARITY: PASS (previously verified)")
+print("72-INPUT NATIVE BRIDGE: PASS (previously verified)")
+print("FACTORY MAX PATH: CORRECT")
+print("NATIVE WORKER EXECUTION: PENDING")
+print("NATIVE HTTP 200: PENDING")
 print("ORIGINAL DS: UNCHANGED")
 print("CTA / BPLAN: UNCHANGED")
-print("FILES MODIFIED: NONE")
+print("NEXT: REAL NATIVE WORKER INITIALIZATION")
 PY

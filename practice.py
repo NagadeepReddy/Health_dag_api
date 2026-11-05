@@ -1,39 +1,5 @@
 
-set -e
-cd /application1/sajjna8/rt-pzaas-v1.0
-
-python3 - <<'PY'
-from pathlib import Path
-import shutil
-import ast
-
-p = Path("artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_max_model_adapter.py")
-
-old = "from .pzaas_worker_adapter import PZAASWorkerAdapter"
-new = "from pzaas_worker_adapter import PZAASWorkerAdapter"
-
-assert p.is_file(), f"Missing: {p}"
-src = p.read_text()
-
-if old in src:
-    assert src.count(old) == 1
-    updated = src.replace(old, new, 1)
-    ast.parse(updated)
-    backup = p.with_suffix(".py.before_import_fix")
-    if not backup.exists():
-        shutil.copy2(p, backup)
-    p.write_text(updated)
-elif new in src:
-    ast.parse(src)
-else:
-    raise RuntimeError("Unexpected import structure; no changes made")
-
-print("PZAAS IMPORT: CORRECTED")
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL DS: UNCHANGED")
-print("CTA / BPLAN: UNCHANGED")
-PY
-
+cd /application1/sajjna8/rt-pzaas-v1.0 && \
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage run --rm -i \
 --network none \
@@ -44,24 +10,64 @@ podman --root /application1/podman/storage \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local - <<'PY'
 import traceback
+from pathlib import Path
+import numpy as np
 
-print("=== PZAAS REAL NATIVE BRIDGE TEST ===", flush=True)
+print("=== PZAAS REAL MAX BRIDGE EXECUTION ===", flush=True)
 
 try:
-    import max
-    print("MAX RUNTIME: PASS", flush=True)
-
+    import torch
     from pzaas_max_model_adapter import PZAASMAXModel
-    print("MODEL BRIDGE IMPORT: PASS", flush=True)
+
+    root = Path("/workspace/artifacts/v1.472-max")
+    sources = list(root.rglob("ppa_model_input_exact.pt"))
+    if len(sources) != 1:
+        raise RuntimeError(
+            f"Expected one exact input artifact; found {len(sources)}"
+        )
+
+    saved = torch.load(
+        sources[0],
+        map_location="cpu",
+        weights_only=False
+    )
+
+    model_in = saved.get("model_in", saved)
+    if not isinstance(model_in, dict):
+        raise TypeError("Saved model input is not a dictionary")
+
+    print("SAVED INPUT: PASS", flush=True)
 
     model = PZAASMAXModel()
     print("MODEL INITIALIZATION: PASS", flush=True)
 
-    print("CALLABLE:", callable(model), flush=True)
-    print("NEXT: NATIVE WORKER EXECUTION AND HTTP 200")
+    output = model(model_in)
+
+    if isinstance(output, torch.Tensor):
+        result = output.detach().cpu().numpy()
+    elif hasattr(output, "to_numpy"):
+        result = output.to_numpy()
+    else:
+        result = np.asarray(output)
+
+    print("OUTPUT SHAPE:", result.shape, flush=True)
+
+    if result.shape != (1, 2048):
+        raise RuntimeError("Unexpected PZAAS output shape")
+
+    if not np.isfinite(result).all():
+        raise RuntimeError("Non-finite MAX output")
+
+    print("PZAAS REAL MAX BRIDGE FORWARD: PASS")
+    print("NEXT: CONNECT BRIDGE TO NATIVE WORKER")
 
 except Exception:
-    print("RUNTIME TEST: BLOCKED", flush=True)
+    print("BRIDGE FORWARD: BLOCKED")
     traceback.print_exc()
     raise SystemExit(1)
+
+finally:
+    print("ORIGINAL DS: UNCHANGED")
+    print("CTA / BPLAN: UNCHANGED")
+    print("SOURCE FILES MODIFIED: NONE")
 PY

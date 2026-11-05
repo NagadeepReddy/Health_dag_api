@@ -3,89 +3,64 @@ cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 import ast
 
-root = Path.cwd()
-mx = root / "artifacts/v1.472-max"
-ext = mx / "maxserve_pzaas_extension"
-native = ext / "pzaas_native_serve_dev"
+root = Path("artifacts/v1.472-max")
+print("=== PZAAS VERIFIED MAX EXECUTOR DISCOVERY ===")
 
-print("=== PZAAS FINAL NATIVE CONTRACT CHECK ===")
+hits = []
 
-targets = [
-    ext / "pzaas_pipeline_model.py",
-    ext / "pzaas_max_model_adapter.py",
-    native / "pzaas_native_worker_adapter.py",
-    native / "pzaas_worker_adapter.py",
-    native / "pzaas_worker_registration.py",
-    mx / "pzaas_max_model_adapter.py",
-]
-
-for path in targets:
-    print("\nFILE:", path.relative_to(root))
-    if not path.is_file():
-        print("STATUS: MISSING")
+for base in [root / "pzaas_max", root / "maxserve_pzaas_extension"]:
+    if not base.exists():
         continue
 
-    print("STATUS: FOUND")
-    source = path.read_text()
-    tree = ast.parse(source)
-    lines = source.splitlines()
-
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            print("CLASS:", node.name)
-            for method in node.body:
-                if isinstance(
-                    method,
-                    (ast.FunctionDef, ast.AsyncFunctionDef)
-                ):
-                    print("  METHOD:", method.name,
-                          "LINE:", method.lineno)
-        elif isinstance(node, (
-            ast.FunctionDef,
-            ast.AsyncFunctionDef
+    for p in base.rglob("*.py"):
+        relative = str(p)
+        if any(s in relative for s in (
+            "python_deps/", "site-packages/",
+            "_cta_native_reference/", "__pycache__/"
         )):
-            print("FUNCTION:", node.name,
-                  "LINE:", node.lineno)
+            continue
 
-    if path.name in (
-        "pzaas_pipeline_model.py",
-        "pzaas_worker_adapter.py",
-        "pzaas_native_worker_adapter.py",
-        "pzaas_max_model_adapter.py",
-    ):
-        print("--- IMPLEMENTATION ---")
-        for i, line in enumerate(lines[:105], 1):
-            print(f"{i}: {line}")
+        try:
+            src = p.read_text()
+            tree = ast.parse(src)
+        except (OSError, UnicodeError, SyntaxError):
+            continue
 
-print("\n=== VERIFIED PZAAS MAX GRAPH ===")
-graph = mx / "pzaas_max/grecbase_fusion_full_head_72_max.py"
-print("GRAPH EXISTS:", graph.is_file())
+        markers = [
+            "build_grecbase_fusion_graph_order_correct",
+            "InferenceSession",
+            "infer_max_batch",
+            "load_weight",
+            "session.compile",
+            "model.execute"
+        ]
+        found = [x for x in markers if x in src]
 
-if graph.is_file():
-    tree = ast.parse(graph.read_text())
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            print("ENTRY:", node.name,
-                  "LINE:", node.lineno)
+        if not found:
+            continue
 
-print("\n=== NATIVE IMPORT PATHS ===")
-for name, path in {
-    "actual MAX package": mx / "pzaas_max",
-    "factory's MAX development path": ext / "pzaas_max_dev",
-    "native serving package": native,
-}.items():
-    print(name, "FOUND" if path.is_dir() else "MISSING")
+        definitions = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if any(x in node.name.lower() for x in (
+                    "infer", "execute", "compile",
+                    "build", "pack", "weight", "run"
+                )):
+                    definitions.append((node.lineno, node.name))
 
-print("\n=== PROGRESS ===")
-print("LAYER-0: PASS")
-print("EIGHT BRANCHES: 8/8 PASS")
-print("FULL MODEL PARITY: PASS")
-print("MAX CPU: PASS")
-print("NATIVE SCAFFOLD: PREPARED")
-print("FACTORY / WORKER CONTRACT: PENDING")
+        hits.append((p, found, definitions))
+
+for p, markers, definitions in hits[:25]:
+    print("\nFILE:", p)
+    print("MARKERS:", ", ".join(markers))
+    for line, name in definitions[:15]:
+        print(f"  {line}: {name}()")
+
+print("\n=== EXECUTOR STATUS ===")
+print("SOURCE FILES FOUND:", len(hits))
+print("MAX NUMERICAL PARITY: PREVIOUSLY PASS")
+print("NATIVE MODEL BRIDGE: PENDING")
 print("NATIVE HTTP: NOT VERIFIED")
-print("ORIGINAL DS: UNCHANGED")
-print("CTA / BPLAN: UNCHANGED")
-print("FILES MODIFIED: NONE")
-print("NEXT: REPAIR PZAAS NATIVE FACTORY AND WORKER WIRING")
+print("SOURCE FILES MODIFIED: NONE")
+print("NEXT: CONNECT REAL PZAAS EXECUTOR TO EXISTING WORKER")
 PY

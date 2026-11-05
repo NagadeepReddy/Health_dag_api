@@ -1,56 +1,46 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'RUN'
-set -euo pipefail
+$ErrorActionPreference = "Stop"
 
-P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
-BASE=localhost/cta-max-faiss:local
-IMAGE=localhost/pzaas-max-runtime:dev
-NAME="pzaas-build-$$"
+$dest = Join-Path $env:USERPROFILE "Downloads\pzaas_apscheduler_wheels"
 
-trap '"${P[@]}" rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-echo "=== INSTALL REAL APSCHEDULER IN PZAAS CONTAINER ==="
+Write-Host "=== DOWNLOAD PZAAS LINUX WHEELS ==="
 
-"${P[@]}" run --name "$NAME" --pull=never --network=host \
-  --memory=12g --pids-limit=512 \
-  --entrypoint /bin/sh "$BASE" -ec '
-    set -eu
-    /opt/venv/bin/python -m pip install \
-      -q --disable-pip-version-check --no-cache-dir \
-      "APScheduler>=3,<4"
+py -3 -m pip download `
+  --only-binary=:all: `
+  --platform manylinux2014_x86_64 `
+  --python-version 3.12 `
+  --implementation cp `
+  --abi cp312 `
+  --dest $dest `
+  "APScheduler>=3,<4"
 
-    /opt/venv/bin/python -c "
-from apscheduler.schedulers.background import BackgroundScheduler
-import torch
-import max
-print(\"REAL APSCHEDULER AND MAX: PASS\", flush=True)
-"
-  '
+if ($LASTEXITCODE -ne 0) {
+    throw "Download failed. Check approved package source."
+}
 
-"${P[@]}" commit "$NAME" "$IMAGE" >/dev/null
+$wheels = @(Get-ChildItem $dest -Filter "*.whl" -File)
 
-echo "PZAAS ISOLATED IMAGE: CREATED"
-echo "=== PZAAS NATIVE WORKER INITIALIZATION ==="
+if (-not ($wheels.Name -match "^APScheduler-3\.")) {
+    throw "APScheduler 3.x wheel missing"
+}
 
-"${P[@]}" run --rm -i --pull=never --network=none \
-  --memory=12g --pids-limit=512 \
-  -v "$PWD:/workspace:ro" -w /workspace \
-  -e PYTHONPATH=/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils:/workspace/artifacts/v1.472-max/pzaas_max/validation/python_deps \
-  --entrypoint /opt/venv/bin/python \
-  "$IMAGE" -u - <<'PY'
-from pzaas_native_serve_dev.pzaas_spawn_worker import PZAASFactoryWrapper
+Write-Host "=== TRANSFER WHEELS TO VM ==="
 
-import einops
-import sklearn
+ssh sajjna8@10.119.98.21 "mkdir -p /vzwhome/sajjna8/pzaas_wheels"
 
-print("NATIVE FACTORY AND LOCAL DEPENDENCIES: PASS", flush=True)
+if ($LASTEXITCODE -ne 0) {
+    throw "Remote directory creation failed"
+}
 
-pipeline = PZAASFactoryWrapper()()
+foreach ($wheel in $wheels) {
+    scp $wheel.FullName "sajjna8@10.119.98.21:/vzwhome/sajjna8/pzaas_wheels/"
 
-assert getattr(pipeline, "pzaas_native_adapter", None) is not None
-assert getattr(pipeline, "_pzaas_native_pipeline", False)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Transfer failed: $($wheel.Name)"
+    }
+}
 
-print("NATIVE WORKER INITIALIZATION: PASS", flush=True)
-print("NEXT: BUILT-IN MAX SERVE HTTP 200", flush=True)
-PY
-RUN
+Write-Host "PZAAS APSCHEDULER WHEELS TRANSFERRED: PASS"
+Write-Host "NEXT: INSTALL OFFLINE IN ISOLATED PZAAS IMAGE"

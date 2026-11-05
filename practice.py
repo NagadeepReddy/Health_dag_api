@@ -4,161 +4,263 @@ podman --root /application1/podman/storage \
 --rm -i --pull=never --network=none \
 --security-opt label=disable \
 -v "$PWD:/workspace:ro" \
--v "$PWD/artifacts/v1.472-max/pzaas_max/validation:/outputs:rw" \
 -w /workspace \
 --entrypoint python \
 docker-remote.oneartifactoryci.verizon.com/modular/max-full:latest - <<'PY'
-import sys, json, inspect, traceback
+import sys, json, traceback
 from pathlib import Path
 import numpy as np
 import torch
 
-print("=== PZAAS CORRECTED SEQUENCE STAGE CAPTURE ===", flush=True)
-torch.set_num_threads(2)
+print("=== PZAAS EXACT TRANSFORMER LAYER-0 PARITY ===", flush=True)
 
 root = Path("/workspace/artifacts/v1.472")
-val = Path("/workspace/artifacts/v1.472-max/pzaas_max/validation")
+mx = Path("/workspace/artifacts/v1.472-max")
+val = mx / "pzaas_max/validation"
 
 sys.path.insert(0, str(root / "utils/dependency-utils"))
 sys.path.insert(0, str(root / "core-artifact"))
+sys.path.insert(0, str(mx))
+
+torch.set_num_threads(2)
 
 try:
     from models import GRecBase
 
-    params = json.loads(
+    config = json.loads(
         (root / "config/torch_model_params_base.json").read_text()
     )
-    if isinstance(params, list):
-        params = params[0]
+    if isinstance(config, list):
+        config = config[0]
 
-    params["nlp_encoder_path"] = str(root / "config/config.json")
-    params["transfer_ind"] = True
-    params["extract_deep_idx"] = -1
+    config["nlp_encoder_path"] = str(root / "config/config.json")
+    config["transfer_ind"] = True
+    config["extract_deep_idx"] = -1
 
-    model = GRecBase(**params)
+    model = GRecBase(**config)
 
-    weights = torch.load(
+    state = torch.load(
         root / "core-artifact/model_0_base.pt",
         map_location="cpu",
         weights_only=False
     )
 
-    model.load_state_dict(weights, strict=True)
+    model.load_state_dict(state, strict=True)
     model.eval()
-    print("ORIGINAL MODEL: PASS", flush=True)
+    print("ORIGINAL PYTORCH MODEL: PASS", flush=True)
 
-    data = torch.load(
+    saved = torch.load(
         val / "ppa_model_input_exact.pt",
         map_location="cpu",
         weights_only=False
     )
+    data = saved.get("model_in", saved)
 
-    if isinstance(data, dict) and "model_in" in data:
-        data = data["model_in"]
-
-    if not isinstance(data, dict) or "deep_in" not in data:
-        raise RuntimeError(
-            "Saved model input structure is unexpected: "
-            + str(list(data.keys()) if isinstance(data, dict) else type(data))
-        )
-
-    print("SAVED INPUT: PASS", flush=True)
-
-    signature = inspect.signature(model.forward)
-    args = {}
-    aliases = {"tasks_in": "task_in", "task_in": "tasks_in"}
-
-    for name, param in signature.parameters.items():
-        if name == "self":
-            continue
-        if name in data:
-            args[name] = data[name]
-        elif aliases.get(name) in data:
-            args[name] = data[aliases[name]]
-        elif param.default is inspect.Parameter.empty:
-            raise RuntimeError("Required input missing: " + name)
-
-    print("FORWARD INPUT MAPPING: PASS", len(args), flush=True)
-
-    stages = {}
-    handles = []
-
-    for name, module in model.named_modules():
-        if name == "sequence_transformer" or name.startswith(
-            "sequence_transformer."
-        ):
-            def hook(mod, inp, output, stage=name):
-                value = output
-                if isinstance(value, (list, tuple)):
-                    value = next(
-                        (x for x in value if isinstance(x, torch.Tensor)),
-                        None
-                    )
-                if isinstance(value, torch.Tensor):
-                    stages[stage.replace(".", "__")] = (
-                        value.detach().cpu().float().numpy().copy()
-                    )
-
-            handles.append(module.register_forward_hook(hook))
-
-    print("SEQUENCE HOOKS:", len(handles), flush=True)
-
-    if not handles:
-        raise RuntimeError("Original sequence module not found")
-
-    with torch.inference_mode():
-        output = model(**args)
-
-    for handle in handles:
-        handle.remove()
-
-    if isinstance(output, (list, tuple)):
-        output = output[0]
-
-    actual = output.detach().cpu().numpy().reshape(1, 2048)
-
-    reference = torch.load(
-        val / "ppa_model_base_reference.pt",
-        map_location="cpu",
-        weights_only=False
+    stages = np.load(
+        val / "ppa_pytorch_sequence_stages.npz"
     )
 
-    if isinstance(reference, torch.Tensor):
-        reference = reference.detach().cpu().numpy()
+    print("SAVED PYTORCH STAGES:", len(stages.files))
 
-    reference = np.asarray(reference).reshape(1, 2048)
-    diff = np.abs(actual - reference)
+    captured = {}
 
-    print("ORIGINAL OUTPUT:", actual.shape)
-    print("REFERENCE MAX DIFF:", float(diff.max()))
-    print("REFERENCE MEAN DIFF:", float(diff.mean()))
+    candidates = [
+        (n, m) for n, m in model.named_modules()
+        if "sequence_transformer" in n and n.endswith(".0.fn")
+    ]
 
-    if not np.allclose(actual, reference, rtol=1e-3, atol=1e-3):
-        raise RuntimeError("Original same-input replay mismatch")
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "Expected one first transformer module; found "
+            + str([n for n, _ in candidates])
+        )
 
-    if not stages:
-        raise RuntimeError("No intermediate sequence outputs captured")
+    name, module = candidates[0]
 
-    destination = Path("/outputs/ppa_pytorch_sequence_stages.npz")
-    np.savez_compressed(destination, **stages)
+    def capture_input(mod, inputs):
+        captured["x"] = (
+            inputs[0].detach().cpu().float().numpy().copy()
+        )
 
-    print("\n=== FINAL RESULTS ===")
-    print("ORIGINAL PYTORCH: PASS")
-    print("SAME-INPUT REFERENCE: PASS")
-    print("CAPTURED SEQUENCE STAGES:", len(stages))
+    handle = module.register_forward_pre_hook(capture_input)
 
-    for name, value in stages.items():
-        print("STAGE:", name, "SHAPE:", value.shape)
+    try:
+        import inspect
+        signature = inspect.signature(model.forward)
+        args = {}
+        aliases = {"tasks_in": "task_in", "task_in": "tasks_in"}
 
-    print("TRACE SAVED:", destination)
-    print("MAX PARITY: PENDING INTERNAL COMPARISON")
+        for key, parameter in signature.parameters.items():
+            if key == "self":
+                continue
+            if key in data:
+                args[key] = data[key]
+            elif aliases.get(key) in data:
+                args[key] = data[aliases[key]]
+            elif parameter.default is inspect.Parameter.empty:
+                raise RuntimeError("Missing required input: " + key)
+
+        with torch.inference_mode():
+            model(**args)
+    finally:
+        handle.remove()
+
+    x = np.ascontiguousarray(captured["x"], dtype=np.float32)
+
+    fn_keys = [
+        k for k in stages.files if k.endswith("__0__fn")
+    ]
+    pos_keys = [
+        k for k in stages.files
+        if "__0__fn__rotary_emb" in k
+    ]
+    residual_keys = [
+        k for k in stages.files if k.endswith("__0")
+    ]
+
+    if not (len(fn_keys) == len(pos_keys) == len(residual_keys) == 1):
+        raise RuntimeError(
+            "Saved transformer stage identification is ambiguous"
+        )
+
+    expected_fn = np.asarray(stages[fn_keys[0]], dtype=np.float32)
+    expected_residual = np.asarray(
+        stages[residual_keys[0]], dtype=np.float32
+    )
+    position = np.asarray(stages[pos_keys[0]], dtype=np.float32)
+
+    if position.shape == (50, 256):
+        position = position[None, None, :, :]
+
+    position = np.ascontiguousarray(position, dtype=np.float32)
+    valid = np.ascontiguousarray(
+        np.asarray(data["v1_in"], dtype=np.int64).reshape(1)
+    )
+
+    assert x.shape == (1, 50, 256), x.shape
+    assert position.shape == (1, 1, 50, 256), position.shape
+    assert expected_fn.shape == x.shape
+    assert expected_residual.shape == x.shape
+
+    print("EXACT FIRST-LAYER INPUT:", x.shape)
+    print("ROTARY INPUT:", position.shape)
+    print("VALID LENGTH:", valid.tolist())
+    print("PYTORCH PRE-HOOK: PASS", flush=True)
+
+    from max.driver import CPU
+    from max.dtype import DType
+    from max.engine import InferenceSession
+    from max.graph import DeviceRef, Graph, TensorType
+
+    from pzaas_max.parallel_transformer_block_2layers import (
+        ParallelTransformerBlockMAX
+    )
+
+    device = DeviceRef.CPU()
+
+    with Graph(
+        "pzaas_layer0_isolated_parity",
+        input_types=[
+            TensorType(DType.float32, [1, 50, 256], device=device),
+            TensorType(DType.float32, [1, 1, 50, 256], device=device),
+            TensorType(DType.int64, [1], device=device),
+        ]
+    ) as graph:
+
+        gx, gp, gv = [
+            v.tensor for v in graph.inputs
+        ]
+
+        block = ParallelTransformerBlockMAX(
+            dtype=DType.float32,
+            device=device,
+            layer_idx=0
+        )
+
+        result = block(gx, gp, gv)
+        graph.output(result)
+
+    print("ISOLATED MAX LAYER-0 GRAPH: PASS", flush=True)
+
+    registry = {}
+
+    for key, tensor in state.items():
+        if not isinstance(tensor, torch.Tensor):
+            continue
+
+        if not key.startswith("sequence_transformer."):
+            continue
+
+        array = np.array(
+            tensor.detach().cpu().numpy(),
+            dtype=np.float32,
+            copy=True,
+            order="C"
+        )
+
+        registry[key] = array
+
+        if ".fn." in key:
+            registry[key.replace(".fn.", ".")] = array
+
+    session = InferenceSession(devices=[CPU()])
+
+    compiled = session.load(
+        graph,
+        weights_registry=registry
+    )
+
+    print("MAX LAYER-0 CPU COMPILATION: PASS", flush=True)
+
+    actual_fn = compiled.execute(
+        x, position, valid
+    )[0].to_numpy()
+
+    actual_fn = np.asarray(actual_fn, dtype=np.float32)
+
+    if actual_fn.shape != expected_fn.shape:
+        raise RuntimeError(
+            f"Output shape mismatch: {actual_fn.shape} "
+            f"vs {expected_fn.shape}"
+        )
+
+    diff_fn = np.abs(actual_fn - expected_fn)
+    actual_residual = x + actual_fn
+    diff_residual = np.abs(actual_residual - expected_residual)
+
+    fn_ok = bool(np.allclose(
+        actual_fn, expected_fn, rtol=1e-3, atol=1e-3
+    ))
+    residual_ok = bool(np.allclose(
+        actual_residual, expected_residual,
+        rtol=1e-3, atol=1e-3
+    ))
+
+    print("\n=== FIRST TRANSFORMER COMPARISON ===")
+    print("PYTORCH FN SHAPE:", expected_fn.shape)
+    print("MAX FN SHAPE:", actual_fn.shape)
+    print("FN MAX ABS DIFF:", float(diff_fn.max()))
+    print("FN MEAN ABS DIFF:", float(diff_fn.mean()))
+    print("FN PARITY:", "PASS" if fn_ok else "FAIL")
+    print("RESIDUAL MAX DIFF:", float(diff_residual.max()))
+    print("RESIDUAL PARITY:", "PASS" if residual_ok else "FAIL")
+
+    print("\n=== NEXT DECISION ===")
+    if fn_ok and residual_ok:
+        print("LAYER 0: PASS")
+        print("NEXT: CHECK PRE-TRANSFORMER FEATURE ASSEMBLY")
+    else:
+        print("LAYER 0: NUMERICAL DIVERGENCE CONFIRMED")
+        print("NEXT: ISOLATE RMSNORM / QKV / ROTARY / MASK")
+
     print("ORIGINAL DS: UNCHANGED")
     print("CTA / BPLAN: UNCHANGED")
+    print("FILES MODIFIED: NONE")
 
 except Exception as exc:
-    print("\nSTAGE CAPTURE: BLOCKED")
+    print("\nLAYER-0 DIAGNOSTIC: BLOCKED")
     print(type(exc).__name__ + ":", exc)
-    traceback.print_exc(limit=4)
+    traceback.print_exc(limit=5)
     print("ORIGINAL DS: UNCHANGED")
     print("CTA / BPLAN: UNCHANGED")
     raise SystemExit(1)

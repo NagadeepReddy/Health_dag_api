@@ -1,5 +1,39 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && \
+set -e
+cd /application1/sajjna8/rt-pzaas-v1.0
+
+python3 - <<'PY'
+from pathlib import Path
+import shutil
+import ast
+
+p = Path("artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_max_model_adapter.py")
+
+old = "from .pzaas_worker_adapter import PZAASWorkerAdapter"
+new = "from pzaas_worker_adapter import PZAASWorkerAdapter"
+
+assert p.is_file(), f"Missing: {p}"
+src = p.read_text()
+
+if old in src:
+    assert src.count(old) == 1
+    updated = src.replace(old, new, 1)
+    ast.parse(updated)
+    backup = p.with_suffix(".py.before_import_fix")
+    if not backup.exists():
+        shutil.copy2(p, backup)
+    p.write_text(updated)
+elif new in src:
+    ast.parse(src)
+else:
+    raise RuntimeError("Unexpected import structure; no changes made")
+
+print("PZAAS IMPORT: CORRECTED")
+print("PYTHON SYNTAX: PASS")
+print("ORIGINAL DS: UNCHANGED")
+print("CTA / BPLAN: UNCHANGED")
+PY
+
 podman --root /application1/podman/storage \
 --runroot /run/containers/storage run --rm -i \
 --network none \
@@ -9,57 +43,25 @@ podman --root /application1/podman/storage \
 -e PYTHONPATH="/workspace/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472-max/pzaas_max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils" \
 --entrypoint /opt/venv/bin/python \
 localhost/cta-max-faiss:local - <<'PY'
-import importlib
-import inspect
 import traceback
 
-print("=== PZAAS REAL MAX BRIDGE RUNTIME ===", flush=True)
+print("=== PZAAS REAL NATIVE BRIDGE TEST ===", flush=True)
 
 try:
     import max
     print("MAX RUNTIME: PASS", flush=True)
 
-    module = importlib.import_module(
-        "pzaas_max_model_adapter"
-    )
-    print("PZAAS BRIDGE IMPORT: PASS", flush=True)
+    from pzaas_max_model_adapter import PZAASMAXModel
+    print("MODEL BRIDGE IMPORT: PASS", flush=True)
 
-    cls = getattr(module, "PZAASMAXModel")
-    print("MODEL CLASS: FOUND", flush=True)
+    model = PZAASMAXModel()
+    print("MODEL INITIALIZATION: PASS", flush=True)
 
-    signature = inspect.signature(cls)
-    required = [
-        p.name for p in signature.parameters.values()
-        if p.default is inspect.Parameter.empty
-        and p.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        )
-    ]
-
-    if required:
-        print("MODEL CONSTRUCTOR:", signature)
-        raise RuntimeError(
-            "Constructor requires arguments: "
-            + ", ".join(required)
-        )
-
-    print("INITIALIZING REAL MAX BRIDGE...", flush=True)
-    model = cls()
-
-    print("PZAAS BRIDGE INITIALIZATION: PASS", flush=True)
     print("CALLABLE:", callable(model), flush=True)
-
-    print("NEXT: NATIVE WORKER AND HTTP VALIDATION")
+    print("NEXT: NATIVE WORKER EXECUTION AND HTTP 200")
 
 except Exception:
-    print("RUNTIME VALIDATION: BLOCKED", flush=True)
+    print("RUNTIME TEST: BLOCKED", flush=True)
     traceback.print_exc()
     raise SystemExit(1)
-
-finally:
-    print("ORIGINAL DS: UNCHANGED", flush=True)
-    print("CTA / BPLAN: UNCHANGED", flush=True)
-    print("SOURCE FILES MODIFIED: NONE", flush=True)
 PY

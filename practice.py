@@ -1,46 +1,42 @@
 
-$ErrorActionPreference = "Stop"
+cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
+set -euo pipefail
 
-$dest = Join-Path $env:USERPROFILE "Downloads\pzaas_apscheduler_wheels"
+P=(podman --root /application1/podman/storage --runroot /run/containers/storage)
+W=/vzwhome/sajjna8/pzaas_wheels
+D=/application1/max_shared_python_deps
+IMAGE=localhost/cta-max-faiss:local
 
-New-Item -ItemType Directory -Force -Path $dest | Out-Null
+test -d "$W" || { echo "ERROR: Transferred wheels missing"; exit 1; }
+mkdir -p "$D"
 
-Write-Host "=== DOWNLOAD PZAAS LINUX WHEELS ==="
+echo "=== INSTALL SHARED DEPENDENCIES WITHOUT CHANGING IMAGE ==="
 
-py -3 -m pip download `
-  --only-binary=:all: `
-  --platform manylinux2014_x86_64 `
-  --python-version 3.12 `
-  --implementation cp `
-  --abi cp312 `
-  --dest $dest `
-  "APScheduler>=3,<4"
+"${P[@]}" run --rm --pull=never --network=none \
+  -v "$W:/wheels:ro" \
+  -v "$D:/shared_deps" \
+  -v "$PWD:/workspace:ro" \
+  --entrypoint /bin/sh "$IMAGE" -ec '
+    set -e
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Download failed. Check approved package source."
-}
+    /opt/venv/bin/python -m pip install \
+      --no-index \
+      --find-links=/wheels \
+      --target=/shared_deps \
+      "APScheduler>=3,<4"
 
-$wheels = @(Get-ChildItem $dest -Filter "*.whl" -File)
+    PYTHONPATH=/shared_deps:/workspace/artifacts/v1.472-max/pzaas_max/validation/python_deps \
+      /opt/venv/bin/python -c "
+from apscheduler.schedulers.background import BackgroundScheduler
+import einops
+import sklearn
+import torch
+import faiss
+import max
+print('PZAAS SHARED RUNTIME DEPENDENCIES: PASS')
+"
+  '
 
-if (-not ($wheels.Name -match "^APScheduler-3\.")) {
-    throw "APScheduler 3.x wheel missing"
-}
-
-Write-Host "=== TRANSFER WHEELS TO VM ==="
-
-ssh sajjna8@10.119.98.21 "mkdir -p /vzwhome/sajjna8/pzaas_wheels"
-
-if ($LASTEXITCODE -ne 0) {
-    throw "Remote directory creation failed"
-}
-
-foreach ($wheel in $wheels) {
-    scp $wheel.FullName "sajjna8@10.119.98.21:/vzwhome/sajjna8/pzaas_wheels/"
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Transfer failed: $($wheel.Name)"
-    }
-}
-
-Write-Host "PZAAS APSCHEDULER WHEELS TRANSFERRED: PASS"
-Write-Host "NEXT: INSTALL OFFLINE IN ISOLATED PZAAS IMAGE"
+echo "EXISTING CTA/BPLAN IMAGE: UNCHANGED"
+echo "NEXT: PZAAS NATIVE WORKER INITIALIZATION"
+SH

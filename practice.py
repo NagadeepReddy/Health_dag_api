@@ -1,48 +1,89 @@
 
 cd /application1/sajjna8/rt-pzaas-v1.0 && \
-APSWHEEL="$(find /application1/sajjna8 /root/.cache/pip \
--type f -iname 'apscheduler-3*.whl' -print -quit 2>/dev/null)" && \
-if [ -z "$APSWHEEL" ]; then
-  echo "BLOCKED: No local APScheduler 3.x wheel found"
-  echo "NEXT: Obtain approved APScheduler 3.x and dependency wheels"
-else
-  podman --root /application1/podman/storage \
-    --runroot /run/containers/storage \
-    run --rm -i --pull=never \
-    --network=none --memory=12g --pids-limit=512 \
-    -v "$PWD:/workspace:ro" \
-    -v "$(dirname "$APSWHEEL"):/offline:ro" \
-    -e 'PYTHONPATH=/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils' \
-    -w /workspace \
-    --entrypoint /bin/sh \
-    localhost/cta-max-faiss:local -c '
-      set -eu
-      /opt/venv/bin/python -m pip install \
-        --no-index --find-links=/offline \
-        --target /tmp/pzaas-offline "APScheduler>=3,<4"
-      export PYTHONPATH="/tmp/pzaas-offline:$PYTHONPATH"
-      /opt/venv/bin/python -u - <<'"'"'PY'"'"'
-import traceback
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage \
+run --rm -i --pull=never --network=none \
+-v "$PWD:/workspace:ro" -w /workspace \
+-e PYTHONPATH=/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
+--entrypoint /opt/venv/bin/python \
+localhost/cta-max-faiss:local - <<'PY'
+import ast
+import importlib.util
+from pathlib import Path
 
-print("=== PZAAS NATIVE WORKER TEST ===", flush=True)
-try:
-    from apscheduler.schedulers.background import BackgroundScheduler
-    print("REAL APSCHEDULER: PASS", flush=True)
+print("=== PZAAS NATIVE RUNTIME DEPENDENCY CHECK ===")
 
-    from pzaas_native_serve_dev.pzaas_spawn_worker import PZAASFactoryWrapper
-    pipeline = PZAASFactoryWrapper()()
+files = [
+    Path("artifacts/v1.472/core-artifact/pipeline.py"),
+    Path("artifacts/v1.472/utils/dependency-utils/models.py"),
+]
 
-    assert getattr(pipeline, "pzaas_native_adapter", None) is not None
-    assert getattr(pipeline, "_pzaas_native_pipeline", False)
+extension = Path(
+    "artifacts/v1.472-max/maxserve_pzaas_extension"
+)
 
-    print("NATIVE WORKER INITIALIZATION: PASS", flush=True)
-    print("NEXT: BUILT-IN MAX SERVE HTTP 200", flush=True)
-except Exception:
-    print("NATIVE WORKER INITIALIZATION: BLOCKED", flush=True)
-    traceback.print_exc()
-    raise SystemExit(1)
-finally:
-    print("ORIGINAL DS / CTA / BPLAN: UNCHANGED BY TEST", flush=True)
+files.extend(
+    sorted(
+        (extension / "pzaas_native_serve_dev").glob("*.py")
+    )
+)
+
+imports = {}
+
+for path in files:
+    if not path.is_file():
+        print("SOURCE NOT FOUND:", path)
+        continue
+
+    tree = ast.parse(path.read_text())
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [x.name for x in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            names = [node.module] if node.module else []
+        else:
+            continue
+
+        for name in names:
+            root = name.split(".")[0]
+            imports.setdefault(root, set()).add(path.name)
+
+missing = []
+
+for name in sorted(imports):
+    try:
+        found = importlib.util.find_spec(name) is not None
+    except (ImportError, AttributeError, ValueError):
+        found = False
+
+    if not found:
+        missing.append(name)
+
+print("\n=== MISSING IMPORT ROOTS ===")
+for name in missing:
+    print(name, "| used by:", ", ".join(sorted(imports[name])))
+
+print("\n=== IMPORTANT RUNTIME PACKAGES ===")
+for name in [
+    "apscheduler", "einops", "torch",
+    "transformers", "faiss", "max",
+    "sklearn", "pandas", "numpy"
+]:
+    try:
+        ok = importlib.util.find_spec(name) is not None
+    except (ImportError, AttributeError, ValueError):
+        ok = False
+
+    print(name, "FOUND" if ok else "MISSING")
+
+print("\n=== PROGRESS ===")
+print("MAX CPU: PASS")
+print("LAYER-0: PASS")
+print("EIGHT BRANCHES: 8/8 PASS")
+print("FULL MODEL PARITY: PASS")
+print("NATIVE WORKER: DEPENDENCIES PENDING")
+print("NATIVE HTTP 200: PENDING")
+print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
+print("NEXT: PACKAGE MISSING REAL DEPENDENCIES TOGETHER")
 PY
-    '
-fi

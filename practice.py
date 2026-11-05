@@ -1,94 +1,65 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-from pathlib import Path
-import ast
-import shutil
-import sys
+cd /application1/sajjna8/rt-pzaas-v1.0 && \
+podman --root /application1/podman/storage \
+--runroot /run/containers/storage run --rm -i \
+--network none \
+--security-opt label=disable \
+-v "$PWD:/workspace:ro" \
+-w /workspace \
+-e PYTHONPATH="/workspace/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472-max/pzaas_max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils" \
+--entrypoint /opt/venv/bin/python \
+localhost/cta-max-faiss:local - <<'PY'
+import importlib
+import inspect
+import traceback
 
-p = Path(
-    "artifacts/v1.472-max/maxserve_pzaas_extension/"
-    "pzaas_native_serve_dev/pzaas_max_model_adapter.py"
-)
+print("=== PZAAS REAL MAX BRIDGE RUNTIME ===", flush=True)
 
-print("=== PZAAS VERIFIED GRAPH WEIGHT REPAIR ===", flush=True)
+try:
+    import max
+    print("MAX RUNTIME: PASS", flush=True)
 
-if not p.is_file():
-    raise SystemExit(f"STOP: Bridge missing: {p}")
-
-source = p.read_text()
-tree = ast.parse(source, filename=str(p))
-
-matches = [
-    n for n in ast.walk(tree)
-    if isinstance(n, ast.For)
-    and isinstance(n.iter, ast.Attribute)
-    and isinstance(n.iter.value, ast.Name)
-    and n.iter.value.id == "graph"
-    and n.iter.attr == "weights"
-]
-
-if not matches:
-    if "graph_weight_map = graph._weights" in source:
-        print("GRAPH WEIGHT ACCESS: ALREADY CORRECTED")
-        print("PYTHON SYNTAX: PASS")
-        sys.exit(0)
-    raise SystemExit(
-        "STOP: Expected graph.weights loop not present. "
-        "No files modified."
+    module = importlib.import_module(
+        "pzaas_max_model_adapter"
     )
+    print("PZAAS BRIDGE IMPORT: PASS", flush=True)
 
-if len(matches) != 1:
-    raise SystemExit(
-        f"STOP: Found {len(matches)} matching loops. "
-        "No files modified."
-    )
+    cls = getattr(module, "PZAASMAXModel")
+    print("MODEL CLASS: FOUND", flush=True)
 
-loop = matches[0]
-first = loop.body[0]
+    signature = inspect.signature(cls)
+    required = [
+        p.name for p in signature.parameters.values()
+        if p.default is inspect.Parameter.empty
+        and p.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    ]
 
-if not (
-    isinstance(first, ast.Assign)
-    and len(first.targets) == 1
-    and isinstance(first.targets[0], ast.Name)
-    and first.targets[0].id == "name"
-):
-    raise SystemExit(
-        "STOP: Unexpected loop structure. No files modified."
-    )
+    if required:
+        print("MODEL CONSTRUCTOR:", signature)
+        raise RuntimeError(
+            "Constructor requires arguments: "
+            + ", ".join(required)
+        )
 
-lines = source.splitlines(keepends=True)
-original_line = lines[loop.lineno - 1]
-indent = original_line[:len(original_line) - len(original_line.lstrip())]
+    print("INITIALIZING REAL MAX BRIDGE...", flush=True)
+    model = cls()
 
-replacement = [
-    f"{indent}graph_weight_map = graph._weights\n",
-    f"{indent}if not isinstance(graph_weight_map, dict):\n",
-    f'{indent}    raise TypeError("MAX graph weight mapping invalid")\n',
-    f"{indent}for graph_weight_name, _graph_weight in graph_weight_map.items():\n",
-    f"{indent}    name = str(graph_weight_name)\n",
-]
+    print("PZAAS BRIDGE INITIALIZATION: PASS", flush=True)
+    print("CALLABLE:", callable(model), flush=True)
 
-lines[loop.lineno - 1:first.end_lineno] = replacement
-updated = "".join(lines)
+    print("NEXT: NATIVE WORKER AND HTTP VALIDATION")
 
-ast.parse(updated, filename=str(p))
-compile(updated, str(p), "exec")
+except Exception:
+    print("RUNTIME VALIDATION: BLOCKED", flush=True)
+    traceback.print_exc()
+    raise SystemExit(1)
 
-backup = p.with_name(p.name + ".pre_registry_fix.bak")
-if not backup.exists():
-    shutil.copy2(p, backup)
-
-p.write_text(updated)
-
-assert "for weight in graph.weights:" not in p.read_text()
-assert "graph_weight_map = graph._weights" in p.read_text()
-ast.parse(p.read_text())
-
-print("GRAPH WEIGHT MAPPING: CORRECTED")
-print("REGISTERED WEIGHT KEYS: GRAPH._WEIGHTS")
-print("PYTHON SYNTAX: PASS")
-print("ORIGINAL BRIDGE BACKUP: SAVED")
-print("ORIGINAL DS: UNCHANGED")
-print("CTA / BPLAN: UNCHANGED")
-print("NEXT: VERIFY REAL MAX NATIVE RUNTIME")
+finally:
+    print("ORIGINAL DS: UNCHANGED", flush=True)
+    print("CTA / BPLAN: UNCHANGED", flush=True)
+    print("SOURCE FILES MODIFIED: NONE", flush=True)
 PY

@@ -1,33 +1,37 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && \
-podman --root /application1/podman/storage \
---runroot /run/containers/storage \
-run --rm -i --pull=never --network=none \
---memory=12g --pids-limit=512 \
--v "$PWD:/workspace:ro" \
--v /application1/max_shared_python_deps:/shared_deps:ro \
--w /workspace \
--e PYTHONPATH=/shared_deps:/workspace/artifacts/v1.472-max/pzaas_max/validation/python_deps:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
---entrypoint /opt/venv/bin/python \
-localhost/cta-max-faiss:local -u - <<'PY'
-from apscheduler.schedulers.background import BackgroundScheduler
-import einops
-import sklearn
-import torch
-import faiss
-import max
+$ErrorActionPreference = "Stop"
 
-print("PZAAS SHARED DEPENDENCIES: PASS", flush=True)
+$dest = Join-Path $env:USERPROFILE "Downloads\pzaas_sklearn161"
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-from pzaas_native_serve_dev.pzaas_spawn_worker import PZAASFactoryWrapper
+Write-Host "=== DOWNLOAD MATCHING SCIKIT-LEARN 1.6.1 ==="
 
-print("PZAAS NATIVE FACTORY IMPORT: PASS", flush=True)
+py -3 -m pip download `
+  --only-binary=:all: `
+  --no-deps `
+  --platform manylinux2014_x86_64 `
+  --python-version 3.12 `
+  --implementation cp `
+  --abi cp312 `
+  --dest $dest `
+  "scikit-learn==1.6.1"
 
-pipeline = PZAASFactoryWrapper()()
+if ($LASTEXITCODE -ne 0) {
+    throw "Download failed"
+}
 
-assert getattr(pipeline, "pzaas_native_adapter", None) is not None
-assert getattr(pipeline, "_pzaas_native_pipeline", False)
+$wheel = Get-ChildItem -Path $dest -Filter "scikit_learn-1.6.1-*.whl" -File |
+    Select-Object -First 1
 
-print("PZAAS NATIVE WORKER INITIALIZATION: PASS", flush=True)
-print("NEXT: BUILT-IN MAX SERVE HTTP 200", flush=True)
-PY
+if (-not $wheel) {
+    throw "Matching wheel not found"
+}
+
+scp $wheel.FullName "sajjna8@10.119.98.21:/vzwhome/sajjna8/pzaas_wheels/"
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Transfer failed"
+}
+
+Write-Host "PZAAS SCIKIT-LEARN 1.6.1 TRANSFER: PASS"
+Write-Host "CTA/BPLAN IMAGE: UNCHANGED"

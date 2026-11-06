@@ -1,88 +1,239 @@
 
-cd /application1/sajjna8 && python3 - <<'PY'
-from pathlib import Path
-import ast
-import difflib
-import re
+cd /application1/sajjna8 && bash <<'SH'
+set -euo pipefail
 
-base = Path("/application1/sajjna8")
+ROOT="/application1/sajjna8/max_shared_infra"
+PKG="$ROOT/python/max_runtime_shared"
+TEST="$ROOT/tests/test_typed_queue.py"
 
-sources = {
-    "BPLAN": base / (
-        "rt-pzai-bplan-v1/artifacts/v1.113-max/"
-        "maxserve_bplan_extension"
-    ),
-    "PZAAS": base / (
-        "PZAAS_MAX_CLEAN_HANDOFF_20261106/model/"
-        "artifacts/v1.472-max/maxserve_pzaas_extension"
-    )
+test -f "$ROOT/bin/run_max_model.sh" || {
+  echo "STOP: Shared launcher missing"
+  exit 1
 }
 
-def locate(root, filename):
-    matches = [
-        p for p in root.rglob(filename)
-        if "reference" not in str(p).lower()
-        and "backup" not in str(p).lower()
-    ]
-    if len(matches) != 1:
-        raise SystemExit(
-            f"STOP: Expected one {filename}, found {len(matches)}"
-        )
-    return matches[0]
+if [ -e "$PKG" ] || [ -e "$TEST" ]; then
+  echo "STOP: Shared queue files already exist; nothing overwritten"
+  exit 1
+fi
 
-print("=== SHARED QUEUE COMPATIBILITY REVIEW ===")
+mkdir -p "$PKG" "$ROOT/tests"
 
-files = {}
-for name, root in sources.items():
-    path = locate(root, f"{name.lower()}_queue_compat.py")
-    source = path.read_text()
-    ast.parse(source)
-    files[name] = source
-    print(f"{name}: {path}")
-    print(f"LINES: {len(source.splitlines())}")
+cat > "$PKG/__init__.py" <<'PY'
+"""Model-independent Modular MAX serving helpers."""
+PY
 
-def normalize(text):
-    return re.sub(
-        "bplan|pzaas", "model", text,
-        flags=re.IGNORECASE
+cat > "$PKG/typed_queue.py" <<'PY'
+"""Typed MAX Serve response queues, independent of model architecture."""
+
+from typing import Any
+
+
+def configure_typed_response_queue(
+    *,
+    scheduler_configs_class,
+    zmq_config_class,
+    request_id_type,
+    scheduler_result_type,
+    serializable_output_type,
+    owner,
+):
+    """
+    Install a typed queue for one explicitly selected model.
+
+    This changes the scheduler class only when called.
+    Repeated registration for the same model is idempotent.
+    A conflicting registration raises an error.
+    """
+    if not isinstance(owner, str) or not owner.strip():
+        raise ValueError("A nonempty model owner is required")
+
+    if serializable_output_type is None:
+        raise ValueError("Serializable output type is required")
+
+    current = scheduler_configs_class.__dict__.get(
+        "_max_shared_queue_install"
     )
 
-bplan = normalize(files["BPLAN"])
-pzaas = normalize(files["PZAAS"])
+    if current is not None:
+        if current == (owner, serializable_output_type):
+            return False
+        raise RuntimeError(
+            "Scheduler already configured for another response type"
+        )
 
-print("\n=== IMPLEMENTATION COMPARISON ===")
-print("NORMALIZED SOURCE IDENTICAL:", bplan == pzaas)
+    # Do not silently wrap a model's previous queue monkeypatch.
+    legacy = [
+        name
+        for name, value in vars(scheduler_configs_class).items()
+        if name.endswith("_typed_response") and value is True
+    ]
+    if legacy:
+        raise RuntimeError(
+            "Existing model-specific queue patch detected: "
+            + ", ".join(legacy)
+        )
 
-diff = list(difflib.unified_diff(
-    bplan.splitlines(),
-    pzaas.splitlines(),
-    fromfile="BPLAN",
-    tofile="PZAAS",
-    lineterm=""
-))
+    original_init = scheduler_configs_class.__init__
 
-if diff:
-    print("DIFFERENCES:")
-    print("\n".join(diff[:100]))
-else:
-    print("NO DIFFERENCES AFTER MODEL-NAME NORMALIZATION")
+    response_type = dict[
+        request_id_type,
+        scheduler_result_type[serializable_output_type],
+    ]
 
-print("\n=== QUEUE IMPLEMENTATION ===")
-for n, line in enumerate(
-    files["PZAAS"].splitlines(), 1
+    def shared_queue_init(self, pipeline_task):
+        original_init(self, pipeline_task)
+        self.request_queue_config = zmq_config_class[Any](Any)
+        self.response_queue_config = (
+            zmq_config_class[response_type](response_type)
+        )
+
+    scheduler_configs_class.__init__ = shared_queue_init
+    scheduler_configs_class._max_shared_queue_install = (
+        owner,
+        serializable_output_type,
+    )
+
+    return True
+
+
+def install_max_typed_response_queue(
+    serializable_output_type,
+    *,
+    owner,
 ):
-    print(f"{n:3}: {line}")
+    """Call explicitly inside a compatible MAX Serve model process."""
+    from max.serve.scheduler.queues import SchedulerZmqConfigs
+    from max.serve.queue.zmq_queue import ZmqConfig
+    from max.interfaces.request import RequestID
+    from max.interfaces.scheduler import SchedulerResult
 
-print("\n=== BPLAN WORKER ADAPTER LOCATION ===")
-root = sources["BPLAN"]
-
-for path in sorted(root.rglob("*worker*adapter*.py")):
-    if "reference" not in str(path).lower():
-        print(path.relative_to(root))
-
-print("\n=== RESULT ===")
-print("SHARED QUEUE REVIEW: COMPLETE")
-print("EXISTING MODELS: UNCHANGED")
-print("RUNNING CONTAINERS: UNCHANGED")
-print("NEXT: BUILD SHARED QUEUE MODULE")
+    return configure_typed_response_queue(
+        scheduler_configs_class=SchedulerZmqConfigs,
+        zmq_config_class=ZmqConfig,
+        request_id_type=RequestID,
+        scheduler_result_type=SchedulerResult,
+        serializable_output_type=serializable_output_type,
+        owner=owner,
+    )
 PY
+
+cat > "$TEST" <<'PY'
+import unittest
+from typing import Any, Generic, TypeVar
+
+from max_runtime_shared.typed_queue import (
+    configure_typed_response_queue,
+)
+
+T = TypeVar("T")
+
+
+class FakeResult(Generic[T]):
+    pass
+
+
+class FakeRequestID:
+    pass
+
+
+class FakeOutput:
+    pass
+
+
+class FakeZmqConfig:
+    def __class_getitem__(cls, item):
+        return cls
+
+    def __init__(self, item):
+        self.item = item
+
+
+def make_scheduler():
+    class Scheduler:
+        def __init__(self, pipeline_task):
+            self.pipeline_task = pipeline_task
+            self.initialized = True
+
+    return Scheduler
+
+
+def install(scheduler, owner="model_a", output=FakeOutput):
+    return configure_typed_response_queue(
+        scheduler_configs_class=scheduler,
+        zmq_config_class=FakeZmqConfig,
+        request_id_type=FakeRequestID,
+        scheduler_result_type=FakeResult,
+        serializable_output_type=output,
+        owner=owner,
+    )
+
+
+class SharedQueueTests(unittest.TestCase):
+    def test_typed_queue_installed(self):
+        scheduler = make_scheduler()
+        self.assertTrue(install(scheduler))
+
+        instance = scheduler("pipeline_task")
+
+        self.assertTrue(instance.initialized)
+        self.assertEqual(instance.pipeline_task, "pipeline_task")
+        self.assertIs(instance.request_queue_config.item, Any)
+
+        expected = dict[FakeRequestID, FakeResult[FakeOutput]]
+        self.assertEqual(instance.response_queue_config.item, expected)
+
+    def test_same_model_is_idempotent(self):
+        scheduler = make_scheduler()
+        self.assertTrue(install(scheduler))
+        previous_init = scheduler.__init__
+
+        self.assertFalse(install(scheduler))
+        self.assertIs(scheduler.__init__, previous_init)
+
+    def test_different_model_cannot_override(self):
+        scheduler = make_scheduler()
+        install(scheduler)
+
+        with self.assertRaises(RuntimeError):
+            install(scheduler, owner="model_b")
+
+    def test_legacy_patch_is_preserved(self):
+        scheduler = make_scheduler()
+        original_init = scheduler.__init__
+        scheduler._legacy_typed_response = True
+
+        with self.assertRaises(RuntimeError):
+            install(scheduler)
+
+        self.assertIs(scheduler.__init__, original_init)
+
+    def test_invalid_owner_rejected(self):
+        scheduler = make_scheduler()
+
+        with self.assertRaises(ValueError):
+            install(scheduler, owner="")
+
+
+if __name__ == "__main__":
+    unittest.main()
+PY
+
+python3 -m py_compile "$PKG/typed_queue.py" "$TEST"
+
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="$ROOT/python" \
+python3 -m unittest discover \
+  -s "$ROOT/tests" \
+  -p "test_typed_queue.py" \
+  -v
+
+echo
+echo "=== SHARED MAX INFRA STATUS ==="
+echo "SHARED QUEUE MODULE: CREATED"
+echo "MODEL RESPONSE TYPE: CONFIGURABLE"
+echo "CONFLICT PROTECTION: IMPLEMENTED"
+echo "MODEL-SPECIFIC IMPORTS: NONE"
+echo "ORIGINAL CTA / BPLAN / PZAAS: UNCHANGED"
+echo "RUNNING CONTAINERS: UNCHANGED"
+echo "NEXT: SHARED SCHEDULER DESIGN"
+SH

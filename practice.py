@@ -2,140 +2,104 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 import ast
+import re
+import shutil
 
 repo = Path.cwd()
 base = repo / "artifacts/v1.472-max"
-ext = base / "maxserve_pzaas_extension"
-native = ext / "pzaas_native_serve_dev"
-graph = base / "pzaas_max"
 original = repo / "artifacts/v1.472"
-shared = Path("/application1/max_shared_python_deps")
 
-print("=== PZAAS CLEAN RELEASE INVENTORY ===")
+files = [
+    original / "Model.py",
+    original / "core-artifact/pipeline.py",
+    original / "utils/dependency-utils/models.py",
+    base / "pzaas_max/pzaas_weight_loader.py",
+    base / "maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_spawn_worker.py",
+    base / "maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_max_model_adapter.py",
+    base / "maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_native_launcher.py",
+]
 
-for path in (native, graph, original):
-    if not path.is_dir():
-        raise SystemExit(f"STOP: Required folder missing: {path}")
-
-print("\n=== NATIVE SERVING FILES ===")
-native_files = sorted(native.glob("*.py"))
-
-for path in native_files:
-    print(
-        f"{path.name:48} "
-        f"{path.stat().st_size:,} bytes"
-    )
-
-print("\n=== MAX GRAPH / MODEL COMPONENTS ===")
-for path in sorted(graph.glob("*.py")):
-    print(path.relative_to(base))
-
-print("\n=== DIRECT RUNTIME IMPORTS ===")
-
-entry_names = (
-    "pzaas_native_launcher.py",
-    "pzaas_spawn_worker.py",
-    "pzaas_max_model_adapter.py",
-    "pzaas_worker_adapter.py",
-    "pzaas_live_pack_72.py",
-    "pzaas_http_pipeline.py",
-    "pzaas_router.py",
+pattern = re.compile(
+    r"torch\.load|np\.load|numpy\.load|"
+    r"joblib\.load|pickle\.load|faiss\.read_index|"
+    r"\.pt\b|\.npy\b|\.bin\b|\.pkl\b|"
+    r"model[_-]settings|model[_-]path|"
+    r"weights[_-]path|read_index|"
+    r"__file__|os\.getcwd|"
+    r"/application1/|/vzwhome/|"
+    r"pzaas_max\.validation",
+    re.IGNORECASE
 )
 
-for name in entry_names:
-    path = native / name
+print("=== PZAAS CLEAN RELEASE: RUNTIME DEPENDENCIES ===")
+
+for path in files:
+    print(f"\nFILE: {path.relative_to(repo)}")
+
     if not path.is_file():
-        print(f"{name}: NOT FOUND")
+        print("  MISSING — REVIEW REQUIRED")
         continue
 
-    print(f"\n{name}")
+    lines = path.read_text(errors="replace").splitlines()
 
-    tree = ast.parse(path.read_text(), filename=str(path))
+    matches = [
+        (i, line.strip())
+        for i, line in enumerate(lines, 1)
+        if pattern.search(line)
+    ]
 
-    imports = set()
+    print("MATCHING RUNTIME REFERENCES:", len(matches))
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if (
-                "pzaas" in module.lower()
-                or module in ("pipeline", "models", "Model")
-                or module.startswith("maxserve")
-            ):
-                imports.add(module)
+    for number, line in matches[:35]:
+        print(f"  {number}: {line[:180]}")
 
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if "pzaas" in alias.name.lower():
-                    imports.add(alias.name)
+    if len(matches) > 35:
+        print(f"  ... {len(matches)-35} additional references")
 
-    for item in sorted(imports):
-        print("  ", item)
+print("\n=== GRAPH NON-PYTHON RUNTIME ASSETS ===")
 
-print("\n=== TRAINED MODEL / AUXILIARY ASSETS ===")
+graph = base / "pzaas_max"
 
-suffixes = {".pt", ".pth", ".bin", ".npy", ".npz",
-            ".pkl", ".pickle", ".faiss", ".index"}
+for path in sorted(graph.rglob("*")):
+    if not path.is_file():
+        continue
 
-count = 0
-for path in original.rglob("*"):
-    if path.is_file() and path.suffix.lower() in suffixes:
-        count += 1
-        if count <= 35:
-            print(
-                path.relative_to(repo),
-                f"({path.stat().st_size / 1048576:.1f} MiB)"
-            )
+    if any(part in {
+        "__pycache__", ".pytest_cache", ".git"
+    } for part in path.parts):
+        continue
 
-print("TOTAL ORIGINAL ASSET CANDIDATES:", count)
+    if path.suffix.lower() in {
+        ".pt", ".pth", ".bin", ".npy", ".npz",
+        ".pkl", ".pickle", ".json", ".safetensors"
+    }:
+        print(
+            path.relative_to(repo),
+            f"{path.stat().st_size / 1048576:.2f} MiB"
+        )
 
-print("\n=== POTENTIAL CLEANUP CANDIDATES ===")
+print("\n=== RUNTIME VALIDATION IMPORT ===")
 
-for path in sorted(ext.iterdir()):
-    name = path.name.lower()
-    if any(part in name for part in (
-        "test", "validation", "reference", "backup",
-        "debug", "experiment", "evidence", "archive"
-    )):
-        print("REVIEW:", path.relative_to(repo))
-
-print("\n=== CROSS-MODEL REFERENCES ===")
-matches = []
-
-for path in native_files:
-    for number, line in enumerate(
-        path.read_text(errors="replace").splitlines(), 1
-    ):
-        if any(term in line.lower() for term in (
-            "cta_", "bplan", "/application1/",
-            "/vzwhome/"
-        )):
-            matches.append(
-                f"{path.name}:{number}: {line.strip()[:130]}"
-            )
-
-if matches:
-    for match in matches[:35]:
-        print(match)
-else:
-    print("No obvious CTA/BPLAN or VM absolute-path references")
-
-print("\n=== SHARED DEPENDENCY LOCATION ===")
-print("EXISTS:", shared.is_dir())
-print("PATH:", shared)
-
-print("\n=== CURRENT POC ARCHIVE ===")
-archives = sorted(
-    repo.glob("PZAAS_MAX_CPU_POC_HANDOFF_*.tar.gz")
+required = (
+    graph / "validation/pzaas_forward_input_adapter.py"
 )
-for path in archives:
-    print(path.name, f"({path.stat().st_size / 1048576:.1f} MiB)")
 
-print("\n=== NEXT RELEASE REQUIREMENTS ===")
-print("Model-specific runtime files: review required")
-print("Shared infrastructure separation: pending")
-print("Clean independent container: pending")
-print("External Postman: pending")
-print("Final portable handoff: pending")
+print("FORWARD INPUT ADAPTER EXISTS:", required.is_file())
+
+print("\n=== DEPLOYMENT CONFIGURATION ===")
+
+for name in ("model-settings.json", "requirements.txt"):
+    for path in sorted(original.rglob(name))[:10]:
+        print(path.relative_to(repo))
+
+print("\n=== AVAILABLE STAGING SPACE ===")
+
+disk = shutil.disk_usage("/application1")
+print(f"FREE: {disk.free / 1073741824:.1f} GiB")
+
+print("\n=== NEXT ACTION ===")
+print("Construct minimal PZAAS runtime manifest")
+print("Separate reusable MAX runtime from model files")
+print("Stage a clean release without changing existing POC")
 print("NO FILES MODIFIED OR DELETED")
 PY

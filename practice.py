@@ -2,56 +2,194 @@
 cd /application1/sajjna8 && bash <<'SH'
 set -euo pipefail
 
-NAME="PZAAS_MAX_CLEAN_HANDOFF_20261106"
-ARCHIVE="${NAME}.tar.gz"
-CHECKSUM="${ARCHIVE}.sha256"
+ROOT="/application1/sajjna8/max_shared_infra"
+PACKAGE="/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106"
 
-test -d "$NAME"
-test -f "$ARCHIVE"
-test -f "$CHECKSUM"
+echo "=== SHARED MODULAR MAX INFRASTRUCTURE ==="
 
-echo "=== PZAAS FINAL HANDOFF VERIFICATION ==="
+if [ -e "$ROOT" ]; then
+  echo "STOP: Shared infra folder already exists; nothing overwritten"
+  exit 1
+fi
 
-sha256sum -c "$CHECKSUM"
+for item in \
+  "$PACKAGE/model" \
+  "$PACKAGE/runtime/python_deps" \
+  "$PACKAGE/config/model.env"; do
+  test -e "$item" || {
+    echo "STOP: Required verified package item missing: $item"
+    exit 1
+  }
+done
 
-python3 - "$ARCHIVE" "$NAME" <<'PY'
-import sys
-import tarfile
-from pathlib import Path
+PODMAN=(podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage)
 
-archive = Path(sys.argv[1])
-name = sys.argv[2]
+"${PODMAN[@]}" image exists localhost/max-shared-runtime:cpu || {
+  echo "STOP: Shared MAX image alias missing"
+  exit 1
+}
 
-required = [
-    "model/artifacts/v1.472/core-artifact/pipeline.py",
-    "model/artifacts/v1.472-max/pzaas_max/validation/pzaas_forward_schema.json",
-    "model/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_native_launcher.py",
-    "runtime/launch_max_model.sh",
-    "config/model.env"
-]
+mkdir -p "$ROOT/bin"
 
-with tarfile.open(archive, "r:gz") as tar:
-    members = {m.name for m in tar.getmembers()}
-    for relative in required:
-        path = f"{name}/{relative}"
-        if path not in members:
-            raise SystemExit(f"STOP: Missing archive member: {path}")
+cat > "$ROOT/bin/run_max_model.sh" <<'LAUNCH'
+#!/usr/bin/env bash
+set -euo pipefail
 
-print("HANDOFF ARCHIVE CONTENTS: PASS")
-print("GENERIC LAUNCHER: INCLUDED")
-print("PZAAS MODEL CONFIG: INCLUDED")
-print("ORIGINAL DS AND MAX INTEGRATION: INCLUDED")
-PY
+if [ "$#" -ne 2 ]; then
+  echo "Usage: run_max_model.sh check|start MODEL_PACKAGE"
+  exit 2
+fi
 
-echo "=== FINAL STATUS ==="
-echo "PZAAS CPU POC: COMPLETE"
-echo "TRAINED MAX INFERENCE: PASS"
-echo "NUMERICAL AND BUSINESS PARITY: PASS"
-echo "POSTMAN HTTP 200: PASS"
-echo "PACKAGED COLD START: PASS"
-echo "GENERIC LAUNCHER: PASS"
-echo "SHA256: VERIFIED"
-echo "LIVE KUBERNETES LOOKUPS: PENDING"
-echo "OTHER-VM PORTABILITY / IMAGE APPROVAL: PENDING"
-echo "ORIGINAL DS / CTA / BPLAN: UNCHANGED"
+ACTION="$1"
+PACKAGE="$2"
+
+case "$ACTION" in
+  check|start) ;;
+  *) echo "STOP: Unknown action"; exit 2 ;;
+esac
+
+test -d "$PACKAGE" || {
+  echo "STOP: Model package missing"
+  exit 1
+}
+
+PACKAGE="$(cd "$PACKAGE" && pwd -P)"
+CONFIG="$PACKAGE/config/model.env"
+
+test -f "$CONFIG" || {
+  echo "STOP: Model configuration missing"
+  exit 1
+}
+
+# Trusted, locally maintained model configuration.
+source "$CONFIG"
+
+: "${MODULE:?Missing model module}"
+: "${INTERNAL_PORT:?Missing internal port}"
+: "${MODEL_PYTHONPATH:?Missing Python path}"
+
+IMAGE="${MAX_IMAGE:-localhost/max-shared-runtime:cpu}"
+HOST_PORT="${HOST_PORT:-18781}"
+MAX_MEMORY="${MAX_MEMORY:-12g}"
+MAX_PIDS="${MAX_PIDS:-512}"
+PODMAN_ROOT="${PODMAN_ROOT:-/application1/podman/storage}"
+PODMAN_RUNROOT="${PODMAN_RUNROOT:-/run/containers/storage}"
+
+MODEL_DIR="$PACKAGE/model"
+DEPENDENCY_DIR="$PACKAGE/runtime/python_deps"
+
+test -d "$MODEL_DIR" || {
+  echo "STOP: Model directory missing"
+  exit 1
+}
+
+test -d "$DEPENDENCY_DIR" || {
+  echo "STOP: Runtime dependencies missing"
+  exit 1
+}
+
+[[ "$HOST_PORT" =~ ^[0-9]+$ ]] || {
+  echo "STOP: Invalid host port"
+  exit 1
+}
+
+[[ "$INTERNAL_PORT" =~ ^[0-9]+$ ]] || {
+  echo "STOP: Invalid internal port"
+  exit 1
+}
+
+PODMAN=(podman \
+  --root "$PODMAN_ROOT" \
+  --runroot "$PODMAN_RUNROOT")
+
+"${PODMAN[@]}" image exists "$IMAGE" || {
+  echo "STOP: Compatible MAX image not present"
+  exit 1
+}
+
+echo "SHARED MAX INFRASTRUCTURE: READY"
+echo "MODEL PACKAGE: $PACKAGE"
+echo "MAX IMAGE: $IMAGE"
+echo "MODEL ENTRYPOINT: $MODULE"
+echo "HOST PORT: $HOST_PORT"
+echo "INTERNAL PORT: $INTERNAL_PORT"
+echo "MODEL MOUNT: READ-ONLY"
+echo "DEPENDENCY MOUNT: READ-ONLY"
+
+if [ "$ACTION" = "check" ]; then
+  echo "GENERIC MAX PREFLIGHT: PASS"
+  echo "NO CONTAINER STARTED"
+  exit 0
+fi
+
+exec "${PODMAN[@]}" run \
+  --rm --pull=never \
+  --memory="$MAX_MEMORY" \
+  --pids-limit="$MAX_PIDS" \
+  -p "127.0.0.1:${HOST_PORT}:${INTERNAL_PORT}" \
+  -v "$MODEL_DIR:/workspace:ro" \
+  -v "$DEPENDENCY_DIR:/shared_deps:ro" \
+  -w /workspace \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e "PYTHONPATH=$MODEL_PYTHONPATH" \
+  --entrypoint /opt/venv/bin/python \
+  "$IMAGE" \
+  -u -m "$MODULE"
+LAUNCH
+
+chmod 755 "$ROOT/bin/run_max_model.sh"
+
+cat > "$ROOT/README.md" <<'DOC'
+# Shared Modular MAX infrastructure
+
+This is the model-independent deployment launcher.
+
+The shared layer owns:
+- Compatible MAX runtime image selection
+- Container creation and resource configuration
+- Read-only model and dependency mounts
+- Host port mapping
+- Model entrypoint execution
+
+Each model package owns:
+- Original DS code and trained weights
+- MAX graph and architecture-specific adapters
+- Preprocessing and postprocessing integration
+- Native MAX Serve model-specific entrypoint
+- Model configuration and Python import paths
+
+The launcher does not contain model-specific Python code.
+
+Current image alias is a development image, not an
+approved production image.
+
+This is the deployment foundation, not yet a complete
+shared router/scheduler/worker implementation.
+DOC
+
+bash -n "$ROOT/bin/run_max_model.sh"
+
+if grep -Eiq 'pzaas|bplan|cta' \
+  "$ROOT/bin/run_max_model.sh"; then
+  echo "STOP: Model-specific reference in generic launcher"
+  exit 1
+fi
+
+if id sajjna8 >/dev/null 2>&1; then
+  chown -R sajjna8:"$(id -gn sajjna8)" "$ROOT"
+fi
+
+echo "GENERIC LAUNCHER SYNTAX: PASS"
+echo "MODEL-SPECIFIC CODE IN LAUNCHER: NONE"
+echo "SHARED INFRA LOCATION: $ROOT"
+
+bash "$ROOT/bin/run_max_model.sh" check "$PACKAGE"
+
+echo "=== RESULT ==="
+echo "INDEPENDENT SHARED INFRASTRUCTURE: CREATED"
+echo "EXISTING HANDOFFS: UNCHANGED"
+echo "EXISTING CONTAINERS: UNCHANGED"
+echo "NEXT: SHARED RUNTIME INTEGRATION"
 SH

@@ -1,110 +1,245 @@
 
 cd /application1/sajjna8 && python3 - <<'PY'
+import ast
+import re
 from pathlib import Path
-import hashlib
-import shutil
 
 base = Path("/application1/sajjna8")
-roots = [
-    Path("/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031"),
-    Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030"),
-    base / "rt-pzaas-cta-offers-v1/artifacts/v1.168-max",
-]
 stage = base / "max_shared_infra/isolated/cta_shared_wiring_v1"
 shared = base / "max_shared_infra/python/max_runtime_shared"
 
-print("=== CTA SHARED MAX ADOPTION ===", flush=True)
+spawn = stage / "cta_spawn_worker.py"
+router = stage / "cta_router.py"
+launcher = stage / "cta_native_launcher.py"
 
-required_shared = [
-    "typed_queue.py",
-    "scheduler_hooks.py",
-    "router_contract.py",
-    "worker_lifecycle.py",
+print("=== CTA SHARED MAX LIVE WIRING ===", flush=True)
+
+required = [
+    spawn, router, launcher,
+    shared / "worker_lifecycle.py",
+    shared / "scheduler_hooks.py",
+    shared / "router_contract.py",
 ]
-for name in required_shared:
-    if not (shared / name).is_file():
-        raise SystemExit("STOP: Shared component missing: " + name)
 
-candidates = []
-for root in roots:
-    if root.is_dir():
-        candidates += list(root.rglob("cta_native_launcher.py"))
+for path in required:
+    if not path.is_file():
+        raise SystemExit(f"STOP: Missing required file: {path}")
 
-if not candidates:
-    raise SystemExit(
-        "STOP: Existing CTA native launcher not found; "
-        "original files unchanged"
+changes = {}
+
+# Wire shared worker lifecycle and scheduler without replacing
+# CTA's original model creation or MAX attachment logic.
+source = spawn.read_text()
+tree = ast.parse(source)
+
+classes = [
+    node for node in tree.body
+    if isinstance(node, ast.ClassDef)
+    and node.name == "CTAFactoryWrapper"
+]
+
+if len(classes) != 1:
+    raise SystemExit("STOP: CTA factory class not uniquely found")
+
+cls = classes[0]
+methods = [
+    node for node in cls.body
+    if isinstance(node, ast.FunctionDef)
+    and node.name == "__call__"
+]
+
+if "def _shared_original_call(" in source:
+    if "WorkerLifecycle(" not in source:
+        raise SystemExit("STOP: Partial shared worker modification")
+    print("CTA SHARED WORKER: ALREADY WIRED")
+else:
+    if len(methods) != 1 or methods[0].decorator_list:
+        raise SystemExit("STOP: CTA factory method not safely identified")
+
+    method = methods[0]
+    calls = [
+        node for node in ast.walk(method)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "install_cta_scheduler_hook"
+    ]
+
+    if len(calls) != 1 or calls[0].lineno != calls[0].end_lineno:
+        raise SystemExit("STOP: CTA scheduler call not uniquely identified")
+
+    lines = source.splitlines(keepends=True)
+    header = lines[method.lineno - 1]
+
+    if "def __call__(" not in header:
+        raise SystemExit("STOP: Unexpected CTA factory definition")
+
+    lines[method.lineno - 1] = header.replace(
+        "def __call__(",
+        "def _shared_original_call(",
+        1
     )
 
-def score(path):
-    folder = path.parent
-    names = {p.name for p in folder.glob("*.py")}
-    return (
-        len(names & {
-            "cta_router.py",
-            "cta_spawn_worker.py",
-            "cta_worker_adapter.py",
-            "cta_native_scheduler.py",
-        }),
-        len(names),
-    )
+    wrapper = '''
+    def __call__(self, *args, **kwargs):
+        from max_runtime_shared.worker_lifecycle import WorkerLifecycle
+        lifecycle = WorkerLifecycle(
+            create=lambda: self._shared_original_call(*args, **kwargs),
+            load=lambda existing: None,
+            attach_max=lambda existing: None,
+        )
+        return lifecycle.start()
+'''
 
-source = max(candidates, key=score).parent
-files = sorted(source.glob("*.py"))
+    lines[method.end_lineno:method.end_lineno] = [wrapper]
 
-if len(files) < 2:
-    raise SystemExit("STOP: Incomplete CTA serving source")
+    # The existing CTA launcher already installs its native queue.
+    # Shared registration invokes the same original scheduler hook.
+    hook = calls[0]
+    original_line = lines[hook.lineno - 1]
+    indent = re.match(r"[ \t]*", original_line).group()
 
-for src in files:
-    compile(src.read_bytes(), str(src), "exec")
-    target = stage / src.name
-    if target.exists() and target.read_bytes() != src.read_bytes():
-        raise SystemExit(
-            "STOP: Existing CTA staged file differs: " + src.name
+    scheduler = "\n".join([
+        indent + "from max_runtime_shared.scheduler_hooks import SchedulerHooks, SharedSchedulerRegistry",
+        indent + "shared_registry = SharedSchedulerRegistry()",
+        indent + "shared_registry.register(SchedulerHooks(",
+        indent + '    model_key="cta-v1.168",',
+        indent + "    install_queue=lambda: None,",
+        indent + "    install_scheduler=install_cta_scheduler_hook,",
+        indent + "))",
+        indent + 'shared_registry.activate("cta-v1.168")',
+        "",
+    ])
+
+    lines[hook.lineno - 1:hook.end_lineno] = [scheduler]
+    updated = "".join(lines)
+
+    ast.parse(updated)
+    changes[spawn] = updated
+
+# Register existing CTA endpoints through the shared router.
+source = router.read_text()
+
+if "register_model_routes(" in source:
+    if "from max_runtime_shared.router_contract import" not in source:
+        raise SystemExit("STOP: Partial shared router modification")
+    print("CTA SHARED ROUTER: ALREADY WIRED")
+else:
+    tree = ast.parse(source)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "register_cta_routes"
+    ]
+
+    if len(functions) != 1:
+        raise SystemExit("STOP: CTA route function not uniquely found")
+
+    calls = []
+    for node in functions[0].body:
+        if not isinstance(node, ast.Expr):
+            continue
+
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+
+        if not isinstance(call.func, ast.Attribute):
+            continue
+
+        if call.func.attr != "add_api_route":
+            continue
+
+        if len(call.args) < 2:
+            raise SystemExit("STOP: CTA route arguments incomplete")
+
+        path = call.args[0]
+        if not isinstance(path, ast.Constant):
+            raise SystemExit("STOP: Dynamic CTA route requires review")
+
+        if not isinstance(path.value, str):
+            raise SystemExit("STOP: Unexpected CTA route path")
+
+        methods = next(
+            (kw.value for kw in call.keywords
+             if kw.arg == "methods"),
+            None
         )
 
-stage.mkdir(parents=True, exist_ok=True)
+        if not isinstance(methods, (ast.List, ast.Tuple)):
+            raise SystemExit("STOP: CTA route methods need review")
 
-copied = []
-for src in files:
-    target = stage / src.name
-    if not target.exists():
-        shutil.copy2(src, target)
-        copied.append(src.name)
+        values = [
+            element.value for element in methods.elts
+            if isinstance(element, ast.Constant)
+            and isinstance(element.value, str)
+        ]
 
-print("CTA SOURCE:", source)
-print("CTA NATIVE LAUNCHER: FOUND")
-print("SHARED COMPONENTS: PASS")
-print("ISOLATED MODULES:", len(files))
-print("NEW FILES COPIED:", len(copied))
-print("PYTHON SYNTAX: PASS")
+        if len(values) != len(methods.elts):
+            raise SystemExit("STOP: Dynamic methods need review")
 
-print("\n=== CTA INTEGRATION POINTS ===")
-terms = (
-    "register_cta",
-    "install_cta",
-    "start_model_worker",
-    "retrieve_factory",
-    "FactoryWrapper",
-    "SchedulerZmqConfigs",
-    "add_api_route",
-    "uvicorn.run",
-)
-for src in files:
-    matches = [
-        (i, line.strip())
-        for i, line in enumerate(src.read_text().splitlines(), 1)
-        if any(term in line for term in terms)
-    ]
-    if matches:
-        print("FILE:", src.name)
-        for number, line in matches[:10]:
-            print(f"  {number}: {line[:130]}")
+        calls.append((
+            node,
+            path.value,
+            ast.unparse(call.args[1]),
+            tuple(values)
+        ))
+
+    paths = {path for _, path, _, _ in calls}
+
+    if not {"/cta/infer", "/cta/predict"}.issubset(paths):
+        raise SystemExit("STOP: Required CTA routes not found")
+
+    lines = source.splitlines(keepends=True)
+
+    for index in range(len(calls) - 1, -1, -1):
+        node, path, handler, methods = calls[index]
+        indent = re.match(
+            r"[ \t]*", lines[node.lineno - 1]
+        ).group()
+
+        replacement = []
+
+        if index == 0:
+            replacement.append(
+                indent +
+                "from max_runtime_shared.router_contract import RouteBinding, register_model_routes"
+            )
+
+        replacement.extend([
+            indent + "register_model_routes(",
+            indent + "    router,",
+            indent + "    [RouteBinding(",
+            indent + f"        path={path!r},",
+            indent + f"        endpoint={handler},",
+            indent + f"        methods={methods!r},",
+            indent + "    )],",
+            indent + ")",
+        ])
+
+        lines[node.lineno - 1:node.end_lineno] = [
+            "\n".join(replacement) + "\n"
+        ]
+
+    updated = "".join(lines)
+    ast.parse(updated)
+    changes[router] = updated
+
+# Validate everything before saving.
+for path, content in changes.items():
+    compile(content, str(path), "exec")
+
+for path, content in changes.items():
+    path.write_text(content)
+    print("UPDATED:", path.name)
 
 print("\n=== RESULT ===")
-print("CTA ISOLATED SHARED WORKSPACE: READY")
-print("ORIGINAL CTA HANDOFF: UNCHANGED")
-print("BPLAN / PZAAS: UNCHANGED")
+print("CTA SHARED WORKER LIFECYCLE: WIRED")
+print("CTA SHARED SCHEDULER REGISTRY: WIRED")
+print("ORIGINAL CTA QUEUE INITIALIZATION: PRESERVED")
+print("CTA SHARED ROUTER: WIRED")
+print("ISOLATED PYTHON SYNTAX: PASS")
+print("ORIGINAL CTA / BPLAN / PZAAS: UNCHANGED")
 print("NO CONTAINERS STARTED")
-print("NEXT: CTA SHARED WIRING + LIVE HTTP")
+print("NEXT: LIVE CTA HTTP AND COMBINED THREE-MODEL VALIDATION")
 PY

@@ -1,245 +1,244 @@
 
 cd /application1/sajjna8 && python3 - <<'PY'
-import ast
-import re
+import json
+import subprocess
+import tempfile
 from pathlib import Path
 
 base = Path("/application1/sajjna8")
 stage = base / "max_shared_infra/isolated/cta_shared_wiring_v1"
-shared = base / "max_shared_infra/python/max_runtime_shared"
+shared = base / "max_shared_infra/python"
+model = Path("/application1/CTA_MAX_CLEAN_VM_CANDIDATE_20261030")
 
-spawn = stage / "cta_spawn_worker.py"
-router = stage / "cta_router.py"
-launcher = stage / "cta_native_launcher.py"
+print("=== CTA SHARED MAX LIVE HTTP ===", flush=True)
 
-print("=== CTA SHARED MAX LIVE WIRING ===", flush=True)
+launchers = sorted(
+    p for p in model.rglob("cta_native_launcher.py")
+    if p.parent.name == "maxserve_cta_extension"
+)
 
-required = [
-    spawn, router, launcher,
-    shared / "worker_lifecycle.py",
-    shared / "scheduler_hooks.py",
-    shared / "router_contract.py",
-]
-
-for path in required:
-    if not path.is_file():
-        raise SystemExit(f"STOP: Missing required file: {path}")
-
-changes = {}
-
-# Wire shared worker lifecycle and scheduler without replacing
-# CTA's original model creation or MAX attachment logic.
-source = spawn.read_text()
-tree = ast.parse(source)
-
-classes = [
-    node for node in tree.body
-    if isinstance(node, ast.ClassDef)
-    and node.name == "CTAFactoryWrapper"
-]
-
-if len(classes) != 1:
-    raise SystemExit("STOP: CTA factory class not uniquely found")
-
-cls = classes[0]
-methods = [
-    node for node in cls.body
-    if isinstance(node, ast.FunctionDef)
-    and node.name == "__call__"
-]
-
-if "def _shared_original_call(" in source:
-    if "WorkerLifecycle(" not in source:
-        raise SystemExit("STOP: Partial shared worker modification")
-    print("CTA SHARED WORKER: ALREADY WIRED")
-else:
-    if len(methods) != 1 or methods[0].decorator_list:
-        raise SystemExit("STOP: CTA factory method not safely identified")
-
-    method = methods[0]
-    calls = [
-        node for node in ast.walk(method)
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "install_cta_scheduler_hook"
-    ]
-
-    if len(calls) != 1 or calls[0].lineno != calls[0].end_lineno:
-        raise SystemExit("STOP: CTA scheduler call not uniquely identified")
-
-    lines = source.splitlines(keepends=True)
-    header = lines[method.lineno - 1]
-
-    if "def __call__(" not in header:
-        raise SystemExit("STOP: Unexpected CTA factory definition")
-
-    lines[method.lineno - 1] = header.replace(
-        "def __call__(",
-        "def _shared_original_call(",
-        1
+if len(launchers) != 1:
+    raise SystemExit(
+        f"STOP: Expected one CTA launcher, found {len(launchers)}"
     )
 
-    wrapper = '''
-    def __call__(self, *args, **kwargs):
-        from max_runtime_shared.worker_lifecycle import WorkerLifecycle
-        lifecycle = WorkerLifecycle(
-            create=lambda: self._shared_original_call(*args, **kwargs),
-            load=lambda existing: None,
-            attach_max=lambda existing: None,
-        )
-        return lifecycle.start()
+launcher = launchers[0]
+relative = launcher.parent.relative_to(model)
+
+for name in ("cta_native_launcher.py", "cta_spawn_worker.py",
+             "cta_router.py"):
+    if not (stage / name).is_file():
+        raise SystemExit("STOP: Isolated CTA module missing: " + name)
+
+if "WorkerLifecycle(" not in (stage / "cta_spawn_worker.py").read_text():
+    raise SystemExit("STOP: Shared CTA worker not wired")
+
+if "register_model_routes(" not in (stage / "cta_router.py").read_text():
+    raise SystemExit("STOP: Shared CTA router not wired")
+
+def requests_from_collection(obj):
+    if isinstance(obj, dict):
+        req = obj.get("request")
+        if isinstance(req, dict) and req.get("method") == "POST":
+            url = req.get("url", "")
+            if isinstance(url, dict):
+                url = url.get("raw", "")
+            body = req.get("body", {})
+            raw = body.get("raw") if isinstance(body, dict) else None
+            if "cta" in str(url).lower() and isinstance(raw, str):
+                try:
+                    data = json.loads(raw)
+                    if isinstance(data, dict):
+                        yield data
+                except ValueError:
+                    pass
+        for value in obj.values():
+            yield from requests_from_collection(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from requests_from_collection(value)
+
+payload = None
+source = None
+search_roots = [
+    model,
+    Path("/application1/CTA_MAX_TEAM_HANDOFF_STAGE_20261031"),
+    base / "rt-pzaas-cta-offers-v1",
+]
+
+for root in search_roots:
+    if not root.is_dir():
+        continue
+    for path in sorted(root.rglob("*.json")):
+        if not any(word in path.name.lower() for word in
+                   ("postman", "collection")):
+            continue
+        if path.stat().st_size > 3000000:
+            continue
+        try:
+            collection = json.loads(path.read_text())
+            candidate = next(requests_from_collection(collection), None)
+        except (OSError, ValueError):
+            continue
+        if candidate is not None:
+            payload, source = candidate, path
+            break
+    if payload is not None:
+        break
+
+print("CTA LAUNCHER:", launcher, flush=True)
+print("ISOLATED SHARED MODULES: VERIFIED", flush=True)
+
+if payload is None:
+    print("STOP: Original CTA Postman request not located")
+    print("NO CONTAINERS STARTED")
+    print("NO FILES MODIFIED")
+    raise SystemExit(1)
+
+print("ORIGINAL REQUEST SOURCE:", source, flush=True)
+
+inside = r'''
+import json, socket, subprocess, sys, time
+import urllib.request, urllib.error
+from pathlib import Path
+
+logpath = Path("/tmp/cta_shared_server.log")
+with logpath.open("w") as log:
+    server = subprocess.Popen(
+        [sys.executable, "-u", "-m",
+         "maxserve_cta_extension.cta_native_launcher"],
+        stdout=log, stderr=subprocess.STDOUT,
+    )
+
+    try:
+        ready = False
+        for _ in range(180):
+            if server.poll() is not None:
+                break
+            try:
+                with socket.create_connection(
+                    ("127.0.0.1", 8000), timeout=1
+                ):
+                    ready = True
+                    break
+            except OSError:
+                time.sleep(1)
+
+        if not ready:
+            raise RuntimeError("CTA server did not start")
+
+        print("CTA SHARED MAX SERVER: READY", flush=True)
+
+        body = Path("/tmp/cta_input.json").read_bytes()
+        errors = []
+
+        for route in ("/cta/predict", "/cta/infer"):
+            request = urllib.request.Request(
+                "http://127.0.0.1:8000" + route,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(
+                    request, timeout=240
+                ) as response:
+                    data = json.loads(response.read())
+                    if response.status != 200:
+                        raise RuntimeError("Unexpected HTTP status")
+                    if not isinstance(data, (dict, list)):
+                        raise RuntimeError("Invalid JSON response")
+                    if isinstance(data, dict) and "error" in data:
+                        raise RuntimeError(str(data["error"]))
+
+                    print("ROUTE:", route, flush=True)
+                    print("HTTP STATUS:", response.status, flush=True)
+                    print("CTA JSON RESPONSE: PASS", flush=True)
+                    print("CTA SHARED MAX HTTP: PASS", flush=True)
+                    break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode(errors="replace")
+                errors.append(f"{route}: HTTP {exc.code} {detail[:200]}")
+            except Exception as exc:
+                errors.append(f"{route}: {exc}")
+        else:
+            raise RuntimeError("; ".join(errors))
+
+    except Exception as exc:
+        print("CTA SHARED MAX HTTP: BLOCKED", flush=True)
+        print("ERROR:", exc, flush=True)
+        log.flush()
+        print("=== CTA SERVER LOG ===", flush=True)
+        print("\n".join(
+            logpath.read_text(errors="replace").splitlines()[-55:]
+        ), flush=True)
+        sys.exit(1)
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            try:
+                server.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait()
 '''
 
-    lines[method.end_lineno:method.end_lineno] = [wrapper]
+with tempfile.TemporaryDirectory(prefix="cta_shared_") as tmp:
+    request_file = Path(tmp) / "cta_input.json"
+    request_file.write_text(json.dumps(payload))
+    request_file.chmod(0o644)
 
-    # The existing CTA launcher already installs its native queue.
-    # Shared registration invokes the same original scheduler hook.
-    hook = calls[0]
-    original_line = lines[hook.lineno - 1]
-    indent = re.match(r"[ \t]*", original_line).group()
-
-    scheduler = "\n".join([
-        indent + "from max_runtime_shared.scheduler_hooks import SchedulerHooks, SharedSchedulerRegistry",
-        indent + "shared_registry = SharedSchedulerRegistry()",
-        indent + "shared_registry.register(SchedulerHooks(",
-        indent + '    model_key="cta-v1.168",',
-        indent + "    install_queue=lambda: None,",
-        indent + "    install_scheduler=install_cta_scheduler_hook,",
-        indent + "))",
-        indent + 'shared_registry.activate("cta-v1.168")',
-        "",
+    parent = relative.parent.as_posix()
+    pythonpath = ":".join([
+        "/shared_infra/python",
+        f"/workspace/{parent}",
+        "/workspace",
+        "/shared_deps",
+        "/shared_deps/sklearn161",
     ])
 
-    lines[hook.lineno - 1:hook.end_lineno] = [scheduler]
-    updated = "".join(lines)
-
-    ast.parse(updated)
-    changes[spawn] = updated
-
-# Register existing CTA endpoints through the shared router.
-source = router.read_text()
-
-if "register_model_routes(" in source:
-    if "from max_runtime_shared.router_contract import" not in source:
-        raise SystemExit("STOP: Partial shared router modification")
-    print("CTA SHARED ROUTER: ALREADY WIRED")
-else:
-    tree = ast.parse(source)
-    functions = [
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "register_cta_routes"
+    cmd = [
+        "podman",
+        "--root", "/application1/podman/storage",
+        "--runroot", "/run/containers/storage",
+        "run", "--rm", "--pull=never",
+        "--network=none",
+        "--memory=18g",
+        "--pids-limit=512",
+        "-v", f"{model}:/workspace:ro",
+        "-v", f"{stage}:/workspace/{relative}:ro",
+        "-v", f"{shared}:/shared_infra/python:ro",
+        "-v", f"{request_file}:/tmp/cta_input.json:ro",
+        "-w", "/workspace",
+        "-e", f"PYTHONPATH={pythonpath}",
     ]
 
-    if len(functions) != 1:
-        raise SystemExit("STOP: CTA route function not uniquely found")
+    deps = Path("/application1/max_shared_python_deps")
+    if deps.is_dir():
+        cmd += ["-v", f"{deps}:/shared_deps:ro"]
 
-    calls = []
-    for node in functions[0].body:
-        if not isinstance(node, ast.Expr):
-            continue
+    cmd += [
+        "--entrypoint", "/opt/venv/bin/python",
+        "localhost/max-shared-runtime:cpu",
+        "-u", "-c", inside,
+    ]
 
-        call = node.value
-        if not isinstance(call, ast.Call):
-            continue
-
-        if not isinstance(call.func, ast.Attribute):
-            continue
-
-        if call.func.attr != "add_api_route":
-            continue
-
-        if len(call.args) < 2:
-            raise SystemExit("STOP: CTA route arguments incomplete")
-
-        path = call.args[0]
-        if not isinstance(path, ast.Constant):
-            raise SystemExit("STOP: Dynamic CTA route requires review")
-
-        if not isinstance(path.value, str):
-            raise SystemExit("STOP: Unexpected CTA route path")
-
-        methods = next(
-            (kw.value for kw in call.keywords
-             if kw.arg == "methods"),
-            None
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=480
         )
+    except subprocess.TimeoutExpired:
+        raise SystemExit("STOP: CTA live HTTP test timed out")
 
-        if not isinstance(methods, (ast.List, ast.Tuple)):
-            raise SystemExit("STOP: CTA route methods need review")
+    print((result.stdout + result.stderr)[-14000:], flush=True)
 
-        values = [
-            element.value for element in methods.elts
-            if isinstance(element, ast.Constant)
-            and isinstance(element.value, str)
-        ]
-
-        if len(values) != len(methods.elts):
-            raise SystemExit("STOP: Dynamic methods need review")
-
-        calls.append((
-            node,
-            path.value,
-            ast.unparse(call.args[1]),
-            tuple(values)
-        ))
-
-    paths = {path for _, path, _, _ in calls}
-
-    if not {"/cta/infer", "/cta/predict"}.issubset(paths):
-        raise SystemExit("STOP: Required CTA routes not found")
-
-    lines = source.splitlines(keepends=True)
-
-    for index in range(len(calls) - 1, -1, -1):
-        node, path, handler, methods = calls[index]
-        indent = re.match(
-            r"[ \t]*", lines[node.lineno - 1]
-        ).group()
-
-        replacement = []
-
-        if index == 0:
-            replacement.append(
-                indent +
-                "from max_runtime_shared.router_contract import RouteBinding, register_model_routes"
-            )
-
-        replacement.extend([
-            indent + "register_model_routes(",
-            indent + "    router,",
-            indent + "    [RouteBinding(",
-            indent + f"        path={path!r},",
-            indent + f"        endpoint={handler},",
-            indent + f"        methods={methods!r},",
-            indent + "    )],",
-            indent + ")",
-        ])
-
-        lines[node.lineno - 1:node.end_lineno] = [
-            "\n".join(replacement) + "\n"
-        ]
-
-    updated = "".join(lines)
-    ast.parse(updated)
-    changes[router] = updated
-
-# Validate everything before saving.
-for path, content in changes.items():
-    compile(content, str(path), "exec")
-
-for path, content in changes.items():
-    path.write_text(content)
-    print("UPDATED:", path.name)
+    if result.returncode:
+        raise SystemExit("STOP: CTA shared HTTP not yet verified")
 
 print("\n=== RESULT ===")
-print("CTA SHARED WORKER LIFECYCLE: WIRED")
-print("CTA SHARED SCHEDULER REGISTRY: WIRED")
-print("ORIGINAL CTA QUEUE INITIALIZATION: PRESERVED")
-print("CTA SHARED ROUTER: WIRED")
-print("ISOLATED PYTHON SYNTAX: PASS")
-print("ORIGINAL CTA / BPLAN / PZAAS: UNCHANGED")
-print("NO CONTAINERS STARTED")
-print("NEXT: LIVE CTA HTTP AND COMBINED THREE-MODEL VALIDATION")
+print("CTA SHARED HTTP: PASS")
+print("ORIGINAL CTA HANDOFF: UNCHANGED")
+print("BPLAN / PZAAS: UNCHANGED")
+print("TEMPORARY CONTAINER: REMOVED")
+print("NEXT: SIMULTANEOUS THREE-MODEL VALIDATION")
 PY

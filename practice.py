@@ -1,195 +1,136 @@
 
-cd /application1/sajjna8 && bash <<'SH'
-set -euo pipefail
+cd /application1/sajjna8 && python3 - <<'PY'
+from pathlib import Path
+import ast
+import json
+import hashlib
 
-ROOT="/application1/sajjna8/max_shared_infra"
-PACKAGE="/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106"
+shared = Path("/application1/sajjna8/max_shared_infra")
 
-echo "=== SHARED MODULAR MAX INFRASTRUCTURE ==="
-
-if [ -e "$ROOT" ]; then
-  echo "STOP: Shared infra folder already exists; nothing overwritten"
-  exit 1
-fi
-
-for item in \
-  "$PACKAGE/model" \
-  "$PACKAGE/runtime/python_deps" \
-  "$PACKAGE/config/model.env"; do
-  test -e "$item" || {
-    echo "STOP: Required verified package item missing: $item"
-    exit 1
-  }
-done
-
-PODMAN=(podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage)
-
-"${PODMAN[@]}" image exists localhost/max-shared-runtime:cpu || {
-  echo "STOP: Shared MAX image alias missing"
-  exit 1
+sources = {
+    "CTA": Path(
+        "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
+        "artifacts/v1.168-max/maxserve_cta_extension"
+    ),
+    "BPLAN": Path(
+        "/application1/sajjna8/rt-pzai-bplan-v1/"
+        "artifacts/v1.113-max/maxserve_bplan_extension"
+    ),
+    "PZAAS": Path(
+        "/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106/"
+        "model/artifacts/v1.472-max/maxserve_pzaas_extension/"
+        "pzaas_native_serve_dev"
+    )
 }
 
-mkdir -p "$ROOT/bin"
+keywords = (
+    "scheduler", "router", "queue", "context",
+    "worker", "launcher", "registration",
+    "factory", "http_pipeline"
+)
 
-cat > "$ROOT/bin/run_max_model.sh" <<'LAUNCH'
-#!/usr/bin/env bash
-set -euo pipefail
+if not (shared / "bin/run_max_model.sh").is_file():
+    raise SystemExit("STOP: Shared launcher missing")
 
-if [ "$#" -ne 2 ]; then
-  echo "Usage: run_max_model.sh check|start MODEL_PACKAGE"
-  exit 2
-fi
+print("=== MULTI-MODEL MAX SERVING INVENTORY ===")
+print("SHARED INFRA:", shared)
+print("ORIGINAL MODELS: READ-ONLY")
 
-ACTION="$1"
-PACKAGE="$2"
+report = {}
 
-case "$ACTION" in
-  check|start) ;;
-  *) echo "STOP: Unknown action"; exit 2 ;;
-esac
+for model, root in sources.items():
+    print(f"\n=== {model} ===")
+    print("SOURCE:", root)
 
-test -d "$PACKAGE" || {
-  echo "STOP: Model package missing"
-  exit 1
-}
+    if not root.is_dir():
+        print("SOURCE NOT FOUND - NO PATH GUESSED")
+        report[model] = {"status": "source_missing"}
+        continue
 
-PACKAGE="$(cd "$PACKAGE" && pwd -P)"
-CONFIG="$PACKAGE/config/model.env"
+    components = []
 
-test -f "$CONFIG" || {
-  echo "STOP: Model configuration missing"
-  exit 1
-}
+    for path in sorted(root.rglob("*.py")):
+        if (
+            "__pycache__" in path.parts
+            or "_cta_native_reference" in path.parts
+            or not any(k in path.name.lower() for k in keywords)
+        ):
+            continue
 
-# Trusted, locally maintained model configuration.
-source "$CONFIG"
+        content = path.read_text(errors="replace")
 
-: "${MODULE:?Missing model module}"
-: "${INTERNAL_PORT:?Missing internal port}"
-: "${MODEL_PYTHONPATH:?Missing Python path}"
+        try:
+            tree = ast.parse(content)
+        except SyntaxError as exc:
+            print("SYNTAX REVIEW:", path.name, str(exc))
+            continue
 
-IMAGE="${MAX_IMAGE:-localhost/max-shared-runtime:cpu}"
-HOST_PORT="${HOST_PORT:-18781}"
-MAX_MEMORY="${MAX_MEMORY:-12g}"
-MAX_PIDS="${MAX_PIDS:-512}"
-PODMAN_ROOT="${PODMAN_ROOT:-/application1/podman/storage}"
-PODMAN_RUNROOT="${PODMAN_RUNROOT:-/run/containers/storage}"
+        definitions = [
+            node.name for node in tree.body
+            if isinstance(node, (
+                ast.ClassDef,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef
+            ))
+        ]
 
-MODEL_DIR="$PACKAGE/model"
-DEPENDENCY_DIR="$PACKAGE/runtime/python_deps"
+        imports = sorted({
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module
+        })
 
-test -d "$MODEL_DIR" || {
-  echo "STOP: Model directory missing"
-  exit 1
-}
+        entry = {
+            "path": str(path),
+            "lines": len(content.splitlines()),
+            "sha256": hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest(),
+            "definitions": definitions,
+            "imports": imports
+        }
 
-test -d "$DEPENDENCY_DIR" || {
-  echo "STOP: Runtime dependencies missing"
-  exit 1
-}
+        components.append(entry)
 
-[[ "$HOST_PORT" =~ ^[0-9]+$ ]] || {
-  echo "STOP: Invalid host port"
-  exit 1
-}
+        print(
+            f"{path.name}: "
+            f"{entry['lines']} lines; "
+            f"definitions={','.join(definitions[:5]) or '-'}"
+        )
 
-[[ "$INTERNAL_PORT" =~ ^[0-9]+$ ]] || {
-  echo "STOP: Invalid internal port"
-  exit 1
-}
+    report[model] = {
+        "status": "inspected",
+        "component_count": len(components),
+        "components": components
+    }
 
-PODMAN=(podman \
-  --root "$PODMAN_ROOT" \
-  --runroot "$PODMAN_RUNROOT")
+    print("SERVING COMPONENTS:", len(components))
 
-"${PODMAN[@]}" image exists "$IMAGE" || {
-  echo "STOP: Compatible MAX image not present"
-  exit 1
-}
+destination = shared / "analysis"
+destination.mkdir(exist_ok=True)
 
-echo "SHARED MAX INFRASTRUCTURE: READY"
-echo "MODEL PACKAGE: $PACKAGE"
-echo "MAX IMAGE: $IMAGE"
-echo "MODEL ENTRYPOINT: $MODULE"
-echo "HOST PORT: $HOST_PORT"
-echo "INTERNAL PORT: $INTERNAL_PORT"
-echo "MODEL MOUNT: READ-ONLY"
-echo "DEPENDENCY MOUNT: READ-ONLY"
+output = destination / "serve_component_inventory_20261106.json"
 
-if [ "$ACTION" = "check" ]; then
-  echo "GENERIC MAX PREFLIGHT: PASS"
-  echo "NO CONTAINER STARTED"
-  exit 0
-fi
+if output.exists():
+    raise SystemExit(
+        "STOP: Inventory already exists. "
+        "Existing file preserved."
+    )
 
-exec "${PODMAN[@]}" run \
-  --rm --pull=never \
-  --memory="$MAX_MEMORY" \
-  --pids-limit="$MAX_PIDS" \
-  -p "127.0.0.1:${HOST_PORT}:${INTERNAL_PORT}" \
-  -v "$MODEL_DIR:/workspace:ro" \
-  -v "$DEPENDENCY_DIR:/shared_deps:ro" \
-  -w /workspace \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -e "PYTHONPATH=$MODEL_PYTHONPATH" \
-  --entrypoint /opt/venv/bin/python \
-  "$IMAGE" \
-  -u -m "$MODULE"
-LAUNCH
+output.write_text(json.dumps(report, indent=2))
 
-chmod 755 "$ROOT/bin/run_max_model.sh"
+print("\n=== SHARED EXTRACTION READINESS ===")
 
-cat > "$ROOT/README.md" <<'DOC'
-# Shared Modular MAX infrastructure
+for model, info in report.items():
+    print(
+        model,
+        "SOURCE:", info["status"],
+        "COMPONENTS:", info.get("component_count", 0)
+    )
 
-This is the model-independent deployment launcher.
-
-The shared layer owns:
-- Compatible MAX runtime image selection
-- Container creation and resource configuration
-- Read-only model and dependency mounts
-- Host port mapping
-- Model entrypoint execution
-
-Each model package owns:
-- Original DS code and trained weights
-- MAX graph and architecture-specific adapters
-- Preprocessing and postprocessing integration
-- Native MAX Serve model-specific entrypoint
-- Model configuration and Python import paths
-
-The launcher does not contain model-specific Python code.
-
-Current image alias is a development image, not an
-approved production image.
-
-This is the deployment foundation, not yet a complete
-shared router/scheduler/worker implementation.
-DOC
-
-bash -n "$ROOT/bin/run_max_model.sh"
-
-if grep -Eiq 'pzaas|bplan|cta' \
-  "$ROOT/bin/run_max_model.sh"; then
-  echo "STOP: Model-specific reference in generic launcher"
-  exit 1
-fi
-
-if id sajjna8 >/dev/null 2>&1; then
-  chown -R sajjna8:"$(id -gn sajjna8)" "$ROOT"
-fi
-
-echo "GENERIC LAUNCHER SYNTAX: PASS"
-echo "MODEL-SPECIFIC CODE IN LAUNCHER: NONE"
-echo "SHARED INFRA LOCATION: $ROOT"
-
-bash "$ROOT/bin/run_max_model.sh" check "$PACKAGE"
-
-echo "=== RESULT ==="
-echo "INDEPENDENT SHARED INFRASTRUCTURE: CREATED"
-echo "EXISTING HANDOFFS: UNCHANGED"
-echo "EXISTING CONTAINERS: UNCHANGED"
-echo "NEXT: SHARED RUNTIME INTEGRATION"
-SH
+print("INVENTORY:", output)
+print("NO MODEL CODE COPIED OR MODIFIED")
+print("NO CONTAINERS STARTED OR STOPPED")
+print("NEXT: IDENTIFY COMMON IMPLEMENTATIONS")
+PY

@@ -1,3 +1,4 @@
+
 cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
 set -euo pipefail
 
@@ -9,37 +10,50 @@ python3 - <<'PY'
 from pathlib import Path
 import shutil
 
-source = Path(
-    "artifacts/v1.472-max/pzaas_max/"
-    "validation/python_deps/joblib"
+root = Path(
+    "artifacts/v1.472-max/pzaas_max/validation/python_deps"
 )
+shared = Path("/application1/max_shared_python_deps")
 
-destination = Path(
-    "/application1/max_shared_python_deps/joblib"
-)
+if not shared.is_dir():
+    raise SystemExit("STOP: Shared dependencies missing")
 
-if not (source / "__init__.py").is_file():
+sources = [
+    root / "cloudpickle",
+    root / "cloudpickle.py"
+]
+
+source = next((p for p in sources if p.exists()), None)
+
+package = shared / "cloudpickle"
+module = shared / "cloudpickle.py"
+
+if (package / "__init__.py").is_file() or module.is_file():
+    print("SHARED CLOUDPICKLE: ALREADY PRESENT")
+
+elif source is None:
     raise SystemExit(
-        "STOP: Validated source joblib package not found"
+        "STOP: cloudpickle not found in validated "
+        "development dependencies. No files changed."
     )
 
-if destination.exists():
-    if not (destination / "__init__.py").is_file():
-        raise SystemExit(
-            "STOP: Existing shared joblib is incomplete"
-        )
-    print("SHARED JOBLIB: ALREADY PRESENT")
-else:
+elif source.is_dir():
+    if package.exists():
+        raise SystemExit("STOP: Incomplete shared package exists")
     shutil.copytree(
         source,
-        destination,
-        ignore=shutil.ignore_patterns(
-            "__pycache__", "*.pyc", "*.pyo"
-        )
+        package,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
     )
-    print("SHARED JOBLIB: INSTALLED")
+    print("SHARED CLOUDPICKLE: INSTALLED")
 
-print("ORIGINAL MODEL / CTA / BPLAN: UNCHANGED")
+else:
+    if module.exists():
+        raise SystemExit("STOP: Existing cloudpickle.py conflict")
+    shutil.copy2(source, module)
+    print("SHARED CLOUDPICKLE: INSTALLED")
+
+print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
 PY
 
 test -d "$STAGE"
@@ -69,18 +83,20 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-print("=== CLEAN STAGE DEPENDENCY VERIFICATION ===", flush=True)
+print("=== CLEAN DEPENDENCY CHECK ===", flush=True)
 
 try:
     import joblib
+    import cloudpickle
     from transformers import AutoTokenizer
     from max.serve.scheduler.queues import SchedulerZmqConfigs
 except Exception:
     traceback.print_exc()
     raise SystemExit("CLEAN DEPENDENCY IMPORT: FAILED")
 
-print("JOBLIB IMPORT: PASS")
-print("MAX / TRANSFORMERS IMPORT: PASS", flush=True)
+print("JOBLIB: PASS")
+print("CLOUDPICKLE: PASS")
+print("TRANSFORMERS / MAX: PASS", flush=True)
 
 log = Path("/evidence/pzaas_clean_stage_http.log")
 fixture = Path("/tmp/pzaas_input.json")
@@ -94,12 +110,15 @@ def unpack(value):
             pass
     return value
 
-def products(payload):
-    data = unpack(payload["jsonData"])
-    prediction = unpack(data["prediction"])
-    return unpack(prediction["productList"])
+def get_products(payload):
+    body = unpack(payload["jsonData"])
+    prediction = unpack(body["prediction"])
+    products = unpack(prediction["productList"])
+    if not isinstance(products, list):
+        raise ValueError("Invalid productList")
+    return products
 
-print("=== CLEAN MAX SERVE STARTING ===", flush=True)
+print("=== CLEAN MAX SERVE STARTUP ===", flush=True)
 
 with log.open("w") as output:
     server = subprocess.Popen(
@@ -119,7 +138,6 @@ try:
     while time.monotonic() < deadline:
         if server.poll() is not None:
             raise RuntimeError("Clean MAX server exited")
-
         try:
             with socket.create_connection(
                 ("127.0.0.1", 18768), timeout=2
@@ -128,7 +146,7 @@ try:
         except OSError:
             time.sleep(2)
     else:
-        raise RuntimeError("MAX Serve startup timeout")
+        raise RuntimeError("Clean server startup timeout")
 
     print("CLEAN MAX SERVER: READY", flush=True)
 
@@ -145,8 +163,8 @@ try:
         status = response.status
         result = json.loads(response.read())
 
-    actual = products(result)
-    expected = products(
+    actual = get_products(result)
+    expected = get_products(
         json.loads(reference.read_text())
     )
 
@@ -155,36 +173,32 @@ try:
         in log.read_text(errors="replace")
     )
 
-    print("HTTP STATUS:", status)
-    print("RECOMMENDATION COUNT:", len(actual))
-    print("SAVED RESPONSE PRODUCT PARITY:", actual == expected)
-    print("REAL TRAINED MAX EXECUTION:", execution)
+    print("CLEAN HTTP STATUS:", status)
+    print("CLEAN RECOMMENDATIONS:", len(actual))
+    print("SAVED RESPONSE PARITY:", actual == expected)
+    print("TRAINED MAX EXECUTION:", execution)
 
-    if (
-        status != 200
-        or len(actual) != 24
-        or actual != expected
-        or not execution
+    if not (
+        status == 200
+        and len(actual) == 24
+        and actual == expected
+        and execution
     ):
-        raise RuntimeError(
-            "Clean stage verification did not pass"
-        )
+        raise RuntimeError("Clean stage proof failed")
 
     print("PZAAS INDEPENDENT CLEAN STAGE: PASS")
 
 except Exception as exc:
     print("CLEAN STAGE BLOCKED:", repr(exc))
-
     if isinstance(exc, urllib.error.HTTPError):
         print(
-            "HTTP BODY:",
+            "HTTP ERROR BODY:",
             exc.read(800).decode(errors="replace")
         )
-
-    print("=== LAST 35 SERVER LOG LINES ===")
+    print("=== LAST 30 SERVER LOG LINES ===")
     print(
         "\n".join(
-            log.read_text(errors="replace").splitlines()[-35:]
+            log.read_text(errors="replace").splitlines()[-30:]
         )
     )
     raise SystemExit(1)

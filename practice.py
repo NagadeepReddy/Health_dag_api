@@ -3,199 +3,86 @@ cd /application1/sajjna8 && python3 - <<'PY'
 from pathlib import Path
 import ast
 import difflib
-import hashlib
-import json
 import re
 
-shared = Path("/application1/sajjna8/max_shared_infra")
-analysis = shared / "analysis"
+base = Path("/application1/sajjna8")
 
-roots = {
-    "CTA": Path(
-        "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
-        "artifacts/v1.168-max/maxserve_cta_extension"
+sources = {
+    "BPLAN": base / (
+        "rt-pzai-bplan-v1/artifacts/v1.113-max/"
+        "maxserve_bplan_extension"
     ),
-    "BPLAN": Path(
-        "/application1/sajjna8/rt-pzai-bplan-v1/"
-        "artifacts/v1.113-max/maxserve_bplan_extension"
-    ),
-    "PZAAS": Path(
-        "/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106/"
-        "model/artifacts/v1.472-max/maxserve_pzaas_extension"
+    "PZAAS": base / (
+        "PZAAS_MAX_CLEAN_HANDOFF_20261106/model/"
+        "artifacts/v1.472-max/maxserve_pzaas_extension"
     )
 }
 
-components = [
-    "queue_compat",
-    "native_scheduler",
-    "router",
-    "worker_adapter",
-    "spawn_worker"
-]
+def locate(root, filename):
+    matches = [
+        p for p in root.rglob(filename)
+        if "reference" not in str(p).lower()
+        and "backup" not in str(p).lower()
+    ]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"STOP: Expected one {filename}, found {len(matches)}"
+        )
+    return matches[0]
 
-output = analysis / "shared_implementation_comparison_20261106.json"
+print("=== SHARED QUEUE COMPATIBILITY REVIEW ===")
 
-if not (shared / "bin/run_max_model.sh").is_file():
-    raise SystemExit("STOP: Shared infrastructure missing")
+files = {}
+for name, root in sources.items():
+    path = locate(root, f"{name.lower()}_queue_compat.py")
+    source = path.read_text()
+    ast.parse(source)
+    files[name] = source
+    print(f"{name}: {path}")
+    print(f"LINES: {len(source.splitlines())}")
 
-if output.exists():
-    raise SystemExit("STOP: Comparison already exists; not overwritten")
-
-print("=== SHARED MAX IMPLEMENTATION COMPARISON ===")
-
-def normalized(source):
+def normalize(text):
     return re.sub(
-        r"cta|bplan|pzaas",
-        "model",
-        source,
+        "bplan|pzaas", "model", text,
         flags=re.IGNORECASE
     )
 
-def load(model, component):
-    root = roots[model]
+bplan = normalize(files["BPLAN"])
+pzaas = normalize(files["PZAAS"])
 
-    if not root.is_dir():
-        return {"status": "source_missing"}
+print("\n=== IMPLEMENTATION COMPARISON ===")
+print("NORMALIZED SOURCE IDENTICAL:", bplan == pzaas)
 
-    filename = f"{model.lower()}_{component}.py"
+diff = list(difflib.unified_diff(
+    bplan.splitlines(),
+    pzaas.splitlines(),
+    fromfile="BPLAN",
+    tofile="PZAAS",
+    lineterm=""
+))
 
-    matches = [
-        p for p in root.rglob(filename)
-        if not any(
-            "reference" in part.lower()
-            or "backup" in part.lower()
-            for part in p.parts
-        )
-    ]
+if diff:
+    print("DIFFERENCES:")
+    print("\n".join(diff[:100]))
+else:
+    print("NO DIFFERENCES AFTER MODEL-NAME NORMALIZATION")
 
-    if len(matches) != 1:
-        return {
-            "status": "missing_or_ambiguous",
-            "matches": [str(p) for p in matches]
-        }
+print("\n=== QUEUE IMPLEMENTATION ===")
+for n, line in enumerate(
+    files["PZAAS"].splitlines(), 1
+):
+    print(f"{n:3}: {line}")
 
-    path = matches[0]
-    source = path.read_text(errors="replace")
+print("\n=== BPLAN WORKER ADAPTER LOCATION ===")
+root = sources["BPLAN"]
 
-    try:
-        tree = ast.parse(source)
-        norm_tree = ast.parse(normalized(source))
-    except SyntaxError as exc:
-        return {"status": "syntax_error", "error": str(exc)}
-
-    definitions = []
-    for node in tree.body:
-        if isinstance(node, (
-            ast.FunctionDef,
-            ast.AsyncFunctionDef,
-            ast.ClassDef
-        )):
-            definitions.append(node.name)
-
-    imports = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            imports.append(node.module or "")
-
-    return {
-        "status": "found",
-        "path": str(path),
-        "lines": len(source.splitlines()),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "definitions": definitions,
-        "imports": sorted(set(imports)),
-        "normalized_ast": ast.dump(norm_tree),
-        "normalized_text": normalized(source)
-    }
-
-report = {}
-
-for component in components:
-    print(f"\n=== {component.upper()} ===")
-
-    entries = {
-        model: load(model, component)
-        for model in roots
-    }
-
-    report[component] = {}
-
-    for model, item in entries.items():
-        report[component][model] = {
-            k: v for k, v in item.items()
-            if k not in ("normalized_ast", "normalized_text")
-        }
-        print(
-            f"{model}: {item['status']}",
-            f"{item.get('lines', 0)} lines",
-            f"definitions={','.join(item.get('definitions', [])[:4])}"
-        )
-
-    if not all(
-        item["status"] == "found"
-        for item in entries.values()
-    ):
-        print("COMPARISON: INCOMPLETE")
-        continue
-
-    models = list(entries)
-    base = entries[models[0]]
-
-    identical = all(
-        entries[m]["normalized_ast"] == base["normalized_ast"]
-        for m in models[1:]
-    )
-
-    report[component]["normalized_ast_match"] = identical
-
-    print(
-        "MODEL-NAME-NORMALIZED AST:",
-        "MATCH" if identical else "DIFFERENT"
-    )
-
-    for model in models[1:]:
-        other = entries[model]
-
-        similarity = difflib.SequenceMatcher(
-            None,
-            base["normalized_text"],
-            other["normalized_text"],
-            autojunk=False
-        ).ratio()
-
-        print(
-            f"CTA vs {model} similarity:",
-            f"{similarity:.1%}"
-        )
-
-        differences = list(difflib.unified_diff(
-            base["normalized_text"].splitlines(),
-            other["normalized_text"].splitlines(),
-            fromfile="CTA",
-            tofile=model,
-            lineterm=""
-        ))
-
-        report[component][f"CTA_vs_{model}"] = {
-            "similarity": round(similarity, 4),
-            "diff": differences
-        }
-
-    print(
-        "EXTRACTION STATUS:",
-        "CANDIDATE - REVIEW REQUIRED"
-        if identical
-        else "REQUIRES ADAPTER DESIGN"
-    )
-
-analysis.mkdir(parents=True, exist_ok=True)
-output.write_text(json.dumps(report, indent=2))
+for path in sorted(root.rglob("*worker*adapter*.py")):
+    if "reference" not in str(path).lower():
+        print(path.relative_to(root))
 
 print("\n=== RESULT ===")
-print("IMPLEMENTATION COMPARISON: COMPLETE")
-print("REPORT:", output)
-print("ORIGINAL MODEL CODE: UNCHANGED")
-print("CTA / BPLAN / PZAAS HANDOFFS: UNCHANGED")
+print("SHARED QUEUE REVIEW: COMPLETE")
+print("EXISTING MODELS: UNCHANGED")
 print("RUNNING CONTAINERS: UNCHANGED")
-print("NEXT: EXTRACT VERIFIED COMMON COMPONENTS")
+print("NEXT: BUILD SHARED QUEUE MODULE")
 PY

@@ -6,59 +6,57 @@ STAGE="/application1/sajjna8/PZAAS_MAX_CLEAN_STAGE_20261106"
 EVIDENCE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_http_evidence"
 FIXTURE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_adjusted_sanity_input.json"
 
+test -d "$STAGE"
+test -f "$FIXTURE"
+test -f "$EVIDENCE/pzaas_native_response.json"
+
 python3 - <<'PY'
 from pathlib import Path
 import shutil
 
-root = Path(
+source_root = Path(
     "artifacts/v1.472-max/pzaas_max/validation/python_deps"
 )
 shared = Path("/application1/max_shared_python_deps")
 
-if not shared.is_dir():
-    raise SystemExit("STOP: Shared dependencies missing")
-
 sources = [
-    root / "cloudpickle",
-    root / "cloudpickle.py"
+    source_root / "threadpoolctl.py",
+    source_root / "threadpoolctl"
 ]
 
 source = next((p for p in sources if p.exists()), None)
+destination = shared / (source.name if source else "threadpoolctl.py")
 
-package = shared / "cloudpickle"
-module = shared / "cloudpickle.py"
+if not shared.is_dir():
+    raise SystemExit("STOP: Shared dependency directory missing")
 
-if (package / "__init__.py").is_file() or module.is_file():
-    print("SHARED CLOUDPICKLE: ALREADY PRESENT")
+if (shared / "threadpoolctl.py").is_file() or (
+    shared / "threadpoolctl/__init__.py"
+).is_file():
+    print("SHARED THREADPOOLCTL: ALREADY PRESENT")
 
 elif source is None:
     raise SystemExit(
-        "STOP: cloudpickle not found in validated "
-        "development dependencies. No files changed."
+        "STOP: Validated threadpoolctl source not found. "
+        "No files modified."
     )
+
+elif destination.exists():
+    raise SystemExit("STOP: Conflicting shared dependency path")
 
 elif source.is_dir():
-    if package.exists():
-        raise SystemExit("STOP: Incomplete shared package exists")
     shutil.copytree(
-        source,
-        package,
+        source, destination,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
     )
-    print("SHARED CLOUDPICKLE: INSTALLED")
+    print("SHARED THREADPOOLCTL: INSTALLED")
 
 else:
-    if module.exists():
-        raise SystemExit("STOP: Existing cloudpickle.py conflict")
-    shutil.copy2(source, module)
-    print("SHARED CLOUDPICKLE: INSTALLED")
+    shutil.copy2(source, destination)
+    print("SHARED THREADPOOLCTL: INSTALLED")
 
-print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
+print("ORIGINAL DS / WEIGHTS / IMAGE: UNCHANGED")
 PY
-
-test -d "$STAGE"
-test -f "$FIXTURE"
-test -f "$EVIDENCE/pzaas_native_response.json"
 
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -83,24 +81,27 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-print("=== CLEAN DEPENDENCY CHECK ===", flush=True)
+print("=== CLEAN RUNTIME DEPENDENCY CHECK ===", flush=True)
 
 try:
     import joblib
     import cloudpickle
+    import threadpoolctl
+    import sklearn
     from transformers import AutoTokenizer
     from max.serve.scheduler.queues import SchedulerZmqConfigs
 except Exception:
     traceback.print_exc()
-    raise SystemExit("CLEAN DEPENDENCY IMPORT: FAILED")
+    raise SystemExit("CLEAN RUNTIME IMPORT: FAILED")
 
-print("JOBLIB: PASS")
-print("CLOUDPICKLE: PASS")
+print("JOBLIB / CLOUDPICKLE / THREADPOOLCTL: PASS")
+print("SKLEARN VERSION:", sklearn.__version__)
 print("TRANSFORMERS / MAX: PASS", flush=True)
 
 log = Path("/evidence/pzaas_clean_stage_http.log")
 fixture = Path("/tmp/pzaas_input.json")
 reference = Path("/evidence/pzaas_native_response.json")
+output_file = Path("/evidence/pzaas_clean_stage_response.json")
 
 def unpack(value):
     if isinstance(value, str):
@@ -110,22 +111,20 @@ def unpack(value):
             pass
     return value
 
-def get_products(payload):
+def products(payload):
     body = unpack(payload["jsonData"])
     prediction = unpack(body["prediction"])
-    products = unpack(prediction["productList"])
-    if not isinstance(products, list):
-        raise ValueError("Invalid productList")
-    return products
+    result = unpack(prediction["productList"])
+    if not isinstance(result, list):
+        raise ValueError("productList is not a list")
+    return result
 
-print("=== CLEAN MAX SERVE STARTUP ===", flush=True)
+print("=== INDEPENDENT CLEAN MAX SERVE ===", flush=True)
 
 with log.open("w") as output:
     server = subprocess.Popen(
         [
-            sys.executable,
-            "-u",
-            "-m",
+            sys.executable, "-u", "-m",
             "pzaas_native_serve_dev.pzaas_native_launcher"
         ],
         stdout=output,
@@ -138,6 +137,7 @@ try:
     while time.monotonic() < deadline:
         if server.poll() is not None:
             raise RuntimeError("Clean MAX server exited")
+
         try:
             with socket.create_connection(
                 ("127.0.0.1", 18768), timeout=2
@@ -146,7 +146,7 @@ try:
         except OSError:
             time.sleep(2)
     else:
-        raise RuntimeError("Clean server startup timeout")
+        raise RuntimeError("Clean MAX startup timeout")
 
     print("CLEAN MAX SERVER: READY", flush=True)
 
@@ -161,44 +161,46 @@ try:
         request, timeout=180
     ) as response:
         status = response.status
-        result = json.loads(response.read())
+        payload = json.loads(response.read())
 
-    actual = get_products(result)
-    expected = get_products(
-        json.loads(reference.read_text())
-    )
+    actual = products(payload)
+    expected = products(json.loads(reference.read_text()))
 
-    execution = (
+    trained = (
         "PZAAS REAL MAX EXECUTION: PASS"
         in log.read_text(errors="replace")
     )
 
     print("CLEAN HTTP STATUS:", status)
-    print("CLEAN RECOMMENDATIONS:", len(actual))
-    print("SAVED RESPONSE PARITY:", actual == expected)
-    print("TRAINED MAX EXECUTION:", execution)
+    print("PRODUCT COUNT:", len(actual))
+    print("PRODUCT PARITY:", actual == expected)
+    print("TRAINED MAX EXECUTION:", trained)
 
     if not (
         status == 200
         and len(actual) == 24
         and actual == expected
-        and execution
+        and trained
     ):
-        raise RuntimeError("Clean stage proof failed")
+        raise RuntimeError("Clean stage acceptance check failed")
 
+    output_file.write_text(json.dumps(payload, indent=2))
     print("PZAAS INDEPENDENT CLEAN STAGE: PASS")
+    print("CLEAN EVIDENCE: SAVED")
 
 except Exception as exc:
     print("CLEAN STAGE BLOCKED:", repr(exc))
+
     if isinstance(exc, urllib.error.HTTPError):
         print(
-            "HTTP ERROR BODY:",
+            "HTTP ERROR:",
             exc.read(800).decode(errors="replace")
         )
-    print("=== LAST 30 SERVER LOG LINES ===")
+
+    print("=== LAST 35 SERVER LOG LINES ===")
     print(
         "\n".join(
-            log.read_text(errors="replace").splitlines()[-30:]
+            log.read_text(errors="replace").splitlines()[-35:]
         )
     )
     raise SystemExit(1)

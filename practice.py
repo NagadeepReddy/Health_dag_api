@@ -1,139 +1,197 @@
-
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
 from collections import defaultdict
 import hashlib
+import json
+import os
+import shutil
+import stat
 
-root = Path("/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106")
+source = Path(
+    "/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106"
+)
+target = Path(
+    "/application1/sajjna8/PZAAS_MAX_FINAL_CANDIDATE_20261106"
+)
 
-if not root.is_dir():
-    raise SystemExit("STOP: Packaged handoff missing")
+if not source.is_dir():
+    raise SystemExit("STOP: Verified clean handoff missing")
 
-files = sorted(p for p in root.rglob("*") if p.is_file())
-size = sum(p.stat().st_size for p in files)
+if target.exists():
+    raise SystemExit("STOP: Final candidate already exists")
 
-print("=== FINAL PZAAS HANDOFF AUDIT ===")
-print("TOTAL FILES:", len(files))
-print("TOTAL SIZE GiB:", round(size / 1024**3, 2))
+test_rel = Path(
+    "model/artifacts/v1.472/core-artifact/bplan/test_samples"
+)
+test_dir = source / test_rel
 
-print("\n=== COMPONENT SIZES ===")
+print("=== PZAAS SAFE RELEASE REDUCTION ===", flush=True)
 
-for name in ("model", "runtime", "config", "docs"):
-    folder = root / name
-    subset = [p for p in files if folder in p.parents]
-    total = sum(p.stat().st_size for p in subset)
-    print(f"{name}: {len(subset)} files, {total / 1048576:.1f} MiB")
+# Do not exclude test data if deployed Python code references it.
+references = []
 
-print("\n=== LARGEST FILES ===")
+if test_dir.is_dir():
+    for path in source.rglob("*.py"):
+        if test_dir in path.parents:
+            continue
+        if "test_samples" in path.read_text(errors="replace"):
+            references.append(str(path.relative_to(source)))
 
-for path in sorted(
-    files, key=lambda p: p.stat().st_size, reverse=True
-)[:12]:
-    print(
-        f"{path.stat().st_size / 1048576:.1f} MiB",
-        path.relative_to(root)
+if references:
+    print("TEST SAMPLE REFERENCES:")
+    for item in references[:20]:
+        print(item)
+    raise SystemExit(
+        "STOP: Runtime source references test samples. "
+        "No candidate created."
     )
 
-print("\n=== POSSIBLE UNNECESSARY FILES ===")
+excluded_files = (
+    sum(p.is_file() for p in test_dir.rglob("*"))
+    if test_dir.is_dir() else 0
+)
 
-suspect = []
-for path in files:
-    rel = path.relative_to(root)
-    parts = [part.lower() for part in rel.parts]
-    name = path.name.lower()
+print("BPLAN TEST SAMPLE FILES TO EXCLUDE:", excluded_files)
 
-    if (
-        any(part in {
-            "__pycache__", ".pytest_cache", "tests",
-            "test", "benchmarks", ".git"
-        } for part in parts[:-1])
-        or name.startswith("test_")
-        or name.endswith((
-            ".pyc", ".pyo", ".log", ".bak",
-            ".tmp", ".whl", ".before_pack72"
-        ))
-    ):
-        suspect.append(path)
+if shutil.disk_usage(target.parent).free < 5 * 1024**3:
+    raise SystemExit("STOP: Insufficient available storage")
 
-print("CLEANUP CANDIDATES:", len(suspect))
+def ignore(directory, names):
+    excluded = {
+        name for name in names
+        if name in {"__pycache__", ".pytest_cache"}
+        or name.endswith((".pyc", ".pyo"))
+    }
 
-for path in suspect[:20]:
-    print("REVIEW:", path.relative_to(root))
+    if Path(directory) == test_dir.parent:
+        excluded.add("test_samples")
 
-if len(suspect) > 20:
-    print("ADDITIONAL CANDIDATES:", len(suspect) - 20)
+    return excluded
 
-print("\n=== CONTENT DUPLICATES (1 MiB OR LARGER) ===")
+shutil.copytree(source, target, ignore=ignore)
+
+print("FINAL CANDIDATE: COPIED", flush=True)
+
+required = [
+    "model/artifacts/v1.472/core-artifact/pipeline.py",
+    "model/artifacts/v1.472/model-settings.json",
+    "model/artifacts/v1.472-max/pzaas_max/pzaas_weight_loader.py",
+    "model/artifacts/v1.472-max/pzaas_max/validation/pzaas_forward_schema.json",
+    "model/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_native_launcher.py",
+    "runtime/launch_max_model.sh",
+    "config/model.env"
+]
+
+for item in required:
+    if not (target / item).is_file():
+        raise SystemExit("STOP: Missing required file: " + item)
+
+print("REQUIRED RUNTIME FILES: PRESENT")
+
+# Consolidate identical contents inside the NEW candidate only.
+# Keep both original filenames and paths for runtime compatibility.
+files = sorted(p for p in target.rglob("*") if p.is_file())
 
 by_size = defaultdict(list)
 
 for path in files:
-    n = path.stat().st_size
-    if n >= 1048576:
-        by_size[n].append(path)
+    if path.stat().st_size >= 1048576:
+        by_size[path.stat().st_size].append(path)
 
-duplicates = []
-for group in by_size.values():
-    if len(group) < 2:
+groups = []
+saved_bytes = 0
+
+def digest(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+for same_size in by_size.values():
+    if len(same_size) < 2:
         continue
 
     by_hash = defaultdict(list)
 
-    for path in group:
-        h = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(
-                lambda: stream.read(1024 * 1024), b""
-            ):
-                h.update(chunk)
-        by_hash[h.hexdigest()].append(path)
+    for path in same_size:
+        by_hash[digest(path)].append(path)
 
     for identical in by_hash.values():
-        if len(identical) > 1:
-            duplicates.append(identical)
+        if len(identical) < 2:
+            continue
 
-savings = sum(
-    (len(group) - 1) * group[0].stat().st_size
-    for group in duplicates
-)
+        original = identical[0]
+        consolidated = [original]
 
-print("DUPLICATE GROUPS:", len(duplicates))
-print("POTENTIAL SAVINGS MiB:", round(savings / 1048576, 1))
+        for duplicate in identical[1:]:
+            if (
+                stat.S_IMODE(duplicate.stat().st_mode)
+                != stat.S_IMODE(original.stat().st_mode)
+            ):
+                continue
 
-for group in duplicates[:8]:
-    print("DUPLICATE GROUP:")
-    for path in group[:5]:
-        print(" ", path.relative_to(root))
+            temporary = duplicate.with_name(
+                duplicate.name + ".dedup_tmp"
+            )
 
-print("\n=== SHARED LAUNCHER CHECK ===")
+            os.link(original, temporary)
+            os.replace(temporary, duplicate)
 
-launcher = root / "runtime/launch_max_model.sh"
-config = root / "config/model.env"
+            saved_bytes += duplicate.stat().st_size
+            consolidated.append(duplicate)
 
-if not launcher.is_file() or not config.is_file():
-    raise SystemExit("STOP: Shared launcher/config missing")
+        if len(consolidated) > 1:
+            groups.append([
+                str(p.relative_to(target))
+                for p in consolidated
+            ])
 
-launcher_text = launcher.read_text()
-config_text = config.read_text()
-
+print("IDENTICAL CONTENT GROUPS CONSOLIDATED:", len(groups))
 print(
-    "MODEL-INDEPENDENT LAUNCHER SOURCE:",
-    not any(
-        name in launcher_text.lower()
-        for name in ("cta", "bplan", "pzaas")
-    )
-)
-print(
-    "MODEL CONFIG SEPARATED:",
-    "MODULE=" in config_text
-    and "MODEL_PYTHONPATH=" in config_text
-)
-print(
-    "VM-SPECIFIC PODMAN DEFAULT:",
-    "/application1/podman/storage" in launcher_text
+    "DUPLICATE STORAGE SAVINGS MiB:",
+    round(saved_bytes / 1048576, 1)
 )
 
-print("\n=== AUDIT COMPLETE ===")
-print("PACKAGED COLD START: PREVIOUSLY PASSED")
-print("NO FILES MODIFIED OR DELETED")
+# Verify that duplicate paths still exist.
+for group in groups:
+    for relative in group:
+        if not (target / relative).is_file():
+            raise SystemExit("STOP: Duplicate path lost")
+
+all_files = [
+    p for p in target.rglob("*") if p.is_file()
+]
+
+logical_size = sum(p.stat().st_size for p in all_files)
+
+manifest = {
+    "model": "PZAAS v1.472",
+    "status": "final candidate; launcher proof pending",
+    "source_handoff": str(source),
+    "candidate": str(target),
+    "excluded_test_sample_files": excluded_files,
+    "consolidated_duplicate_groups": groups,
+    "deduplicated_bytes": saved_bytes,
+    "file_count": len(all_files),
+    "logical_size_bytes": logical_size,
+    "original_ds_modified": False,
+    "live_kubernetes_lookups": "pending",
+    "other_vm_validation": "pending"
+}
+
+report = target / "docs/FINAL_CLEANUP_MANIFEST.json"
+report.parent.mkdir(parents=True, exist_ok=True)
+report.write_text(json.dumps(manifest, indent=2))
+
+print("\n=== FINAL CANDIDATE SUMMARY ===")
+print("REQUIRED RUNTIME FILES: PASS")
+print("TEST SAMPLES EXCLUDED:", excluded_files)
+print("DUPLICATE PATHS: PRESERVED")
+print("TOTAL FILES:", len(all_files))
+print("LOGICAL SIZE GiB:", round(logical_size / 1024**3, 2))
+print("CANDIDATE:", target)
+print("EXISTING VERIFIED HANDOFF: UNCHANGED")
+print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
+print("NEXT: GENERIC LAUNCHER VERIFICATION")
 PY

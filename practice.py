@@ -1,47 +1,72 @@
 
 cd /application1/sajjna8 && python3 - <<'PY'
 from pathlib import Path
-import hashlib
-import difflib
+import re
 
-base = Path("/application1/sajjna8")
-original = base / "PZAAS_MAX_CLEAN_HANDOFF_20261106/model/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev"
-isolated = base / "max_shared_infra/isolated/pzaas_shared_wiring_v1"
+stage = Path("/application1/sajjna8/max_shared_infra/isolated/pzaas_shared_wiring_v1")
+target = stage / "pzaas_spawn_worker.py"
+adapter = stage / "pzaas_max_model_adapter.py"
 
-names = [
-    "pzaas_native_launcher.py",
-    "pzaas_spawn_worker.py",
-    "pzaas_queue_compat.py",
-    "pzaas_worker_registration.py",
-    "pzaas_scheduler_factory.py",
-    "pzaas_router.py",
-]
+print("=== ISOLATED SHARED MAX WORKER CORRECTION ===")
 
-print("=== PZAAS WORKER STARTUP COMPARISON ===")
-print("WORKING SOURCE:", original)
-print("ISOLATED SOURCE:", isolated)
+if not target.is_file():
+    raise SystemExit("STOP: Isolated worker startup file missing")
 
-for name in names:
-    a, b = original / name, isolated / name
-    print("\nFILE:", name)
-    if not a.is_file() or not b.is_file():
-        print("MISSING:", [str(p) for p in (a, b) if not p.is_file()])
-        continue
-    x = a.read_text().splitlines()
-    y = b.read_text().splitlines()
-    if x == y:
-        print("IDENTICAL")
-        continue
-    print("DIFFERENT — changed lines:")
-    differences = list(difflib.unified_diff(
-        x, y, fromfile="working", tofile="isolated", lineterm=""
-    ))
-    for line in differences[:90]:
-        print(line)
-    if len(differences) > 90:
-        print("... additional differences omitted")
+source = target.read_text()
 
-print("\nNO FILES MODIFIED")
+if adapter.is_file():
+    adapter_source = adapter.read_text()
+else:
+    adapter_path = Path("/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106/model/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_max_model_adapter.py")
+    if not adapter_path.is_file():
+        raise SystemExit("STOP: Original worker adapter missing")
+    adapter_source = adapter_path.read_text()
+
+if not re.search(r"def initialize\s*\(self\)", adapter_source):
+    raise SystemExit("STOP: Original initialize method not verified")
+
+pattern = re.compile(
+    r"(?ms)^([ \t]*)lifecycle\s*=\s*WorkerLifecycle\(\n"
+    r".*?^\1worker\.pipeline\s*=\s*pipeline[ \t]*$"
+)
+matches = list(pattern.finditer(source))
+
+if len(matches) != 1:
+    raise SystemExit(
+        f"STOP: Expected one shared lifecycle block; found {len(matches)}"
+    )
+
+match = matches[0]
+old = match.group(0)
+
+if not all(term in old for term in (
+    "worker.pipeline_factory",
+    "worker.attach_max",
+    "lifecycle.start()",
+)):
+    raise SystemExit("STOP: Unexpected lifecycle structure; no changes made")
+
+indent = match.group(1)
+replacement = "\n".join([
+    indent + "lifecycle = WorkerLifecycle(",
+    indent + "    create=worker.initialize,",
+    indent + "    load=lambda pipeline: None,",
+    indent + "    attach_max=lambda pipeline: None,",
+    indent + ")",
+    indent + "pipeline = lifecycle.start()",
+    indent + "worker.pipeline = pipeline",
+])
+
+updated = source[:match.start()] + replacement + source[match.end():]
+compile(updated, str(target), "exec")
+
+target.write_text(updated)
+
+print("ORIGINAL WORKER INITIALIZATION: RESTORED THROUGH SHARED LIFECYCLE")
+print("SHARED WORKER LIFECYCLE: RETAINED")
+print("ISOLATED PYTHON SYNTAX: PASS")
+print("ORIGINAL PZAAS HANDOFF: UNCHANGED")
+print("CTA / BPLAN: UNCHANGED")
 print("NO CONTAINERS STARTED")
-print("NEXT: CORRECT ISOLATED WORKER STARTUP")
+print("NEXT: VERIFY CORRECTED ISOLATED WORKER STARTUP")
 PY

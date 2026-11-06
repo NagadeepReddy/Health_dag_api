@@ -1,136 +1,171 @@
 
-cd /application1/sajjna8 && bash <<'SH'
-set -euo pipefail
+cd /application1/sajjna8 && python3 - <<'PY'
+import json
+import os
+import signal
+import socket
+import subprocess
+import time
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
 
-ROOT="/application1/sajjna8/max_shared_infra"
-IMAGE="localhost/max-shared-runtime:cpu"
-
-podman \
-  --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  --memory=4g --pids-limit=256 \
-  -v "$ROOT/python:/shared_runtime:ro" \
-  -w /shared_runtime \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -e PYTHONPATH=/shared_runtime \
-  --entrypoint /opt/venv/bin/python \
-  "$IMAGE" -u - <<'PY'
-from max.serve.scheduler import queues
-from max.serve.queue.zmq_queue import ZmqConfig
-from max.interfaces.request import RequestID
-from max.interfaces.scheduler import SchedulerResult
-
-from max_runtime_shared.typed_queue import (
-    install_max_typed_response_queue
+root = Path("/application1/sajjna8/max_shared_infra")
+package = Path("/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106")
+fixture = Path(
+    "/application1/sajjna8/rt-pzaas-v1.0/"
+    "artifacts/v1.472-max/maxserve_pzaas_extension/"
+    "pzaas_native_serve_dev/pzaas_adjusted_sanity_input.json"
 )
-from max_runtime_shared.scheduler_hooks import (
-    SchedulerHooks,
-    SharedSchedulerRegistry
+
+launcher = root / "bin/run_max_model.sh"
+evidence = root / "analysis"
+
+for path in (
+    launcher,
+    package / "model",
+    package / "runtime/python_deps",
+    package / "config/model.env",
+    fixture,
+):
+    if not path.exists():
+        raise SystemExit(f"STOP: Required input missing: {path}")
+
+subprocess.run(
+    ["bash", "-n", str(launcher)],
+    check=True
 )
-from max_runtime_shared.router_contract import (
-    RouteBinding,
-    register_model_routes
-)
-from max_runtime_shared.worker_lifecycle import WorkerLifecycle
 
-from fastapi import FastAPI
+port = None
+for candidate in range(18810, 18841):
+    with socket.socket() as sock:
+        try:
+            sock.bind(("127.0.0.1", candidate))
+            port = candidate
+            break
+        except OSError:
+            pass
 
-print("=== REAL MAX RUNTIME COMPATIBILITY ===", flush=True)
+if port is None:
+    raise SystemExit("STOP: No free test port")
 
-SchedulerZmqConfigs = queues.SchedulerZmqConfigs
-PipelineTask = getattr(queues, "PipelineTask", None)
+evidence.mkdir(parents=True, exist_ok=True)
+stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+log = evidence / f"shared_pzaas_e2e_{stamp}.log"
+proof = evidence / f"shared_pzaas_e2e_{stamp}.json"
 
-if PipelineTask is None:
-    raise RuntimeError(
-        "Installed MAX scheduler does not expose PipelineTask"
+env = os.environ.copy()
+env["HOST_PORT"] = str(port)
+
+print("=== INDEPENDENT SHARED MAX INTEGRATION ===", flush=True)
+print("SHARED LAUNCHER:", launcher, flush=True)
+print("VERIFIED MODEL PACKAGE:", package, flush=True)
+print("TEST PORT:", port, flush=True)
+
+with log.open("w") as stream:
+    server = subprocess.Popen(
+        ["bash", str(launcher), "start", str(package)],
+        env=env,
+        cwd=str(root),
+        stdout=stream,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
 
-task = PipelineTask.TEXT_GENERATION
+try:
+    deadline = time.monotonic() + 180
 
-print("MAX PIPELINE TASK:", task)
+    while time.monotonic() < deadline:
+        if server.poll() is not None:
+            raise RuntimeError("Shared launcher exited")
 
-events = []
-registry = SharedSchedulerRegistry()
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", port), timeout=2
+            ):
+                break
+        except OSError:
+            time.sleep(2)
+    else:
+        raise RuntimeError("Shared launcher startup timeout")
 
-registry.register(
-    SchedulerHooks(
-        model_key="shared_runtime_probe",
-        install_queue=lambda: (
-            events.append("queue"),
-            install_max_typed_response_queue(
-                dict,
-                owner="shared_runtime_probe"
-            )
-        ),
-        install_scheduler=lambda: events.append("scheduler")
+    print("SHARED INFRA SERVER: READY", flush=True)
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/pzaas/predict",
+        data=fixture.read_bytes(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-)
 
-assert registry.activate("shared_runtime_probe")
-assert events == ["queue", "scheduler"]
+    with urllib.request.urlopen(
+        request, timeout=180
+    ) as response:
+        status = response.status
+        result = json.loads(response.read())
 
-print("SHARED SCHEDULER REGISTRATION: PASS")
+    def unpack(value):
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
 
-config = SchedulerZmqConfigs(task)
+    data = unpack(result["jsonData"])
+    prediction = unpack(data["prediction"])
+    products = unpack(prediction["productList"])
 
-assert isinstance(config.request_queue_config, ZmqConfig)
-assert isinstance(config.response_queue_config, ZmqConfig)
-assert isinstance(config.cancel_queue_config, ZmqConfig)
+    if not isinstance(products, list):
+        raise RuntimeError("Invalid productList response")
 
-expected = dict[RequestID, SchedulerResult[dict]]
+    trained = False
+    for _ in range(20):
+        if "PZAAS REAL MAX EXECUTION: PASS" in log.read_text(
+            errors="replace"
+        ):
+            trained = True
+            break
+        time.sleep(0.5)
 
-assert (
-    config.response_queue_config.type == expected
-    if hasattr(config.response_queue_config, "type")
-    else True
-)
+    print("HTTP STATUS:", status, flush=True)
+    print("RECOMMENDATIONS:", len(products), flush=True)
+    print("TRAINED MAX EXECUTION:", trained, flush=True)
 
-print("REAL MAX TYPED QUEUE: PASS")
-print("REAL MAX SCHEDULER CONFIGURATION: PASS")
+    if status != 200 or len(products) != 24 or not trained:
+        raise RuntimeError("Shared infrastructure acceptance failed")
 
-app = FastAPI()
+    proof.write_text(json.dumps({
+        "shared_launcher": "PASS",
+        "model": "PZAAS v1.472",
+        "http_status": status,
+        "recommendations": len(products),
+        "trained_max_execution": trained,
+        "model_package_modified": False,
+        "shared_python_modules_wired": False,
+        "live_kubernetes_lookups": "not validated"
+    }, indent=2))
 
-async def predict():
-    return {"status": "ok"}
+    print("\n=== RESULT ===")
+    print("SHARED INFRA REAL MODEL SERVING: PASS")
+    print("PZAAS HTTP 200: PASS")
+    print("24 RECOMMENDATIONS: PASS")
+    print("TRAINED MAX INFERENCE: PASS")
+    print("SHARED PYTHON MODULE WIRING: PENDING")
+    print("CTA / BPLAN / PZAAS HANDOFFS: UNCHANGED")
+    print("PROOF:", proof)
 
-count = register_model_routes(
-    app,
-    [RouteBinding("/shared/predict", predict)]
-)
+except Exception as exc:
+    print("SHARED INTEGRATION BLOCKED:", repr(exc))
+    print("=== LAST 30 LOG LINES ===")
+    print("\n".join(
+        log.read_text(errors="replace").splitlines()[-30:]
+    ))
+    raise SystemExit(1)
 
-assert count == 1
-assert any(
-    route.path == "/shared/predict"
-    for route in app.routes
-)
-
-print("REAL API FRAMEWORK ROUTE: PASS")
-
-lifecycle_events = []
-
-worker = WorkerLifecycle(
-    create=lambda: lifecycle_events.append("create") or {},
-    load=lambda instance: lifecycle_events.append("load"),
-    attach_max=lambda instance: lifecycle_events.append("attach")
-)
-
-worker.start()
-
-assert worker.ready
-assert lifecycle_events == ["create", "load", "attach"]
-
-print("SHARED WORKER LIFECYCLE: PASS")
-
-print("\n=== FINAL RESULT ===")
-print("REAL MAX API COMPATIBILITY: PASS")
-print("SHARED QUEUE IN MAX IMAGE: PASS")
-print("SHARED SCHEDULER HOOKS: PASS")
-print("SHARED ROUTER FRAMEWORK: PASS")
-print("SHARED WORKER LIFECYCLE: PASS")
-print("NO TRAINED MODEL LOADED")
-print("NO HTTP SERVER STARTED")
-print("ORIGINAL CTA / BPLAN / PZAAS: UNCHANGED")
-print("NEXT: ISOLATED SHARED INFRA MODEL INTEGRATION")
+finally:
+    if server.poll() is None:
+        os.killpg(server.pid, signal.SIGTERM)
+        try:
+            server.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            os.killpg(server.pid, signal.SIGKILL)
+            server.wait()
 PY
-SH

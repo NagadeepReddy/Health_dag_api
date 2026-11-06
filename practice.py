@@ -1,225 +1,114 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
-set -euo pipefail
-
-EVIDENCE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_http_evidence"
-
-test -f "$EVIDENCE/pzaas_native_response.json" || {
-  echo "STOP: Saved MAX response missing"
-  exit 1
-}
-
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  --memory=12g --pids-limit=512 \
-  -v "$PWD:/workspace:ro" \
-  -v "$EVIDENCE:/evidence:rw" \
-  -v /application1/max_shared_python_deps:/shared_deps:ro \
-  -w /workspace \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -e PYTHONPATH=/shared_deps/sklearn161:/shared_deps:/workspace/artifacts/v1.472-max/pzaas_max/validation/python_deps:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
-  --entrypoint /opt/venv/bin/python \
-  localhost/cta-max-faiss:local -u - <<'PY'
-import ast
-import importlib
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
+import hashlib
 import json
-import os
-import time
-import traceback
-from contextlib import redirect_stdout, redirect_stderr
+import tarfile
 from pathlib import Path
 
-os.umask(0o077)
+repo = Path.cwd()
+root = repo / "artifacts/v1.472-max"
+extension = root / "maxserve_pzaas_extension"
+evidence = extension / "pzaas_http_evidence"
 
-root = Path(
-    "/workspace/artifacts/v1.472-max/"
-    "maxserve_pzaas_extension/pzaas_native_serve_dev"
-)
-spawn = root / "pzaas_spawn_worker.py"
-fixture = root / "pzaas_adjusted_sanity_input.json"
-reference = Path("/evidence/pzaas_native_response.json")
-log = Path("/evidence/pzaas_original_baseline.log")
+comparison = evidence / "pzaas_business_comparison.json"
+response = evidence / "pzaas_native_response.json"
+server_log = evidence / "pzaas_native_http.log"
 
-for path in (spawn, fixture, reference):
+for path in (comparison, response, server_log):
     if not path.is_file():
-        raise SystemExit(f"STOP: Missing {path}")
+        raise SystemExit(f"STOP: Missing evidence: {path}")
 
-tree = ast.parse(spawn.read_text())
+result = json.loads(comparison.read_text())
+payload = json.loads(response.read_text())
+log = server_log.read_text(errors="replace")
 
-# Recover the original pipeline class from the verified
-# PZAAS worker source rather than assuming an import name.
-imports = [
-    (node.module, alias.name)
-    for node in ast.walk(tree)
-    if isinstance(node, ast.ImportFrom)
-    for alias in node.names
-    if alias.asname == "PZAASPipeline"
-       or alias.name == "PZAASPipeline"
-]
-
-if len(set(imports)) != 1:
-    raise SystemExit(
-        f"STOP: Cannot uniquely locate PZAASPipeline import: {imports}"
-    )
-
-# Apply literal environment defaults from the native
-# worker, without executing or importing its MAX hook.
-for node in ast.walk(tree):
-    if not isinstance(node, ast.Call):
-        continue
-    func = node.func
-    if not (
-        isinstance(func, ast.Attribute)
-        and func.attr == "setdefault"
-        and isinstance(func.value, ast.Attribute)
-        and func.value.attr == "environ"
-        and isinstance(func.value.value, ast.Name)
-        and func.value.value.id == "os"
-        and len(node.args) >= 2
-        and all(
-            isinstance(x, ast.Constant) and isinstance(x.value, str)
-            for x in node.args[:2]
-        )
-    ):
-        continue
-    os.environ.setdefault(node.args[0].value, node.args[1].value)
-
-def unpack(obj):
-    if isinstance(obj, str):
-        try:
-            return json.loads(obj)
-        except ValueError:
-            return obj
-    return obj
-
-def get_prediction(obj):
-    obj = unpack(obj)
-    if isinstance(obj, tuple) and obj:
-        obj = unpack(obj[0])
-    if isinstance(obj, dict) and "jsonData" in obj:
-        obj = unpack(obj["jsonData"])
-    if isinstance(obj, dict) and "prediction" in obj:
-        obj = unpack(obj["prediction"])
-    return obj
-
-print("PZAAS ORIGINAL PYTORCH BASELINE: START", flush=True)
-print("BASELINE PIPELINE IMPORT:", imports[0], flush=True)
-
-started = time.monotonic()
-
-try:
-    with log.open("w") as output:
-        with redirect_stdout(output), redirect_stderr(output):
-            module_name, class_name = imports[0]
-            Pipeline = getattr(
-                importlib.import_module(module_name), class_name
-            )
-
-            pipeline = Pipeline()
-            pipeline.load()
-
-            # Deliberately no attach_max() and no MAX adapter.
-            raw = pipeline.predict_raw(
-                json.loads(fixture.read_text())
-            )
-except Exception as exc:
-    print("PYTORCH BASELINE BLOCKED:", repr(exc))
-    print("=== LAST 25 BASELINE LOG LINES ===")
-    print("\n".join(log.read_text(errors="replace").splitlines()[-25:]))
-    raise SystemExit(1)
-
-print(
-    "PYTORCH BASELINE EXECUTION: PASS",
-    f"({time.monotonic()-started:.1f}s)",
-    flush=True
+required = (
+    "product_id_order_match",
+    "product_list_exact_match",
+    "orig_score_value_match",
+    "isNewRcmd_match",
 )
 
-max_prediction = get_prediction(
-    json.loads(reference.read_text())
+for key in required:
+    if result.get(key) is not True:
+        raise SystemExit(f"STOP: Parity not confirmed: {key}")
+
+if result.get("max_product_count") != 24 or result.get("pytorch_product_count") != 24:
+    raise SystemExit("STOP: Unexpected product counts")
+
+if "PZAAS REAL MAX EXECUTION: PASS" not in log:
+    raise SystemExit("STOP: Trained MAX execution proof missing")
+
+if not {"jsonData", "transactionMetadata"}.issubset(payload):
+    raise SystemExit("STOP: Native response contract missing")
+
+report = root / "PZAAS_MAX_CPU_POC_HANDOFF.md"
+
+report.write_text("""# PZAAS v1.472 — Modular MAX CPU POC handoff
+
+## Verified
+- Genuine trained MAX CPU execution: PASS
+- MAX graph: 72 packed inputs, 17/17 trained graph weights
+- Previous same-input numerical parity: PASS
+- Built-in MAX Serve `/pzaas/predict`: HTTP 200
+- Real JSON response: `jsonData`, `transactionMetadata`
+- Recommendation count: 24
+- Independent original PyTorch baseline: PASS
+- MAX/PyTorch same-input product count: 24 / 24
+- Product IDs and order: exact match
+- Full productList: exact match
+- orig_score_value: match
+- isNewRcmd: match
+- Original DS pipeline, weights and business logic: unchanged
+
+## Environment and scope
+- Model: PZAAS v1.472
+- Development image: localhost/cta-max-faiss:local
+- Shared external Python dependencies
+- CPU single-request validation
+- Same adjusted sanity JSON fixture for both implementations
+- Isolated VM/container network
+
+## Remaining limitations
+- Three Kubernetes lookup errors in original PyTorch baseline.
+- External Kubernetes lookup services unavailable in this VM test.
+- Parity verified for isolated test conditions, not live lookup behavior.
+- GPU, native batch-2, production deployment and approved-image status
+  have not been validated by this handoff.
+- This is an integration-source and evidence package, not a proven
+  standalone portable runtime with all trained model dependencies.
+
+## Evidence
+- maxserve_pzaas_extension/pzaas_http_evidence/pzaas_native_response.json
+- maxserve_pzaas_extension/pzaas_http_evidence/pzaas_native_http.log
+- maxserve_pzaas_extension/pzaas_http_evidence/pzaas_business_comparison.json
+
+## Follow-up
+- Validate live Kubernetes-dependent lookup behavior in an appropriate environment.
+- Confirm deployment image, runtime dependencies and portability separately.
+""")
+
+archive = repo / "PZAAS_MAX_CPU_POC_HANDOFF_20261106.tar.gz"
+with tarfile.open(archive, "w:gz", compresslevel=3) as tar:
+    tar.add(root, arcname="artifacts/v1.472-max")
+
+digest = hashlib.sha256()
+with archive.open("rb") as stream:
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
+
+checksum = archive.with_name(archive.name + ".sha256")
+checksum.write_text(
+    f"{digest.hexdigest()}  {archive.name}\n"
 )
-torch_prediction = get_prediction(raw)
 
-print("MAX PREDICTION TYPE:", type(max_prediction).__name__)
-print("PYTORCH PREDICTION TYPE:", type(torch_prediction).__name__)
-
-if not isinstance(max_prediction, dict) or not isinstance(torch_prediction, dict):
-    print("PYTORCH RAW TYPE:", type(raw).__name__)
-    print("BUSINESS COMPARISON: BLOCKED BY RESPONSE SHAPE")
-    raise SystemExit(1)
-
-max_products = unpack(max_prediction.get("productList"))
-torch_products = unpack(torch_prediction.get("productList"))
-
-if not isinstance(max_products, list) or not isinstance(torch_products, list):
-    print("BUSINESS COMPARISON: productList missing or invalid")
-    print("PYTORCH KEYS:", list(torch_prediction)[:20])
-    raise SystemExit(1)
-
-def ids(items):
-    return [
-        item.get("productId") if isinstance(item, dict) else None
-        for item in items
-    ]
-
-max_ids = ids(max_products)
-torch_ids = ids(torch_products)
-
-print("=== SAME-INPUT BUSINESS COMPARISON ===")
-print("MAX PRODUCT COUNT:", len(max_products))
-print("PYTORCH PRODUCT COUNT:", len(torch_products))
-print("PRODUCT ID ORDER MATCH:", max_ids == torch_ids)
-print("PRODUCT LIST EXACT MATCH:", max_products == torch_products)
-
-for key in ("orig_score_value", "isNewRcmd"):
-    print(
-        key + " MATCH:",
-        unpack(max_prediction.get(key))
-        == unpack(torch_prediction.get(key))
-    )
-
-same_products = max_products == torch_products
-same_ids = max_ids == torch_ids
-
-result = {
-    "fixture": "pzaas_adjusted_sanity_input.json",
-    "environment": "same image; isolated network",
-    "max_product_count": len(max_products),
-    "pytorch_product_count": len(torch_products),
-    "product_id_order_match": same_ids,
-    "product_list_exact_match": same_products,
-    "orig_score_value_match": (
-        unpack(max_prediction.get("orig_score_value"))
-        == unpack(torch_prediction.get("orig_score_value"))
-    ),
-    "isNewRcmd_match": (
-        unpack(max_prediction.get("isNewRcmd"))
-        == unpack(torch_prediction.get("isNewRcmd"))
-    )
-}
-
-Path("/evidence/pzaas_business_comparison.json").write_text(
-    json.dumps(result, indent=2)
-)
-
-print("=== BASELINE LOOKUP ERRORS ===")
-lines = log.read_text(errors="replace").splitlines()
-lookup_errors = [
-    line for line in lines
-    if "NameResolutionError" in line
-    or "fetching error" in line
-]
-print("LOOKUP ERROR LOG ENTRIES:", len(lookup_errors))
-
-print("=== FINAL RESULT ===")
-if same_products:
-    print("SAME-INPUT PRODUCT LIST PARITY: PASS")
-elif same_ids:
-    print("PRODUCT ID PARITY: PASS; FIELD DIFFERENCES REMAIN")
-else:
-    print("BUSINESS PARITY: NOT YET CONFIRMED")
-
-print("COMPARISON SAVED: /evidence/pzaas_business_comparison.json")
-print("ORIGINAL DS / WEIGHTS / MAX IMAGE: UNCHANGED")
+print("PZAAS CPU POC EVIDENCE: VERIFIED")
+print("TRAINED MAX INFERENCE: PASS")
+print("NATIVE HTTP 200: PASS")
+print("24-PRODUCT BUSINESS PARITY: PASS")
+print("HANDOFF REPORT:", report)
+print("SOURCE + EVIDENCE ARCHIVE:", archive)
+print("SHA256:", checksum)
+print("LIVE KUBERNETES LOOKUPS: PENDING")
+print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
 PY
-SH

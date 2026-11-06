@@ -1,77 +1,64 @@
 
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-import json
 from pathlib import Path
+import ast
 
-path = Path(
-    "artifacts/v1.472-max/maxserve_pzaas_extension/"
-    "pzaas_http_evidence/pzaas_native_response.json"
+root = Path("artifacts/v1.472-max/maxserve_pzaas_extension")
+names = (
+    "pzaas_worker_adapter.py",
+    "pzaas_pipeline_factory.py",
+    "pzaas_native_factory.py",
 )
 
-if not path.is_file():
-    raise SystemExit("STOP: Saved HTTP response not found")
+print("=== PZAAS ORIGINAL PIPELINE BASELINE ENTRY POINTS ===")
 
-def unpack(value):
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except (ValueError, TypeError):
-            pass
-    return value
+found = False
 
-data = json.loads(path.read_text())
-body = unpack(data.get("jsonData", {}))
-prediction = unpack(body.get("prediction", {})) if isinstance(body, dict) else {}
-metadata = unpack(data.get("transactionMetadata", {}))
+for name in names:
+    matches = sorted(root.rglob(name))
 
-print("=== PZAAS BUSINESS RESPONSE VALIDATION ===")
+    for path in matches:
+        found = True
+        lines = path.read_text().splitlines()
+        tree = ast.parse("\n".join(lines), filename=str(path))
 
-if not isinstance(prediction, dict):
-    raise SystemExit("STOP: Prediction is not a JSON object")
+        print(f"\nFILE: {path}")
 
-for key in (
-    "productList",
-    "addtieList",
-    "orig_score_value",
-    "isNewRcmd",
-    "timeToLive",
-    "expMetadata"
-):
-    value = unpack(prediction.get(key))
-    if isinstance(value, list):
-        print(f"{key}: list, count={len(value)}")
-        if value and isinstance(value[0], dict):
-            print("  First item fields:", list(value[0]))
-    elif isinstance(value, dict):
-        print(f"{key}: dict, keys={list(value)[:15]}")
-    else:
-        print(f"{key}: type={type(value).__name__}, present={value is not None}")
+        print("--- Imports ---")
+        for line in lines[:28]:
+            if line.startswith(("from ", "import ")):
+                print(line)
 
-print("\n=== EXTERNAL LOOKUP STATUS ===")
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                print(f"\nFUNCTION: {node.name} at line {node.lineno}")
+                if node.name in (
+                    "create_pipeline", "pipeline_factory",
+                    "make_pipeline", "build_pipeline"
+                ):
+                    for i in range(node.lineno, min(node.end_lineno, node.lineno + 34) + 1):
+                        print(f"{i}: {lines[i-1]}")
 
-if isinstance(metadata, dict):
-    for key in (
-        "pull_bq_lookups_status",
-        "pull_elysium_lookups_status"
-    ):
-        entry = unpack(metadata.get(key))
-        if isinstance(entry, dict):
-            print(
-                f"{key}: status={entry.get('status')!r}, "
-                f"error_present={bool(entry.get('error'))}"
-            )
-        else:
-            print(f"{key}: {type(entry).__name__}")
+            elif isinstance(node, ast.ClassDef):
+                print(f"\nCLASS: {node.name}")
+                for method in node.body:
+                    if not isinstance(
+                        method, (ast.FunctionDef, ast.AsyncFunctionDef)
+                    ):
+                        continue
 
-print("\n=== VALIDATION SUMMARY ===")
+                    print(f"  METHOD: {method.name} line {method.lineno}")
 
-products = unpack(prediction.get("productList"))
-print(
-    "PRODUCT RECOMMENDATIONS:",
-    len(products) if isinstance(products, list)
-    else f"Not a list ({type(products).__name__})"
-)
-print("TRAINED MAX EXECUTION: PREVIOUSLY CONFIRMED")
-print("ORIGINAL DS: UNCHANGED")
-print("NO FILES MODIFIED")
+                    if method.name in (
+                        "__init__", "predict_raw", "load",
+                        "predict", "create", "get_pipeline"
+                    ):
+                        end = min(method.end_lineno, method.lineno + 28)
+                        for i in range(method.lineno, end + 1):
+                            print(f"{i}: {lines[i-1]}")
+
+if not found:
+    print("NO MATCHING FACTORY / WORKER FILES FOUND")
+
+print("\n=== ORIGINAL DS / MAX FILES: UNCHANGED ===")
 PY

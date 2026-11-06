@@ -1,160 +1,118 @@
 
 cd /application1/sajjna8 && python3 - <<'PY'
-import ast
 import json
-import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-root = Path("/application1/sajjna8")
-stage = root / "max_shared_infra/isolated/pzaas_shared_wiring_v1"
-worker_file = stage / "pzaas_spawn_worker.py"
-model = root / "PZAAS_MAX_CLEAN_HANDOFF_20261106/model"
-shared = root / "max_shared_infra/python"
-deps = Path("/application1/max_shared_python_deps")
+base = Path("/application1/sajjna8")
+model = base / "PZAAS_MAX_CLEAN_HANDOFF_20261106/model"
+stage = base / "max_shared_infra/isolated/pzaas_shared_wiring_v1"
+rel = Path("artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev")
+original = model / rel
+repo = base / "rt-pzaas-v1.0"
+collection = repo / "artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_http_evidence/PZAAS_CLEAN_MAX_POSTMAN_COLLECTION.json"
 
-print("=== SHARED MAX WORKER FIX AND LIVE E2E ===", flush=True)
+print("=== SHARED MAX IMPORT REPAIR ===", flush=True)
 
-required = [worker_file, stage / "pzaas_native_launcher.py",
-            model, shared, deps]
-missing = [str(p) for p in required if not p.exists()]
-if missing:
-    raise SystemExit("STOP: Required paths missing:\n" + "\n".join(missing))
+for path in (original, stage, collection):
+    if not path.exists():
+        raise SystemExit(f"STOP: Required path missing: {path}")
 
-source = worker_file.read_text()
-tree = ast.parse(source)
+# Restore support files masked by the isolated directory mount.
+copied = []
+for source in sorted(original.glob("*.py")):
+    target = stage / source.name
+    if not target.exists():
+        shutil.copy2(source, target)
+        copied.append(source.name)
 
-matches = [
-    n for n in ast.walk(tree)
-    if isinstance(n, ast.Assign)
-    and any(isinstance(t, ast.Name) and t.id == "lifecycle"
-            for t in n.targets)
-    and isinstance(n.value, ast.Call)
-    and isinstance(n.value.func, ast.Name)
-    and n.value.func.id == "WorkerLifecycle"
-]
+adapter = stage / "pzaas_worker_adapter.py"
 
-if len(matches) != 1:
-    raise SystemExit(
-        "STOP: Expected exactly one shared WorkerLifecycle assignment; "
-        f"found {len(matches)}"
+if not adapter.exists():
+    candidates = (
+        list(model.rglob("pzaas_worker_adapter.py"))
+        + list(repo.rglob("pzaas_worker_adapter.py"))
     )
+    if not candidates:
+        raise SystemExit(
+            "STOP: pzaas_worker_adapter.py missing from both "
+            "the clean model and original repository"
+        )
+    candidates.sort(key=lambda p: (
+        0 if model in p.parents else 1,
+        len(p.parts)
+    ))
+    shutil.copy2(candidates[0], adapter)
+    copied.append(adapter.name)
 
-node = matches[0]
-keywords = {k.arg: k.value for k in node.value.keywords}
+for name in (
+    "pzaas_native_launcher.py",
+    "pzaas_spawn_worker.py",
+    "pzaas_max_model_adapter.py",
+    "pzaas_worker_adapter.py",
+):
+    path = stage / name
+    if not path.exists():
+        raise SystemExit(f"STOP: Required isolated module missing: {name}")
+    compile(path.read_text(), str(path), "exec")
 
-if not all(k in keywords for k in ("create", "load", "attach_max")):
-    raise SystemExit("STOP: Unexpected lifecycle contract")
+print("RESTORED SUPPORT FILES:", copied or "ALREADY PRESENT", flush=True)
+print("ISOLATED SYNTAX: PASS", flush=True)
+print("ORIGINAL MODEL: UNCHANGED", flush=True)
 
-create = keywords["create"]
+data = json.loads(collection.read_text())
 
-def is_worker_method(value, name):
-    return (
-        isinstance(value, ast.Attribute)
-        and value.attr == name
-        and isinstance(value.value, ast.Name)
-        and value.value.id == "worker"
-    )
-
-if is_worker_method(create, "pipeline_factory"):
-    lines = source.splitlines(keepends=True)
-    indent = re.match(r"[ \t]*", lines[node.lineno - 1]).group()
-
-    replacement = (
-        f"{indent}lifecycle = WorkerLifecycle(\n"
-        f"{indent}    create=worker.initialize,\n"
-        f"{indent}    load=lambda pipeline: None,\n"
-        f"{indent}    attach_max=lambda pipeline: None,\n"
-        f"{indent})\n"
-    )
-
-    lines[node.lineno - 1:node.end_lineno] = [replacement]
-    updated = "".join(lines)
-
-    compile(updated, str(worker_file), "exec")
-    worker_file.write_text(updated)
-    print("WORKER: ORIGINAL INITIALIZATION RESTORED", flush=True)
-
-elif is_worker_method(create, "initialize"):
-    print("WORKER: ALREADY CORRECTED", flush=True)
-
-else:
-    raise SystemExit("STOP: Unknown worker creation strategy")
-
-print("SHARED LIFECYCLE: RETAINED", flush=True)
-print("ISOLATED PYTHON SYNTAX: PASS", flush=True)
-
-# Prefer the existing validated Postman request only as test data.
-evidence = (
-    root / "rt-pzaas-v1.0/artifacts/v1.472-max/"
-    "maxserve_pzaas_extension/pzaas_http_evidence"
-)
-
-payload = None
-input_name = None
-
-def requests(items):
+def find_request(items):
     for item in items:
-        req = item.get("request")
+        req = item.get("request", {})
         if isinstance(req, dict):
-            yield item.get("name", ""), req
-        yield from requests(item.get("item", []))
+            raw = req.get("body", {}).get("raw")
+            if raw:
+                try:
+                    body = json.loads(raw)
+                    if isinstance(body, dict) and "ClientFeature" in body:
+                        return body
+                except (ValueError, TypeError):
+                    pass
+        nested = find_request(item.get("item", []))
+        if nested is not None:
+            return nested
+    return None
 
-for path in sorted(evidence.glob("*COLLECTION*.json")):
-    try:
-        collection = json.loads(path.read_text())
-        for name, req in requests(collection.get("item", [])):
-            body = req.get("body", {})
-            raw = body.get("raw") if isinstance(body, dict) else None
-            if not raw:
-                continue
-            candidate = json.loads(raw)
-            if (isinstance(candidate, dict)
-                    and "ClientFeature" in candidate
-                    and "Events" in candidate):
-                payload = candidate
-                input_name = f"{path.name}: {name}"
-                break
-    except (OSError, ValueError, TypeError):
-        continue
-    if payload is not None:
-        break
-
+payload = find_request(data.get("item", []))
 if payload is None:
-    fallback = (
-        root / "rt-pzaas-v1.0/artifacts/v1.472/samples/ppa_input.json"
-    )
-    if not fallback.is_file():
-        raise SystemExit("STOP: No original valid request file available")
-    payload = json.loads(fallback.read_text())
-    input_name = fallback.name
+    raise SystemExit("STOP: No valid original Postman request")
 
-assert isinstance(payload, dict) and "ClientFeature" in payload
-
-print("HTTP INPUT:", input_name, flush=True)
-
-container_test = r'''
+test = r'''
 import json
 import socket
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
+import urllib.error
+import importlib.util
 from pathlib import Path
 
-print("=== LIVE SHARED MAX HTTP ===", flush=True)
+print("=== LIVE SHARED MAX TEST ===", flush=True)
 
-logpath = Path("/tmp/shared_max_worker.log")
+for name in ("pzaas_worker_adapter", "max_runtime_shared"):
+    if importlib.util.find_spec(name) is None:
+        raise SystemExit("STOP: Python cannot locate " + name)
+
+print("MODEL ADAPTER IMPORT PATH: PASS", flush=True)
+print("SHARED MODULE IMPORT PATH: PASS", flush=True)
+
+logpath = Path("/tmp/pzaas_shared_worker.log")
 log = logpath.open("w")
+
 server = subprocess.Popen(
-    [
-        sys.executable, "-u", "-m",
-        "pzaas_native_serve_dev.pzaas_native_launcher"
-    ],
+    [sys.executable, "-u", "-m",
+     "pzaas_native_serve_dev.pzaas_native_launcher"],
     stdout=log,
-    stderr=subprocess.STDOUT,
+    stderr=subprocess.STDOUT
 )
 
 try:
@@ -173,17 +131,17 @@ try:
 
     if not ready:
         raise RuntimeError(
-            f"MAX server did not start; exit={server.poll()}"
+            f"Server startup failed: exit={server.poll()}"
         )
 
     print("SHARED MAX SERVER: READY", flush=True)
 
-    payload = json.loads(Path("/input.json").read_text())
+    body = json.loads(Path("/input.json").read_text())
     request = urllib.request.Request(
         "http://127.0.0.1:18768/pzaas/predict",
-        data=json.dumps(payload).encode(),
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
-        method="POST",
+        method="POST"
     )
 
     try:
@@ -191,49 +149,54 @@ try:
             status = response.status
             result = json.loads(response.read())
     except urllib.error.HTTPError as error:
-        detail = error.read().decode(errors="replace")
-        raise RuntimeError(f"HTTP {error.code}: {detail[:700]}")
-
-    data = result.get("jsonData", result)
-    if isinstance(data, dict):
-        data = data.get("prediction", data)
-
-    products = data.get("productList") if isinstance(data, dict) else None
-
-    if status != 200:
-        raise RuntimeError(f"Unexpected HTTP status: {status}")
-    if not isinstance(products, list):
         raise RuntimeError(
-            "HTTP 200 returned, but productList was not found"
+            f"HTTP {error.code}: "
+            + error.read().decode(errors="replace")[:500]
         )
 
-    print("SHARED MAX HTTP 200: PASS", flush=True)
-    print("RECOMMENDATION COUNT:", len(products), flush=True)
+    print("HTTP STATUS:", status, flush=True)
+    if status != 200:
+        raise RuntimeError("Expected HTTP 200")
 
+    output = result.get("jsonData", result)
+    if isinstance(output, dict):
+        output = output.get("prediction", output)
+
+    products = (
+        output.get("productList")
+        if isinstance(output, dict) else None
+    )
+
+    if not isinstance(products, list):
+        raise RuntimeError("Missing productList in response")
+
+    print("RECOMMENDATIONS:", len(products), flush=True)
+
+    if len(products) != 24:
+        raise RuntimeError("Expected 24 recommendations")
+
+    print("LIVE SHARED MAX HTTP: PASS", flush=True)
+
+except Exception as exc:
+    print("LIVE SHARED MAX HTTP: BLOCKED", flush=True)
+    print("ERROR:", str(exc), flush=True)
     log.flush()
     lines = logpath.read_text(errors="replace").splitlines()
-    for marker in (
-        "PZAAS FACTORY ENTERED",
-        "PZAAS NATIVE HTTP ROUTES: REGISTERED",
-        "PZAAS PREDICT_RAW: START",
-    ):
-        print(
-            marker + ":",
-            "OBSERVED" if any(marker in line for line in lines)
-            else "NOT OBSERVED",
-            flush=True,
-        )
-
-    print("LIVE SHARED MAX PZAAS E2E: PASS", flush=True)
-
-except Exception as error:
-    print("LIVE SHARED MAX PZAAS E2E: BLOCKED", flush=True)
-    print("ROOT ERROR:", str(error), flush=True)
-    log.flush()
-    print("=== LAST 55 SERVER LOG LINES ===", flush=True)
-    print("\n".join(
-        logpath.read_text(errors="replace").splitlines()[-55:]
-    ), flush=True)
+    root_errors = [
+        line for line in lines
+        if any(term in line for term in (
+            "ModuleNotFoundError",
+            "ImportError",
+            "FileNotFoundError",
+            "AttributeError",
+            "RuntimeError",
+            "Traceback",
+        ))
+    ]
+    print("=== ROOT ERROR LINES ===", flush=True)
+    print("\n".join(root_errors[:12]), flush=True)
+    print("=== LAST 30 SERVER LINES ===", flush=True)
+    print("\n".join(lines[-30:]), flush=True)
     sys.exit(1)
 
 finally:
@@ -247,65 +210,60 @@ finally:
     log.close()
 '''
 
-podman = [
-    "podman",
-    "--root", "/application1/podman/storage",
-    "--runroot", "/run/containers/storage",
-    "run", "--rm", "--pull=never", "--network=none",
-    "--memory=12g", "--pids-limit=512",
-    "-v", f"{model}:/workspace:ro",
-    "-v", (
-        f"{stage}:/workspace/artifacts/v1.472-max/"
-        "maxserve_pzaas_extension/pzaas_native_serve_dev:ro"
-    ),
-    "-v", f"{shared}:/shared_infra/python:ro",
-    "-v", f"{deps}:/shared_deps:ro",
-    "-w", "/workspace",
-    "-e", (
-        "PYTHONPATH=/shared_infra/python:/shared_deps/sklearn161:"
-        "/shared_deps:/workspace/artifacts/v1.472-max/pzaas_max/"
-        "validation/python_deps:/workspace/artifacts/v1.472-max/"
-        "maxserve_pzaas_extension:/workspace/artifacts/v1.472-max:"
-        "/workspace/artifacts/v1.472/core-artifact:"
-        "/workspace/artifacts/v1.472/utils/dependency-utils"
-    ),
-    "--entrypoint", "/opt/venv/bin/python",
-]
+pythonpath = ":".join([
+    "/shared_infra/python",
+    "/shared_deps/sklearn161",
+    "/shared_deps",
+    "/workspace/" + str(rel),
+    "/workspace/artifacts/v1.472-max/pzaas_max/validation/python_deps",
+    "/workspace/artifacts/v1.472-max/maxserve_pzaas_extension",
+    "/workspace/artifacts/v1.472-max",
+    "/workspace/artifacts/v1.472/core-artifact",
+    "/workspace/artifacts/v1.472/utils/dependency-utils",
+])
 
-with tempfile.TemporaryDirectory(prefix="pzaas_shared_e2e_") as tmp:
+with tempfile.TemporaryDirectory(prefix="shared_max_test_") as tmp:
     fixture = Path(tmp) / "input.json"
     fixture.write_text(json.dumps(payload))
     fixture.chmod(0o644)
 
-    command = (
-        podman[:]
-        + ["-v", f"{fixture}:/input.json:ro"]
-        + [
-            "localhost/max-shared-runtime:cpu",
-            "-u", "-c", container_test
-        ]
-    )
+    command = [
+        "podman",
+        "--root", "/application1/podman/storage",
+        "--runroot", "/run/containers/storage",
+        "run", "--rm", "--pull=never",
+        "--network=none", "--memory=12g",
+        "--pids-limit=512",
+        "-v", f"{model}:/workspace:ro",
+        "-v", f"{stage}:/workspace/{rel}:ro",
+        "-v", f"{base}/max_shared_infra/python:/shared_infra/python:ro",
+        "-v", "/application1/max_shared_python_deps:/shared_deps:ro",
+        "-v", f"{fixture}:/input.json:ro",
+        "-w", "/workspace",
+        "-e", "PYTHONPATH=" + pythonpath,
+        "--entrypoint", "/opt/venv/bin/python",
+        "localhost/max-shared-runtime:cpu",
+        "-u", "-c", test,
+    ]
 
     try:
-        completed = subprocess.run(
+        outcome = subprocess.run(
             command,
-            timeout=360,
-            text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            text=True,
+            timeout=360
         )
-        print(completed.stdout[-14000:], flush=True)
-        if completed.returncode:
-            raise SystemExit(
-                f"STOP: Live integration failed (exit {completed.returncode})"
-            )
     except subprocess.TimeoutExpired:
-        raise SystemExit("STOP: Live integration exceeded timeout")
+        raise SystemExit("STOP: Live test timed out")
 
-print("=== FINAL RESULT ===")
-print("ISOLATED PZAAS SHARED MAX INTEGRATION: PASS")
-print("ORIGINAL PZAAS SOURCE / WEIGHTS: UNCHANGED")
-print("CTA / BPLAN HANDOFFS: UNCHANGED")
-print("TEMPORARY TEST REQUEST: REMOVED")
-print("NEXT: CROSS-MODEL REUSE VALIDATION")
+    print(outcome.stdout[-14000:], flush=True)
+
+    if outcome.returncode != 0:
+        raise SystemExit("STOP: Live E2E still blocked")
+
+print("=== RESULT ===")
+print("SHARED MAX PZAAS HTTP: PASS")
+print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
+print("NEXT: CROSS-MODEL LIVE ADOPTION")
 PY

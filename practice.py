@@ -1,65 +1,67 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-from pathlib import Path
-import re
+cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
+set -euo pipefail
 
-log = Path(
-    "artifacts/v1.472-max/maxserve_pzaas_extension/"
-    "pzaas_http_evidence/pzaas_clean_stage_http.log"
-)
+STAGE="/application1/sajjna8/PZAAS_MAX_CLEAN_STAGE_20261106"
 
-if not log.is_file():
-    raise SystemExit("STOP: Clean-stage server log missing")
+test -d "$STAGE" || {
+  echo "STOP: Clean PZAAS stage missing"
+  exit 1
+}
 
-lines = log.read_text(errors="replace").splitlines()
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
+  --memory=12g --pids-limit=512 \
+  -v "$STAGE:/workspace:ro" \
+  -v /application1/max_shared_python_deps:/shared_deps:ro \
+  -w /workspace \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONPATH=/shared_deps/sklearn161:/shared_deps:/workspace/artifacts/v1.472-max/pzaas_max/validation/python_deps:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:/workspace/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev:/workspace/artifacts/v1.472-max:/workspace/artifacts/v1.472/core-artifact:/workspace/artifacts/v1.472/utils/dependency-utils \
+  --entrypoint /opt/venv/bin/python \
+  localhost/cta-max-faiss:local -u - <<'PY'
+import os
+import sys
+import traceback
 
-print("=== CLEAN PZAAS WORKER ROOT-CAUSE INSPECTION ===")
-print("TOTAL LOG LINES:", len(lines))
+os.environ.setdefault("modelId", "rt-pzaas-v1")
+os.environ.setdefault("expThrottleLabel", "T")
 
-patterns = re.compile(
-    r"Traceback|ModuleNotFoundError|ImportError|"
-    r"FileNotFoundError|AttributeError|KeyError|"
-    r"ValueError|TypeError|RuntimeError|"
-    r"AssertionError|OSError|MemoryError|"
-    r"worker died|worker exited|"
-    r"PZAAS MODEL LOAD|PZAAS FACTORY|"
-    r"PZAAS REAL MAX|PZAAS MAX BASE|"
-    r"failed|exception|no such file",
-    re.IGNORECASE
-)
+print("=== CLEAN PZAAS DIRECT WORKER DIAGNOSIS ===", flush=True)
 
-matches = [
-    i for i, line in enumerate(lines)
-    if patterns.search(line)
-]
+try:
+    from pipeline import pipeline as PZAASPipeline
+    print("ORIGINAL PIPELINE IMPORT: PASS", flush=True)
 
-print("ERROR / LIFECYCLE MATCHES:", len(matches))
+    from pzaas_native_serve_dev.pzaas_max_model_adapter import (
+        PZAASMAXModel,
+        PZAASNativeWorkerAdapter,
+    )
+    print("NATIVE MAX ADAPTER IMPORT: PASS", flush=True)
 
-if matches:
-    selected = matches[:8] + matches[-20:]
-    indices = set()
+    worker = PZAASNativeWorkerAdapter(
+        pipeline_factory=PZAASPipeline,
+        max_factory=PZAASMAXModel,
+    )
 
-    for i in selected:
-        indices.update(
-            range(
-                max(0, i - 3),
-                min(len(lines), i + 7)
-            )
-        )
+    print("CLEAN WORKER INITIALIZATION: START", flush=True)
 
-    print("\n=== FAILURE CONTEXT ===")
-    previous = -2
+    loaded = worker.initialize()
 
-    for i in sorted(indices):
-        if i > previous + 1:
-            print("...")
-        print(f"{i+1}: {lines[i][:350]}")
-        previous = i
+    print("CLEAN WORKER INITIALIZATION: PASS", flush=True)
+    print("PIPELINE TYPE:", type(loaded).__name__)
+    print(
+        "TRAINED MAX ATTACHED:",
+        hasattr(loaded, "_pzaas_real_max")
+    )
 
-print("\n=== LAST 35 LOG LINES ===")
+except BaseException as exc:
+    print("\n=== CLEAN WORKER ROOT ERROR ===", flush=True)
+    print("ERROR TYPE:", type(exc).__name__, flush=True)
+    print("ERROR MESSAGE:", str(exc), flush=True)
+    traceback.print_exc()
+    sys.exit(1)
 
-for i in range(max(0, len(lines)-35), len(lines)):
-    print(f"{i+1}: {lines[i][:350]}")
-
-print("\n=== NO FILES MODIFIED ===")
+print("\nORIGINAL DS / WEIGHTS / MAX IMAGE: UNCHANGED")
 PY
+SH

@@ -1,114 +1,141 @@
 
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
-import hashlib
-import json
-import tarfile
 from pathlib import Path
+import ast
 
 repo = Path.cwd()
-root = repo / "artifacts/v1.472-max"
-extension = root / "maxserve_pzaas_extension"
-evidence = extension / "pzaas_http_evidence"
+base = repo / "artifacts/v1.472-max"
+ext = base / "maxserve_pzaas_extension"
+native = ext / "pzaas_native_serve_dev"
+graph = base / "pzaas_max"
+original = repo / "artifacts/v1.472"
+shared = Path("/application1/max_shared_python_deps")
 
-comparison = evidence / "pzaas_business_comparison.json"
-response = evidence / "pzaas_native_response.json"
-server_log = evidence / "pzaas_native_http.log"
+print("=== PZAAS CLEAN RELEASE INVENTORY ===")
 
-for path in (comparison, response, server_log):
+for path in (native, graph, original):
+    if not path.is_dir():
+        raise SystemExit(f"STOP: Required folder missing: {path}")
+
+print("\n=== NATIVE SERVING FILES ===")
+native_files = sorted(native.glob("*.py"))
+
+for path in native_files:
+    print(
+        f"{path.name:48} "
+        f"{path.stat().st_size:,} bytes"
+    )
+
+print("\n=== MAX GRAPH / MODEL COMPONENTS ===")
+for path in sorted(graph.glob("*.py")):
+    print(path.relative_to(base))
+
+print("\n=== DIRECT RUNTIME IMPORTS ===")
+
+entry_names = (
+    "pzaas_native_launcher.py",
+    "pzaas_spawn_worker.py",
+    "pzaas_max_model_adapter.py",
+    "pzaas_worker_adapter.py",
+    "pzaas_live_pack_72.py",
+    "pzaas_http_pipeline.py",
+    "pzaas_router.py",
+)
+
+for name in entry_names:
+    path = native / name
     if not path.is_file():
-        raise SystemExit(f"STOP: Missing evidence: {path}")
+        print(f"{name}: NOT FOUND")
+        continue
 
-result = json.loads(comparison.read_text())
-payload = json.loads(response.read_text())
-log = server_log.read_text(errors="replace")
+    print(f"\n{name}")
 
-required = (
-    "product_id_order_match",
-    "product_list_exact_match",
-    "orig_score_value_match",
-    "isNewRcmd_match",
+    tree = ast.parse(path.read_text(), filename=str(path))
+
+    imports = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if (
+                "pzaas" in module.lower()
+                or module in ("pipeline", "models", "Model")
+                or module.startswith("maxserve")
+            ):
+                imports.add(module)
+
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if "pzaas" in alias.name.lower():
+                    imports.add(alias.name)
+
+    for item in sorted(imports):
+        print("  ", item)
+
+print("\n=== TRAINED MODEL / AUXILIARY ASSETS ===")
+
+suffixes = {".pt", ".pth", ".bin", ".npy", ".npz",
+            ".pkl", ".pickle", ".faiss", ".index"}
+
+count = 0
+for path in original.rglob("*"):
+    if path.is_file() and path.suffix.lower() in suffixes:
+        count += 1
+        if count <= 35:
+            print(
+                path.relative_to(repo),
+                f"({path.stat().st_size / 1048576:.1f} MiB)"
+            )
+
+print("TOTAL ORIGINAL ASSET CANDIDATES:", count)
+
+print("\n=== POTENTIAL CLEANUP CANDIDATES ===")
+
+for path in sorted(ext.iterdir()):
+    name = path.name.lower()
+    if any(part in name for part in (
+        "test", "validation", "reference", "backup",
+        "debug", "experiment", "evidence", "archive"
+    )):
+        print("REVIEW:", path.relative_to(repo))
+
+print("\n=== CROSS-MODEL REFERENCES ===")
+matches = []
+
+for path in native_files:
+    for number, line in enumerate(
+        path.read_text(errors="replace").splitlines(), 1
+    ):
+        if any(term in line.lower() for term in (
+            "cta_", "bplan", "/application1/",
+            "/vzwhome/"
+        )):
+            matches.append(
+                f"{path.name}:{number}: {line.strip()[:130]}"
+            )
+
+if matches:
+    for match in matches[:35]:
+        print(match)
+else:
+    print("No obvious CTA/BPLAN or VM absolute-path references")
+
+print("\n=== SHARED DEPENDENCY LOCATION ===")
+print("EXISTS:", shared.is_dir())
+print("PATH:", shared)
+
+print("\n=== CURRENT POC ARCHIVE ===")
+archives = sorted(
+    repo.glob("PZAAS_MAX_CPU_POC_HANDOFF_*.tar.gz")
 )
+for path in archives:
+    print(path.name, f"({path.stat().st_size / 1048576:.1f} MiB)")
 
-for key in required:
-    if result.get(key) is not True:
-        raise SystemExit(f"STOP: Parity not confirmed: {key}")
-
-if result.get("max_product_count") != 24 or result.get("pytorch_product_count") != 24:
-    raise SystemExit("STOP: Unexpected product counts")
-
-if "PZAAS REAL MAX EXECUTION: PASS" not in log:
-    raise SystemExit("STOP: Trained MAX execution proof missing")
-
-if not {"jsonData", "transactionMetadata"}.issubset(payload):
-    raise SystemExit("STOP: Native response contract missing")
-
-report = root / "PZAAS_MAX_CPU_POC_HANDOFF.md"
-
-report.write_text("""# PZAAS v1.472 — Modular MAX CPU POC handoff
-
-## Verified
-- Genuine trained MAX CPU execution: PASS
-- MAX graph: 72 packed inputs, 17/17 trained graph weights
-- Previous same-input numerical parity: PASS
-- Built-in MAX Serve `/pzaas/predict`: HTTP 200
-- Real JSON response: `jsonData`, `transactionMetadata`
-- Recommendation count: 24
-- Independent original PyTorch baseline: PASS
-- MAX/PyTorch same-input product count: 24 / 24
-- Product IDs and order: exact match
-- Full productList: exact match
-- orig_score_value: match
-- isNewRcmd: match
-- Original DS pipeline, weights and business logic: unchanged
-
-## Environment and scope
-- Model: PZAAS v1.472
-- Development image: localhost/cta-max-faiss:local
-- Shared external Python dependencies
-- CPU single-request validation
-- Same adjusted sanity JSON fixture for both implementations
-- Isolated VM/container network
-
-## Remaining limitations
-- Three Kubernetes lookup errors in original PyTorch baseline.
-- External Kubernetes lookup services unavailable in this VM test.
-- Parity verified for isolated test conditions, not live lookup behavior.
-- GPU, native batch-2, production deployment and approved-image status
-  have not been validated by this handoff.
-- This is an integration-source and evidence package, not a proven
-  standalone portable runtime with all trained model dependencies.
-
-## Evidence
-- maxserve_pzaas_extension/pzaas_http_evidence/pzaas_native_response.json
-- maxserve_pzaas_extension/pzaas_http_evidence/pzaas_native_http.log
-- maxserve_pzaas_extension/pzaas_http_evidence/pzaas_business_comparison.json
-
-## Follow-up
-- Validate live Kubernetes-dependent lookup behavior in an appropriate environment.
-- Confirm deployment image, runtime dependencies and portability separately.
-""")
-
-archive = repo / "PZAAS_MAX_CPU_POC_HANDOFF_20261106.tar.gz"
-with tarfile.open(archive, "w:gz", compresslevel=3) as tar:
-    tar.add(root, arcname="artifacts/v1.472-max")
-
-digest = hashlib.sha256()
-with archive.open("rb") as stream:
-    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-        digest.update(chunk)
-
-checksum = archive.with_name(archive.name + ".sha256")
-checksum.write_text(
-    f"{digest.hexdigest()}  {archive.name}\n"
-)
-
-print("PZAAS CPU POC EVIDENCE: VERIFIED")
-print("TRAINED MAX INFERENCE: PASS")
-print("NATIVE HTTP 200: PASS")
-print("24-PRODUCT BUSINESS PARITY: PASS")
-print("HANDOFF REPORT:", report)
-print("SOURCE + EVIDENCE ARCHIVE:", archive)
-print("SHA256:", checksum)
-print("LIVE KUBERNETES LOOKUPS: PENDING")
-print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
+print("\n=== NEXT RELEASE REQUIREMENTS ===")
+print("Model-specific runtime files: review required")
+print("Shared infrastructure separation: pending")
+print("Clean independent container: pending")
+print("External Postman: pending")
+print("Final portable handoff: pending")
+print("NO FILES MODIFIED OR DELETED")
 PY

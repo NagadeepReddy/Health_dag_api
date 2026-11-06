@@ -1,159 +1,231 @@
 
 cd /application1/sajjna8 && python3 - <<'PY'
-import ast
-import re
+import json
+import subprocess
+import tempfile
 from pathlib import Path
 
 base = Path("/application1/sajjna8")
+model = Path("/application1/BPLAN_MAX_TEAM_HANDOFF_20261102")
 stage = base / "max_shared_infra/isolated/bplan_shared_wiring_v1"
-shared = base / "max_shared_infra/python/max_runtime_shared"
+shared = base / "max_shared_infra/python"
+rel = Path("artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev")
 
-spawn = stage / "bplan_spawn_worker.py"
-router = stage / "bplan_router.py"
-
-print("=== BPLAN SHARED MAX LIVE WIRING ===", flush=True)
+print("=== BPLAN SHARED MAX LIVE HTTP VALIDATION ===", flush=True)
 
 required = [
-    spawn, router,
-    shared / "worker_lifecycle.py",
-    shared / "scheduler_hooks.py",
-    shared / "router_contract.py",
-    stage / "bplan_queue_compat.py",
-    stage / "bplan_worker_registration.py",
+    model / rel / "bplan_native_launcher.py",
+    stage / "bplan_native_launcher.py",
+    stage / "bplan_spawn_worker.py",
+    stage / "bplan_router.py",
+    shared / "max_runtime_shared/worker_lifecycle.py",
+]
+for path in required:
+    if not path.is_file():
+        raise SystemExit(f"STOP: Required file missing: {path}")
+
+checks = {
+    "WORKER": ("bplan_spawn_worker.py", "WorkerLifecycle("),
+    "SCHEDULER": ("bplan_spawn_worker.py", "SharedSchedulerRegistry"),
+    "ROUTER": ("bplan_router.py", "register_model_routes("),
+}
+for label, (name, marker) in checks.items():
+    if marker not in (stage / name).read_text():
+        raise SystemExit(f"STOP: Shared {label} wiring missing")
+
+fixtures = [
+    model / "artifacts/v1.113/core-artifact/test_samples/test_sample_1.json",
+    base / "rt-pzai-bplan-v1/artifacts/v1.113/core-artifact/test_samples/test_sample_1.json",
+    Path("/vzwhome/sajjna8/bplan_test_sample_for_postman.json"),
 ]
 
-missing = [str(p) for p in required if not p.is_file()]
-if missing:
-    raise SystemExit("STOP: Missing required files:\n" + "\n".join(missing))
+fixture = next((p for p in fixtures if p.is_file()), None)
+if fixture is None:
+    raise SystemExit("STOP: Previously verified BPLAN input not found")
 
-changes = {}
+payload = json.loads(fixture.read_text())
+if not isinstance(payload, dict):
+    raise SystemExit("STOP: Original request is not a JSON object")
 
-# 1. Reuse the shared worker lifecycle without changing the
-# previously working BPLAN initialize() behavior.
-text = spawn.read_text()
+print("SHARED BPLAN WIRING: VERIFIED", flush=True)
+print("ORIGINAL REQUEST:", fixture, flush=True)
 
-if "WorkerLifecycle(" not in text:
-    pattern = r"(?m)^([ \t]*)pipeline = worker\.initialize\(\)[ \t]*$"
-    matches = list(re.finditer(pattern, text))
-    if len(matches) != 1:
-        raise SystemExit("STOP: BPLAN initialization not uniquely found")
+test = r'''
+import json
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
 
-    indent = matches[0].group(1)
-    replacement = "\n".join([
-        indent + "from max_runtime_shared.worker_lifecycle import WorkerLifecycle",
-        indent + "lifecycle = WorkerLifecycle(",
-        indent + "    create=worker.initialize,",
-        indent + "    load=lambda pipeline: None,",
-        indent + "    attach_max=lambda pipeline: None,",
-        indent + ")",
-        indent + "pipeline = lifecycle.start()",
-    ])
-    text = text[:matches[0].start()] + replacement + text[matches[0].end():]
+print("SHARED MAX BPLAN SERVER: STARTING", flush=True)
 
-# 2. Install the existing BPLAN queue and scheduler through
-# the reusable shared scheduler registry.
-if 'registry.activate("bplan-v1.113")' not in text:
-    pattern = r"(?m)^([ \t]*)install_bplan_scheduler_hook\(\)[ \t]*$"
-    matches = list(re.finditer(pattern, text))
-    if len(matches) != 1:
-        raise SystemExit("STOP: BPLAN scheduler hook not uniquely found")
+logpath = Path("/tmp/bplan_shared_http.log")
+log = logpath.open("w")
 
-    indent = matches[0].group(1)
-    replacement = "\n".join([
-        indent + "from bplan_native_serve_dev.bplan_queue_compat import install as install_queue",
-        indent + "from max_runtime_shared.scheduler_hooks import SchedulerHooks, SharedSchedulerRegistry",
-        indent + "registry = SharedSchedulerRegistry()",
-        indent + "registry.register(SchedulerHooks(",
-        indent + '    model_key="bplan-v1.113",',
-        indent + "    install_queue=install_queue,",
-        indent + "    install_scheduler=install_bplan_scheduler_hook,",
-        indent + "))",
-        indent + 'registry.activate("bplan-v1.113")',
-    ])
-    text = text[:matches[0].start()] + replacement + text[matches[0].end():]
+server = subprocess.Popen(
+    [
+        sys.executable, "-u", "-m",
+        "bplan_native_serve_dev.bplan_native_launcher"
+    ],
+    stdout=log,
+    stderr=subprocess.STDOUT,
+)
 
-compile(text, str(spawn), "exec")
-changes[spawn] = text
+try:
+    ready = False
+    for attempt in range(180):
+        if server.poll() is not None:
+            break
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", 18768), timeout=1
+            ):
+                ready = True
+                break
+        except OSError:
+            time.sleep(1)
 
-# 3. Register the original BPLAN handler through the shared
-# router contract, using MAX Serve's existing router.
-text = router.read_text()
-
-if "register_model_routes(" not in text:
-    tree = ast.parse(text)
-    candidates = []
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Expr):
-            continue
-
-        call = node.value
-        if not isinstance(call, ast.Call):
-            continue
-        if not isinstance(call.func, ast.Attribute):
-            continue
-        if call.func.attr != "add_api_route":
-            continue
-        if not call.args:
-            continue
-
-        path = call.args[0]
-        if isinstance(path, ast.Constant) and path.value == "/bplan/predict":
-            candidates.append(node)
-
-    if len(candidates) != 1:
-        raise SystemExit(
-            "STOP: BPLAN route not uniquely identified; "
-            "no files modified"
+    if not ready:
+        raise RuntimeError(
+            f"BPLAN startup failed; exit={server.poll()}"
         )
 
-    node = candidates[0]
-    if len(node.value.args) < 2:
-        raise SystemExit("STOP: BPLAN route handler missing")
+    print("SHARED MAX SERVER: READY", flush=True)
 
-    handler = ast.unparse(node.value.args[1])
-    lines = text.splitlines(keepends=True)
-    indent = re.match(r"[ \t]*", lines[node.lineno - 1]).group()
+    body = Path("/tmp/bplan_input.json").read_bytes()
+    request = urllib.request.Request(
+        "http://127.0.0.1:18768/bplan/predict",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
 
-    replacement = "\n".join([
-        indent + "from max_runtime_shared.router_contract import RouteBinding, register_model_routes",
-        indent + "register_model_routes(",
-        indent + "    router,",
-        indent + "    [RouteBinding(",
-        indent + '        path="/bplan/predict",',
-        indent + f"        endpoint={handler},",
-        indent + '        methods=("POST",),',
-        indent + "    )],",
-        indent + ")",
-        "",
+    try:
+        with urllib.request.urlopen(
+            request, timeout=240
+        ) as response:
+            status = response.status
+            result = json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode(errors="replace")
+        raise RuntimeError(
+            f"HTTP {error.code}: {detail[:900]}"
+        )
+
+    print("HTTP STATUS:", status, flush=True)
+
+    if status != 200:
+        raise RuntimeError("BPLAN did not return HTTP 200")
+
+    data = result.get("jsonData", result)
+    if isinstance(data, dict):
+        data = data.get("prediction", data)
+
+    ctas = data.get("ctaList") if isinstance(data, dict) else None
+
+    if not isinstance(ctas, list):
+        raise RuntimeError(
+            "HTTP 200 received but ctaList is missing"
+        )
+
+    print("CTA LIST COUNT:", len(ctas), flush=True)
+
+    if len(ctas) != 4:
+        raise RuntimeError(
+            "Original BPLAN expected four recommendations"
+        )
+
+    print("BPLAN SHARED MAX HTTP: PASS", flush=True)
+    print("SHARED BPLAN END-TO-END: PASS", flush=True)
+
+except Exception as exc:
+    print("BPLAN SHARED MAX HTTP: BLOCKED", flush=True)
+    print("ERROR:", str(exc), flush=True)
+    log.flush()
+    lines = logpath.read_text(errors="replace").splitlines()
+    print("=== SERVER ERROR DETAILS ===", flush=True)
+    print("\n".join(lines[-65:]), flush=True)
+    sys.exit(1)
+
+finally:
+    if server.poll() is None:
+        server.terminate()
+        try:
+            server.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait()
+    log.close()
+'''
+
+pythonpath = ":".join([
+    "/shared_infra/python",
+    "/workspace/artifacts/v1.113-max/maxserve_bplan_extension",
+    "/workspace/artifacts/v1.113-max/maxserve_bplan_extension/bplan_native_serve_dev",
+    "/workspace/artifacts/v1.113-max",
+    "/workspace/artifacts/v1.113/core-artifact",
+    "/workspace/artifacts/v1.113/utils/dependency-utils",
+    "/shared_deps",
+])
+
+with tempfile.TemporaryDirectory(prefix="bplan_shared_http_") as tmp:
+    request_file = Path(tmp) / "bplan_input.json"
+    request_file.write_text(json.dumps(payload))
+    request_file.chmod(0o644)
+
+    command = [
+        "podman",
+        "--root", "/application1/podman/storage",
+        "--runroot", "/run/containers/storage",
+        "run", "--rm", "--pull=never",
+        "--network=none",
+        "--memory=12g",
+        "--pids-limit=512",
+        "-v", f"{model}:/workspace:ro",
+        "-v", f"{stage}:/workspace/{rel}:ro",
+        "-v", f"{shared}:/shared_infra/python:ro",
+        "-v", f"{request_file}:/tmp/bplan_input.json:ro",
+        "-w", "/workspace",
+        "-e", f"PYTHONPATH={pythonpath}",
+    ]
+
+    deps = Path("/application1/max_shared_python_deps")
+    if deps.is_dir():
+        command.extend([
+            "-v", f"{deps}:/shared_deps:ro"
+        ])
+
+    command.extend([
+        "--entrypoint", "/opt/venv/bin/python",
+        "localhost/max-shared-runtime:cpu",
+        "-u", "-c", test,
     ])
 
-    lines[node.lineno - 1:node.end_lineno] = [replacement]
-    text = "".join(lines)
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=480,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit("STOP: BPLAN live test timed out")
 
-compile(text, str(router), "exec")
-changes[router] = text
+    print(result.stdout[-16000:], flush=True)
 
-# Validate all changes before writing any file.
-for path, content in changes.items():
-    ast.parse(content, filename=str(path))
-    compile(content, str(path), "exec")
+    if result.returncode != 0:
+        raise SystemExit(
+            "STOP: BPLAN shared live HTTP not yet passing"
+        )
 
-for path, content in changes.items():
-    if path.read_text() != content:
-        path.write_text(content)
-        print("UPDATED:", path.name)
-    else:
-        print("ALREADY WIRED:", path.name)
-
-print("\n=== RESULT ===")
-print("SHARED WORKER LIFECYCLE: WIRED")
-print("SHARED SCHEDULER REGISTRY: WIRED")
-print("BPLAN ORIGINAL QUEUE INSTALLER: PRESERVED")
-print("SHARED ROUTER: WIRED")
-print("ISOLATED PYTHON SYNTAX: PASS")
+print("=== FINAL RESULT ===")
+print("BPLAN SHARED MAX HTTP: PASS")
 print("ORIGINAL BPLAN HANDOFF: UNCHANGED")
-print("ORIGINAL DS / CTA / PZAAS: UNCHANGED")
-print("NO CONTAINERS STARTED")
-print("NEXT: LIVE BPLAN SHARED MAX HTTP VALIDATION")
+print("CTA / PZAAS: UNCHANGED")
+print("TEMPORARY INPUT: CLEANED")
+print("NEXT: CTA SHARED MAX ADOPTION")
 PY

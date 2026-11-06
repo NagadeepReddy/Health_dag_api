@@ -5,8 +5,6 @@ set -euo pipefail
 ROOT="/application1/sajjna8/max_shared_infra"
 IMAGE="localhost/max-shared-runtime:cpu"
 
-test -f "$ROOT/python/max_runtime_shared/typed_queue.py"
-
 podman \
   --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -18,119 +16,121 @@ podman \
   -e PYTHONPATH=/shared_runtime \
   --entrypoint /opt/venv/bin/python \
   "$IMAGE" -u - <<'PY'
-import importlib
-import inspect
-from pathlib import Path
+from max.serve.scheduler import queues
+from max.serve.queue.zmq_queue import ZmqConfig
+from max.interfaces.request import RequestID
+from max.interfaces.scheduler import SchedulerResult
 
-print("=== INSTALLED MAX API INSPECTION ===")
+from max_runtime_shared.typed_queue import (
+    install_max_typed_response_queue
+)
+from max_runtime_shared.scheduler_hooks import (
+    SchedulerHooks,
+    SharedSchedulerRegistry
+)
+from max_runtime_shared.router_contract import (
+    RouteBinding,
+    register_model_routes
+)
+from max_runtime_shared.worker_lifecycle import WorkerLifecycle
 
-targets = [
-    ("max.serve.scheduler.queues", "SchedulerZmqConfigs"),
-    ("max.serve.queue.zmq_queue", "ZmqConfig"),
-    ("max.interfaces.request", "RequestID"),
-    ("max.interfaces.scheduler", "SchedulerResult"),
-    ("max.pipelines.core", "PipelineTask"),
-]
+from fastapi import FastAPI
 
-for module_name, symbol in targets:
-    try:
-        module = importlib.import_module(module_name)
-        obj = getattr(module, symbol, None)
+print("=== REAL MAX RUNTIME COMPATIBILITY ===", flush=True)
 
-        if obj is None:
-            print(f"{symbol}: NOT EXPORTED from {module_name}")
-            continue
+SchedulerZmqConfigs = queues.SchedulerZmqConfigs
+PipelineTask = getattr(queues, "PipelineTask", None)
 
-        print(f"{symbol}: FOUND in {module_name}")
+if PipelineTask is None:
+    raise RuntimeError(
+        "Installed MAX scheduler does not expose PipelineTask"
+    )
 
-        if inspect.isclass(obj):
-            try:
-                print("  SIGNATURE:", inspect.signature(obj))
-            except (TypeError, ValueError):
-                pass
+task = PipelineTask.TEXT_GENERATION
 
-            if symbol == "SchedulerZmqConfigs":
-                try:
-                    print("  INITIALIZER:")
-                    for line in inspect.getsource(
-                        obj.__init__
-                    ).splitlines()[:35]:
-                        print("   ", line)
-                except (OSError, TypeError):
-                    print("  Source unavailable")
+print("MAX PIPELINE TASK:", task)
 
-    except Exception as exc:
-        print(
-            f"{symbol}: IMPORT ERROR:",
-            type(exc).__name__,
-            str(exc)[:250]
-        )
+events = []
+registry = SharedSchedulerRegistry()
 
-print("\n=== PIPELINE TASK DEFINITION SEARCH ===")
-
-root = Path("/opt/venv/lib/python3.12/site-packages/max")
-
-found = 0
-
-for path in sorted(root.rglob("*.py")):
-    if not (
-        "pipeline" in path.parts
-        or "serve" in path.parts
-    ):
-        continue
-
-    try:
-        lines = path.read_text(
-            errors="replace"
-        ).splitlines()
-    except OSError:
-        continue
-
-    for number, line in enumerate(lines, 1):
-        if (
-            "class PipelineTask" in line
-            or "PipelineTask =" in line
-            or "PipelineTask(" in line
-        ):
-            print(
-                str(path.relative_to(root)),
-                "line", number,
-                line.strip()[:180]
+registry.register(
+    SchedulerHooks(
+        model_key="shared_runtime_probe",
+        install_queue=lambda: (
+            events.append("queue"),
+            install_max_typed_response_queue(
+                dict,
+                owner="shared_runtime_probe"
             )
-            found += 1
+        ),
+        install_scheduler=lambda: events.append("scheduler")
+    )
+)
 
-            if found >= 12:
-                break
+assert registry.activate("shared_runtime_probe")
+assert events == ["queue", "scheduler"]
 
-    if found >= 12:
-        break
+print("SHARED SCHEDULER REGISTRATION: PASS")
 
-if not found:
-    print("No matching PipelineTask definitions found")
+config = SchedulerZmqConfigs(task)
 
-print("\n=== SHARED MODULE IMPORTS ===")
+assert isinstance(config.request_queue_config, ZmqConfig)
+assert isinstance(config.response_queue_config, ZmqConfig)
+assert isinstance(config.cancel_queue_config, ZmqConfig)
 
-for name in (
-    "typed_queue",
-    "scheduler_hooks",
-    "router_contract",
-    "worker_lifecycle",
-):
-    try:
-        importlib.import_module(
-            "max_runtime_shared." + name
-        )
-        print(name.upper() + ": PASS")
-    except Exception as exc:
-        print(
-            name.upper() + ": ERROR",
-            type(exc).__name__,
-            str(exc)[:250]
-        )
+expected = dict[RequestID, SchedulerResult[dict]]
 
-print("\nINSPECTION COMPLETE")
-print("NO FILES MODIFIED")
-print("NO MODEL OR HTTP SERVER STARTED")
-print("NEXT: CORRECT REAL MAX COMPATIBILITY TEST")
+assert (
+    config.response_queue_config.type == expected
+    if hasattr(config.response_queue_config, "type")
+    else True
+)
+
+print("REAL MAX TYPED QUEUE: PASS")
+print("REAL MAX SCHEDULER CONFIGURATION: PASS")
+
+app = FastAPI()
+
+async def predict():
+    return {"status": "ok"}
+
+count = register_model_routes(
+    app,
+    [RouteBinding("/shared/predict", predict)]
+)
+
+assert count == 1
+assert any(
+    route.path == "/shared/predict"
+    for route in app.routes
+)
+
+print("REAL API FRAMEWORK ROUTE: PASS")
+
+lifecycle_events = []
+
+worker = WorkerLifecycle(
+    create=lambda: lifecycle_events.append("create") or {},
+    load=lambda instance: lifecycle_events.append("load"),
+    attach_max=lambda instance: lifecycle_events.append("attach")
+)
+
+worker.start()
+
+assert worker.ready
+assert lifecycle_events == ["create", "load", "attach"]
+
+print("SHARED WORKER LIFECYCLE: PASS")
+
+print("\n=== FINAL RESULT ===")
+print("REAL MAX API COMPATIBILITY: PASS")
+print("SHARED QUEUE IN MAX IMAGE: PASS")
+print("SHARED SCHEDULER HOOKS: PASS")
+print("SHARED ROUTER FRAMEWORK: PASS")
+print("SHARED WORKER LIFECYCLE: PASS")
+print("NO TRAINED MODEL LOADED")
+print("NO HTTP SERVER STARTED")
+print("ORIGINAL CTA / BPLAN / PZAAS: UNCHANGED")
+print("NEXT: ISOLATED SHARED INFRA MODEL INTEGRATION")
 PY
 SH

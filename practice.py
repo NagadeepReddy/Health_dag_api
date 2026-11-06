@@ -3,90 +3,141 @@ cd /application1/sajjna8 && bash <<'SH'
 set -euo pipefail
 
 ROOT="/application1/sajjna8/max_shared_infra"
-SOURCE="$ROOT/bin/run_max_model.sh"
-TARGET="$ROOT/bin/run_max_model_shared.sh"
 PACKAGE="/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106"
+IMAGE="localhost/max-shared-runtime:cpu"
 
-test -f "$SOURCE"
-test -d "$PACKAGE/model"
+REL="artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_queue_compat.py"
+BRIDGE="$ROOT/integrations/pzaas"
+SHIM="$BRIDGE/pzaas_queue_compat.py"
+
+echo "=== ISOLATED PZAAS SHARED QUEUE INTEGRATION ==="
+
+test -f "$ROOT/python/max_runtime_shared/typed_queue.py"
+test -f "$ROOT/bin/run_max_model_shared.sh"
+test -f "$PACKAGE/model/$REL"
 test -d "$PACKAGE/runtime/python_deps"
+test -f "$PACKAGE/config/model.env"
 
-for name in typed_queue scheduler_hooks router_contract worker_lifecycle; do
-  test -f "$ROOT/python/max_runtime_shared/${name}.py"
-done
-
-if [ -e "$TARGET" ]; then
-  echo "STOP: Shared launcher already exists; nothing overwritten"
+if [ -e "$SHIM" ]; then
+  echo "STOP: Integration adapter already exists; nothing overwritten"
   exit 1
 fi
 
-python3 - "$SOURCE" "$TARGET" <<'PY'
-from pathlib import Path
-import sys
+mkdir -p "$BRIDGE"
 
-source = Path(sys.argv[1])
-target = Path(sys.argv[2])
+cat > "$SHIM" <<'PY'
+"""PZAAS binding to model-independent MAX queue infrastructure."""
 
-code = source.read_text()
+from max_runtime_shared.typed_queue import (
+    install_max_typed_response_queue,
+)
 
-changes = [
-    (
-        'DEPENDENCY_DIR="$PACKAGE/runtime/python_deps"\n',
-        'DEPENDENCY_DIR="$PACKAGE/runtime/python_deps"\n'
-        'SHARED_PYTHON="$(cd "$(dirname "${BASH_SOURCE[0]}")/../python" && pwd -P)"\n'
-        'test -f "$SHARED_PYTHON/max_runtime_shared/typed_queue.py" || {\n'
-        '  echo "STOP: Shared Python runtime missing"\n'
-        '  exit 1\n'
-        '}\n',
-    ),
-    (
-        '  -v "$DEPENDENCY_DIR:/shared_deps:ro" \\\n',
-        '  -v "$DEPENDENCY_DIR:/shared_deps:ro" \\\n'
-        '  -v "$SHARED_PYTHON:/shared_runtime:ro" \\\n',
-    ),
-    (
-        '  -e "PYTHONPATH=$MODEL_PYTHONPATH" \\\n',
-        '  -e "PYTHONPATH=/shared_runtime:$MODEL_PYTHONPATH" \\\n',
-    ),
-]
+MAX_SHARED_QUEUE_ADAPTER_V1 = True
 
-for old, new in changes:
-    count = code.count(old)
-    if count != 1:
-        raise SystemExit(
-            f"STOP: Expected one launcher insertion point, found {count}"
-        )
-    code = code.replace(old, new, 1)
 
-with target.open("x") as f:
-    f.write(code)
+def install():
+    from pzaas_native_serve_dev.pzaas_native_scheduler import (
+        PZAASSerializableOutput,
+    )
 
-target.chmod(0o755)
-
-print("OPT-IN SHARED LAUNCHER: CREATED")
-print("ORIGINAL LAUNCHER: UNCHANGED")
-print("SHARED PYTHON MOUNT: CONFIGURED")
-print("SHARED PYTHONPATH: CONFIGURED")
+    return install_max_typed_response_queue(
+        PZAASSerializableOutput,
+        owner="PZAAS_v1.472",
+    )
 PY
 
-bash -n "$TARGET"
+python3 -B - <<'PY'
+import ast
+from pathlib import Path
+
+p = Path(
+    "/application1/sajjna8/max_shared_infra/"
+    "integrations/pzaas/pzaas_queue_compat.py"
+)
+
+ast.parse(p.read_text())
+print("SHARED QUEUE ADAPTER SYNTAX: PASS")
+PY
+
+# Trusted configuration from the verified local handoff.
+source "$PACKAGE/config/model.env"
+
+PODMAN=(
+  podman
+  --root /application1/podman/storage
+  --runroot /run/containers/storage
+)
+
+"${PODMAN[@]}" image exists "$IMAGE" || {
+  echo "STOP: Existing shared runtime image unavailable"
+  exit 1
+}
+
+"${PODMAN[@]}" run \
+  --rm -i --pull=never --network=none \
+  --memory=4g --pids-limit=256 \
+  -v "$PACKAGE/model:/workspace:ro" \
+  -v "$PACKAGE/runtime/python_deps:/shared_deps:ro" \
+  -v "$ROOT/python:/shared_runtime:ro" \
+  -v "$SHIM:/workspace/$REL:ro" \
+  -w /workspace \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e "PYTHONPATH=/shared_runtime:$MODEL_PYTHONPATH" \
+  --entrypoint /opt/venv/bin/python \
+  "$IMAGE" -u - <<'PY'
+print("=== REAL MAX SHARED QUEUE OVERLAY TEST ===")
+
+from max.serve.scheduler.queues import (
+    SchedulerZmqConfigs,
+    PipelineTask,
+)
+
+from pzaas_native_serve_dev.pzaas_queue_compat import (
+    MAX_SHARED_QUEUE_ADAPTER_V1,
+    install,
+)
+
+assert MAX_SHARED_QUEUE_ADAPTER_V1 is True
+print("ORIGINAL QUEUE MODULE: ISOLATED OVERLAY ACTIVE")
+
+first = install()
+second = install()
+
+assert first is True
+assert second is False
+
+print("SHARED QUEUE: INSTALLED EXACTLY ONCE")
+print("REPEATED INSTALL: SAFE")
+
+marker = SchedulerZmqConfigs.__dict__.get(
+    "_max_shared_queue_install"
+)
+
+assert marker is not None
+assert marker[0] == "PZAAS_v1.472"
+
+config = SchedulerZmqConfigs(
+    PipelineTask.TEXT_GENERATION
+)
+
+assert config.request_queue_config is not None
+assert config.response_queue_config is not None
+
+print("REAL MAX QUEUE CONFIGURATION: PASS")
+print("PZAAS RESPONSE TYPE: REGISTERED")
+print("DUPLICATE HOOK PROTECTION: PASS")
+
+print("\n=== RESULT ===")
+print("ISOLATED SHARED QUEUE INTEGRATION: PASS")
+print("SHARED PYTHON MODULE: ACTIVELY USED")
+print("NO TRAINED MODEL LOADED")
+print("NO HTTP SERVER STARTED")
+print("ORIGINAL PZAAS HANDOFF: UNCHANGED")
+print("CTA / BPLAN: UNCHANGED")
+print("NEXT: REAL HTTP VIA SHARED QUEUE OVERLAY")
+PY
 
 if id sajjna8 >/dev/null 2>&1; then
-  chown sajjna8:"$(id -gn sajjna8)" "$TARGET"
+  chown sajjna8:"$(id -gn sajjna8)" "$SHIM"
 fi
-
-echo
-echo "=== SHARED LAUNCHER PREFLIGHT ==="
-
-bash "$TARGET" check "$PACKAGE"
-
-echo
-echo "=== RESULT ==="
-echo "SHARED LAUNCHER SYNTAX: PASS"
-echo "SHARED LIBRARY MOUNT: CONFIGURED"
-echo "ORIGINAL WORKING LAUNCHER: UNCHANGED"
-echo "MODEL HANDOFFS: UNCHANGED"
-echo "RUNNING CONTAINERS: UNCHANGED"
-echo "NO DUPLICATE MAX HOOKS INSTALLED"
-echo "NEXT: ISOLATED SHARED QUEUE INTEGRATION"
 SH

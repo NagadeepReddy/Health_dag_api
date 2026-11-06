@@ -6,9 +6,47 @@ STAGE="/application1/sajjna8/PZAAS_MAX_CLEAN_STAGE_20261106"
 EVIDENCE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_http_evidence"
 FIXTURE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_adjusted_sanity_input.json"
 
-for path in "$STAGE" "$EVIDENCE/pzaas_native_response.json" "$FIXTURE"; do
-  test -e "$path" || { echo "STOP: Missing $path"; exit 1; }
-done
+python3 - <<'PY'
+from pathlib import Path
+import hashlib
+import shutil
+
+relative = Path(
+    "artifacts/v1.472-max/pzaas_max/"
+    "validation/pzaas_forward_schema.json"
+)
+
+source = Path.cwd() / relative
+target = Path(
+    "/application1/sajjna8/PZAAS_MAX_CLEAN_STAGE_20261106"
+) / relative
+
+if not source.is_file():
+    raise SystemExit(f"STOP: Original schema missing: {source}")
+
+if not target.parent.is_dir():
+    raise SystemExit("STOP: Clean validation directory missing")
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+if target.exists():
+    if digest(source) != digest(target):
+        raise SystemExit("STOP: Existing staged schema differs")
+    print("CORRECT SCHEMA LOCATION: ALREADY PRESENT")
+else:
+    shutil.copy2(source, target)
+    print("CORRECT SCHEMA LOCATION: RESTORED")
+
+assert digest(source) == digest(target)
+
+print("SCHEMA SHA256: PASS")
+print("EXACT RUNTIME PATH:", target)
+print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
+PY
+
+test -f "$FIXTURE"
+test -f "$EVIDENCE/pzaas_native_response.json"
 
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
@@ -32,10 +70,19 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+schema = Path(
+    "/workspace/artifacts/v1.472-max/pzaas_max/"
+    "validation/pzaas_forward_schema.json"
+)
+
+if not schema.is_file():
+    raise SystemExit("STOP: Schema unavailable inside clean container")
+
+print("CLEAN RUNTIME SCHEMA: PASS", flush=True)
+
 log = Path("/evidence/pzaas_clean_stage_http.log")
 fixture = Path("/tmp/pzaas_input.json")
 reference = Path("/evidence/pzaas_native_response.json")
-output = Path("/evidence/pzaas_clean_stage_response.json")
 
 def unpack(value):
     if isinstance(value, str):
@@ -45,23 +92,23 @@ def unpack(value):
             pass
     return value
 
-def products(response):
-    data = unpack(response["jsonData"])
+def products(payload):
+    data = unpack(payload["jsonData"])
     prediction = unpack(data["prediction"])
     result = unpack(prediction["productList"])
     if not isinstance(result, list):
-        raise ValueError("productList must be a list")
+        raise ValueError("Invalid productList")
     return result
 
-print("PZAAS CLEAN MAX HTTP: STARTING", flush=True)
+print("PZAAS CLEAN MAX SERVE: STARTING", flush=True)
 
-with log.open("w") as stream:
+with log.open("w") as output:
     server = subprocess.Popen(
         [
             sys.executable, "-u", "-m",
             "pzaas_native_serve_dev.pzaas_native_launcher"
         ],
-        stdout=stream,
+        stdout=output,
         stderr=subprocess.STDOUT
     )
 
@@ -70,7 +117,7 @@ try:
 
     while time.monotonic() < deadline:
         if server.poll() is not None:
-            raise RuntimeError("Clean MAX worker/server exited")
+            raise RuntimeError("Clean MAX worker exited")
         try:
             with socket.create_connection(
                 ("127.0.0.1", 18768), timeout=2
@@ -94,17 +141,19 @@ try:
         request, timeout=180
     ) as response:
         status = response.status
-        actual_response = json.loads(response.read())
+        payload = json.loads(response.read())
 
-    actual = products(actual_response)
+    actual = products(payload)
     expected = products(json.loads(reference.read_text()))
 
-    server_log = log.read_text(errors="replace")
-    trained = "PZAAS REAL MAX EXECUTION: PASS" in server_log
+    trained = (
+        "PZAAS REAL MAX EXECUTION: PASS"
+        in log.read_text(errors="replace")
+    )
 
-    print("HTTP STATUS:", status)
-    print("PRODUCT COUNT:", len(actual))
-    print("PRODUCT PARITY:", actual == expected)
+    print("CLEAN HTTP STATUS:", status)
+    print("RECOMMENDATION COUNT:", len(actual))
+    print("SAVED PRODUCT PARITY:", actual == expected)
     print("TRAINED MAX EXECUTION:", trained)
 
     if not (
@@ -115,31 +164,37 @@ try:
     ):
         raise RuntimeError("Clean-stage acceptance failed")
 
-    output.write_text(json.dumps(actual_response, indent=2))
+    Path("/evidence/pzaas_clean_stage_response.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
     print("PZAAS INDEPENDENT CLEAN STAGE: PASS")
-    print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
 
 except Exception as exc:
     print("CLEAN STAGE BLOCKED:", repr(exc))
+
     if isinstance(exc, urllib.error.HTTPError):
-        print("HTTP ERROR:", exc.read(1000).decode(errors="replace"))
+        print(
+            "HTTP ERROR:",
+            exc.read(1000).decode(errors="replace")
+        )
 
     lines = log.read_text(errors="replace").splitlines()
-    print("=== FIRST ERROR CONTEXT ===")
-    error_positions = [
-        i for i, line in enumerate(lines)
-        if any(x in line for x in (
-            "Traceback", "ModuleNotFoundError",
-            "FileNotFoundError", "ImportError",
-            "KeyError", "RuntimeError"
-        ))
-    ]
-    if error_positions:
-        first = error_positions[0]
-        print("\n".join(lines[first:first+35]))
 
-    print("=== LAST 45 SERVER LOG LINES ===")
-    print("\n".join(lines[-45:]))
+    print("=== FIRST ROOT ERROR ===")
+    for index, line in enumerate(lines):
+        if any(term in line for term in (
+            "FileNotFoundError",
+            "ModuleNotFoundError",
+            "ImportError",
+            "KeyError",
+            "AttributeError"
+        )):
+            print("\n".join(lines[max(0,index-3):index+5]))
+            break
+
+    print("=== LAST 35 SERVER LOG LINES ===")
+    print("\n".join(lines[-35:]))
     raise SystemExit(1)
 
 finally:

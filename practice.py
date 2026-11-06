@@ -1,100 +1,159 @@
 
 cd /application1/sajjna8 && python3 - <<'PY'
-from pathlib import Path
 import ast
-import hashlib
-import shutil
+import re
+from pathlib import Path
 
 base = Path("/application1/sajjna8")
-package = Path("/application1/BPLAN_MAX_TEAM_HANDOFF_20261102")
-relative = Path(
-    "artifacts/v1.113-max/maxserve_bplan_extension/"
-    "bplan_native_serve_dev"
-)
-source = package / relative
 stage = base / "max_shared_infra/isolated/bplan_shared_wiring_v1"
 shared = base / "max_shared_infra/python/max_runtime_shared"
-runner = base / "max_shared_infra/bin/run_max_model.sh"
 
-print("=== ISOLATED BPLAN SHARED MAX PREPARATION ===")
+spawn = stage / "bplan_spawn_worker.py"
+router = stage / "bplan_router.py"
+
+print("=== BPLAN SHARED MAX LIVE WIRING ===", flush=True)
 
 required = [
-    source / "bplan_native_launcher.py",
-    shared / "typed_queue.py",
+    spawn, router,
+    shared / "worker_lifecycle.py",
     shared / "scheduler_hooks.py",
     shared / "router_contract.py",
-    shared / "worker_lifecycle.py",
-    runner,
+    stage / "bplan_queue_compat.py",
+    stage / "bplan_worker_registration.py",
 ]
 
 missing = [str(p) for p in required if not p.is_file()]
 if missing:
-    raise SystemExit(
-        "STOP: Required files missing:\n" + "\n".join(missing)
-    )
+    raise SystemExit("STOP: Missing required files:\n" + "\n".join(missing))
 
-files = sorted(source.glob("*.py"))
-if not files:
-    raise SystemExit("STOP: No BPLAN serving modules found")
+changes = {}
 
-# Validate all sources and reject unexpected existing differences
-# before writing anything.
-for src in files:
-    compile(src.read_bytes(), str(src), "exec")
-    dst = stage / src.name
-    if dst.exists() and dst.read_bytes() != src.read_bytes():
+# 1. Reuse the shared worker lifecycle without changing the
+# previously working BPLAN initialize() behavior.
+text = spawn.read_text()
+
+if "WorkerLifecycle(" not in text:
+    pattern = r"(?m)^([ \t]*)pipeline = worker\.initialize\(\)[ \t]*$"
+    matches = list(re.finditer(pattern, text))
+    if len(matches) != 1:
+        raise SystemExit("STOP: BPLAN initialization not uniquely found")
+
+    indent = matches[0].group(1)
+    replacement = "\n".join([
+        indent + "from max_runtime_shared.worker_lifecycle import WorkerLifecycle",
+        indent + "lifecycle = WorkerLifecycle(",
+        indent + "    create=worker.initialize,",
+        indent + "    load=lambda pipeline: None,",
+        indent + "    attach_max=lambda pipeline: None,",
+        indent + ")",
+        indent + "pipeline = lifecycle.start()",
+    ])
+    text = text[:matches[0].start()] + replacement + text[matches[0].end():]
+
+# 2. Install the existing BPLAN queue and scheduler through
+# the reusable shared scheduler registry.
+if 'registry.activate("bplan-v1.113")' not in text:
+    pattern = r"(?m)^([ \t]*)install_bplan_scheduler_hook\(\)[ \t]*$"
+    matches = list(re.finditer(pattern, text))
+    if len(matches) != 1:
+        raise SystemExit("STOP: BPLAN scheduler hook not uniquely found")
+
+    indent = matches[0].group(1)
+    replacement = "\n".join([
+        indent + "from bplan_native_serve_dev.bplan_queue_compat import install as install_queue",
+        indent + "from max_runtime_shared.scheduler_hooks import SchedulerHooks, SharedSchedulerRegistry",
+        indent + "registry = SharedSchedulerRegistry()",
+        indent + "registry.register(SchedulerHooks(",
+        indent + '    model_key="bplan-v1.113",',
+        indent + "    install_queue=install_queue,",
+        indent + "    install_scheduler=install_bplan_scheduler_hook,",
+        indent + "))",
+        indent + 'registry.activate("bplan-v1.113")',
+    ])
+    text = text[:matches[0].start()] + replacement + text[matches[0].end():]
+
+compile(text, str(spawn), "exec")
+changes[spawn] = text
+
+# 3. Register the original BPLAN handler through the shared
+# router contract, using MAX Serve's existing router.
+text = router.read_text()
+
+if "register_model_routes(" not in text:
+    tree = ast.parse(text)
+    candidates = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Expr):
+            continue
+
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        if not isinstance(call.func, ast.Attribute):
+            continue
+        if call.func.attr != "add_api_route":
+            continue
+        if not call.args:
+            continue
+
+        path = call.args[0]
+        if isinstance(path, ast.Constant) and path.value == "/bplan/predict":
+            candidates.append(node)
+
+    if len(candidates) != 1:
         raise SystemExit(
-            "STOP: Existing isolated file differs; preserved: " + str(dst)
+            "STOP: BPLAN route not uniquely identified; "
+            "no files modified"
         )
 
-stage.mkdir(parents=True, exist_ok=True)
+    node = candidates[0]
+    if len(node.value.args) < 2:
+        raise SystemExit("STOP: BPLAN route handler missing")
 
-copied = []
-for src in files:
-    dst = stage / src.name
-    if not dst.exists():
-        shutil.copy2(src, dst)
-        copied.append(src.name)
+    handler = ast.unparse(node.value.args[1])
+    lines = text.splitlines(keepends=True)
+    indent = re.match(r"[ \t]*", lines[node.lineno - 1]).group()
 
-print("BPLAN CLEAN SOURCE: VERIFIED")
-print("SHARED MAX COMPONENTS: VERIFIED")
-print("ISOLATED BPLAN FILES:", len(files))
-print("NEW FILES COPIED:", len(copied))
-print("ISOLATED PYTHON SYNTAX: PASS")
+    replacement = "\n".join([
+        indent + "from max_runtime_shared.router_contract import RouteBinding, register_model_routes",
+        indent + "register_model_routes(",
+        indent + "    router,",
+        indent + "    [RouteBinding(",
+        indent + '        path="/bplan/predict",',
+        indent + f"        endpoint={handler},",
+        indent + '        methods=("POST",),',
+        indent + "    )],",
+        indent + ")",
+        "",
+    ])
 
-print("\n=== BPLAN SERVING HOOKS ===")
-keywords = (
-    "register_bplan",
-    "install_bplan",
-    "FactoryWrapper",
-    "WorkerAdapter",
-    "initialize(",
-    "start_model_worker",
-    "SchedulerZmqConfigs",
-    "response_queue",
-    "retrieve_factory",
-    "uvicorn.run",
-    "fastapi_app",
-)
+    lines[node.lineno - 1:node.end_lineno] = [replacement]
+    text = "".join(lines)
 
-for src in files:
-    lines = src.read_text().splitlines()
-    matches = [
-        (i, line.strip())
-        for i, line in enumerate(lines, 1)
-        if any(k in line for k in keywords)
-    ]
-    if matches:
-        print("\nFILE:", src.name)
-        for number, line in matches[:16]:
-            print(f"  {number}: {line[:160]}")
+compile(text, str(router), "exec")
+changes[router] = text
+
+# Validate all changes before writing any file.
+for path, content in changes.items():
+    ast.parse(content, filename=str(path))
+    compile(content, str(path), "exec")
+
+for path, content in changes.items():
+    if path.read_text() != content:
+        path.write_text(content)
+        print("UPDATED:", path.name)
+    else:
+        print("ALREADY WIRED:", path.name)
 
 print("\n=== RESULT ===")
-print("BPLAN ISOLATED WORKSPACE: READY")
-print("BPLAN NATIVE PORT: 18768")
-print("SHARED GENERIC LAUNCHER: READY")
+print("SHARED WORKER LIFECYCLE: WIRED")
+print("SHARED SCHEDULER REGISTRY: WIRED")
+print("BPLAN ORIGINAL QUEUE INSTALLER: PRESERVED")
+print("SHARED ROUTER: WIRED")
+print("ISOLATED PYTHON SYNTAX: PASS")
 print("ORIGINAL BPLAN HANDOFF: UNCHANGED")
-print("CTA / PZAAS HANDOFFS: UNCHANGED")
-print("NO RUNNING CONTAINERS CHANGED")
-print("NEXT: WIRE SHARED BPLAN HOOKS AND TEST LIVE HTTP")
+print("ORIGINAL DS / CTA / PZAAS: UNCHANGED")
+print("NO CONTAINERS STARTED")
+print("NEXT: LIVE BPLAN SHARED MAX HTTP VALIDATION")
 PY

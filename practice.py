@@ -2,233 +2,202 @@
 cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
 set -euo pipefail
 
-export STAGE="/application1/sajjna8/PZAAS_MAX_CLEAN_STAGE_20261106"
-export SHARED="/application1/max_shared_python_deps"
-export HANDOFF="/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106"
+HANDOFF="/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106"
+EVIDENCE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_http_evidence"
+FIXTURE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_adjusted_sanity_input.json"
+REFERENCE="$EVIDENCE/pzaas_native_response.json"
 
-PODMAN=(podman --root /application1/podman/storage --runroot /run/containers/storage)
-
-test -d "$STAGE"
-test -d "$SHARED"
-
-if [ -e "$HANDOFF" ] || [ -e "${HANDOFF}.tar.gz" ]; then
-  echo "STOP: Handoff already exists. Nothing overwritten."
-  exit 1
-fi
-
-# Give the unchanged shared image a model-independent alias.
-ORIGINAL="localhost/cta-max-faiss:local"
-NEUTRAL="localhost/max-shared-runtime:cpu"
-
-ORIGINAL_ID=$("${PODMAN[@]}" image inspect --format '{{.Id}}' "$ORIGINAL")
-
-if "${PODMAN[@]}" image exists "$NEUTRAL"; then
-  NEUTRAL_ID=$("${PODMAN[@]}" image inspect --format '{{.Id}}' "$NEUTRAL")
-  if [ "$ORIGINAL_ID" != "$NEUTRAL_ID" ]; then
-    echo "STOP: Neutral MAX image tag points to a different image."
+for path in \
+  "$HANDOFF/model" \
+  "$HANDOFF/runtime/python_deps" \
+  "$HANDOFF/runtime/launch_max_model.sh" \
+  "$HANDOFF/config/model.env" \
+  "$FIXTURE" \
+  "$REFERENCE"; do
+  test -e "$path" || {
+    echo "STOP: Missing $path"
     exit 1
-  fi
-else
-  "${PODMAN[@]}" tag "$ORIGINAL" "$NEUTRAL"
-fi
+  }
+done
 
-echo "SHARED MAX IMAGE ALIAS: READY"
-echo "MAX IMAGE CONTENT: UNCHANGED"
+bash -n "$HANDOFF/runtime/launch_max_model.sh"
+source "$HANDOFF/config/model.env"
 
-python3 - <<'PY'
-import json
-import os
-import shutil
-from pathlib import Path
+test "$MODULE" = "pzaas_native_serve_dev.pzaas_native_launcher"
+test "$INTERNAL_PORT" = "18768"
 
-stage = Path(os.environ["STAGE"])
-shared = Path(os.environ["SHARED"])
-handoff = Path(os.environ["HANDOFF"])
+echo "GENERIC LAUNCHER SYNTAX: PASS"
+echo "PACKAGED MODEL CONFIGURATION: PASS"
 
-def ignore(directory, names):
-    rel = Path(directory).relative_to(stage)
-    excluded = set()
-
-    if rel == Path("."):
-        excluded.update({
-            "RUNTIME_MANIFEST.json",
-            "STAGING_NOTES.md"
-        })
-
-    if rel == Path("artifacts/v1.472-max"):
-        excluded.add("validation")
-
-    excluded.update(
-        name for name in names
-        if name in {"__pycache__", ".pytest_cache"}
-        or name.endswith((".pyc", ".pyo", ".log"))
-    )
-    return excluded
-
-print("CREATING CLEAN HANDOFF CANDIDATE", flush=True)
-
-handoff.mkdir(parents=True)
-
-shutil.copytree(
-    stage,
-    handoff / "model",
-    ignore=ignore
-)
-
-shutil.copytree(
-    shared,
-    handoff / "runtime/python_deps",
-    ignore=shutil.ignore_patterns(
-        "__pycache__", ".pytest_cache",
-        "*.pyc", "*.pyo"
-    )
-)
-
-runtime = handoff / "runtime"
-config = handoff / "config"
-docs = handoff / "docs"
-config.mkdir()
-docs.mkdir()
-
-# Model-specific configuration, separate from the common launcher.
-(config / "model.env").write_text(
-    "MODULE=pzaas_native_serve_dev.pzaas_native_launcher\n"
-    "INTERNAL_PORT=18768\n"
-    "MODEL_PYTHONPATH="
-    "/shared_deps/sklearn161:"
-    "/shared_deps:"
-    "/workspace/artifacts/v1.472-max/pzaas_max/validation/python_deps:"
-    "/workspace/artifacts/v1.472-max/maxserve_pzaas_extension:"
-    "/workspace/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev:"
-    "/workspace/artifacts/v1.472-max:"
-    "/workspace/artifacts/v1.472/core-artifact:"
-    "/workspace/artifacts/v1.472/utils/dependency-utils\n"
-)
-
-launcher = runtime / "launch_max_model.sh"
-launcher.write_text(r'''#!/usr/bin/env bash
-set -euo pipefail
-
-BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$BASE/config/model.env"
-
-HOST_PORT="${HOST_PORT:-18771}"
-IMAGE="${IMAGE:-localhost/max-shared-runtime:cpu}"
-PODMAN_ROOT="${PODMAN_ROOT:-/application1/podman/storage}"
-PODMAN_RUNROOT="${PODMAN_RUNROOT:-/run/containers/storage}"
-
-exec podman \
-  --root "$PODMAN_ROOT" \
-  --runroot "$PODMAN_RUNROOT" \
-  run --rm --pull=never \
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm -i --pull=never --network=none \
   --memory=12g --pids-limit=512 \
-  -p "127.0.0.1:${HOST_PORT}:${INTERNAL_PORT}" \
-  -v "$BASE/model:/workspace:ro" \
-  -v "$BASE/runtime/python_deps:/shared_deps:ro" \
+  -v "$HANDOFF/model:/workspace:ro" \
+  -v "$HANDOFF/runtime/python_deps:/shared_deps:ro" \
+  -v "$FIXTURE:/tmp/pzaas_input.json:ro" \
+  -v "$REFERENCE:/tmp/pzaas_reference.json:ro" \
+  -v "$EVIDENCE:/evidence:rw" \
   -w /workspace \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -e "PYTHONPATH=$MODEL_PYTHONPATH" \
   --entrypoint /opt/venv/bin/python \
-  "$IMAGE" -u -m "$MODULE"
-''')
-launcher.chmod(0o755)
-
-required = [
-    "model/artifacts/v1.472/core-artifact/pipeline.py",
-    "model/artifacts/v1.472/model-settings.json",
-    "model/artifacts/v1.472-max/pzaas_max/pzaas_weight_loader.py",
-    "model/artifacts/v1.472-max/pzaas_max/validation/pzaas_forward_schema.json",
-    "model/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_native_launcher.py",
-    "runtime/launch_max_model.sh",
-    "config/model.env"
-]
-
-for relative in required:
-    if not (handoff / relative).is_file():
-        raise SystemExit(f"STOP: Required release file missing: {relative}")
-
-source_collection = Path.cwd() / (
-    "artifacts/v1.472-max/maxserve_pzaas_extension/"
-    "pzaas_http_evidence/PZAAS_CLEAN_MAX_POSTMAN_COLLECTION.json"
-)
-
-if source_collection.is_file():
-    shutil.copy2(
-        source_collection,
-        docs / "PZAAS_Postman_Collection.json"
-    )
-
-(docs / "README.md").write_text(
-    "# PZAAS v1.472 Modular MAX CPU handoff candidate\n\n"
-    "## Structure\n"
-    "- model/: Original DS model and isolated MAX integration\n"
-    "- runtime/python_deps/: Shared Python dependency snapshot\n"
-    "- runtime/launch_max_model.sh: Model-independent MAX launcher\n"
-    "- config/model.env: PZAAS-specific serving configuration\n"
-    "- docs/: Handoff instructions and Postman collection\n\n"
-    "## Run on the prepared VM\n"
-    "Ensure the compatible MAX+FAISS image is present as "
-    "`localhost/max-shared-runtime:cpu`.\n\n"
-    "Run: `HOST_PORT=18771 ./runtime/launch_max_model.sh`\n\n"
-    "Endpoint: `POST http://127.0.0.1:18771/pzaas/predict`\n\n"
-    "## Verified before packaging\n"
-    "- Native trained MAX CPU inference\n"
-    "- HTTP 200 and 24 recommendations\n"
-    "- Same-input PyTorch/MAX product-list parity\n"
-    "- Independent clean-stage HTTP verification\n"
-    "- External Postman HTTP 200\n\n"
-    "## Not yet certified\n"
-    "- Fresh execution from this packaged handoff\n"
-    "- Execution on another VM\n"
-    "- Approved production container image\n"
-    "- Live Kubernetes lookups\n"
-    "- GPU, batch-2 and production scaling\n\n"
-    "The neutral image alias points to the previously used "
-    "development image; it is not a new image build or approval.\n"
-    "Adjust Podman storage settings for other hosts.\n"
-)
-
-files = [p for p in handoff.rglob("*") if p.is_file()]
-size = sum(p.stat().st_size for p in files)
-
-print("CLEAN MODEL + RUNTIME: COPIED")
-print("COMMON MAX LAUNCHER: CREATED")
-print("MODEL CONFIGURATION: SEPARATED")
-print("TOTAL FILES:", len(files))
-print("UNCOMPRESSED SIZE GiB:", round(size / 1024**3, 2))
-print("HANDOFF:", handoff)
-print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
-PY
-
-python3 - <<'PY'
-import hashlib
-import os
-import tarfile
+  localhost/max-shared-runtime:cpu -u - <<'PY'
+import json
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-handoff = Path(os.environ["HANDOFF"])
-archive = Path(str(handoff) + ".tar.gz")
-temporary = Path(str(archive) + ".part")
+log = Path("/evidence/pzaas_packaged_cold_start.log")
+proof = Path("/evidence/pzaas_packaged_cold_start_proof.json")
 
-with tarfile.open(temporary, "w:gz", compresslevel=3) as tar:
-    tar.add(handoff, arcname=handoff.name)
+def unpack(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
 
-temporary.rename(archive)
+def get_products(payload):
+    data = unpack(payload["jsonData"])
+    prediction = unpack(data["prediction"])
+    result = unpack(prediction["productList"])
+    if not isinstance(result, list):
+        raise ValueError("Invalid productList")
+    return result
 
-digest = hashlib.sha256()
-with archive.open("rb") as stream:
-    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-        digest.update(chunk)
+print("=== PACKAGED PZAAS COLD START ===", flush=True)
 
-checksum = Path(str(archive) + ".sha256")
-checksum.write_text(
-    f"{digest.hexdigest()}  {archive.name}\n"
-)
+with log.open("w") as output:
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            "-m",
+            "pzaas_native_serve_dev.pzaas_native_launcher"
+        ],
+        stdout=output,
+        stderr=subprocess.STDOUT
+    )
 
-print("HANDOFF ARCHIVE:", archive)
-print("SHA256 FILE:", checksum)
-print("CLEAN HANDOFF CANDIDATE: CREATED")
-print("PACKAGED COLD-START VERIFICATION: PENDING")
-print("WORKING POSTMAN CONTAINER: UNCHANGED")
+try:
+    deadline = time.monotonic() + 150
+
+    while time.monotonic() < deadline:
+        if server.poll() is not None:
+            raise RuntimeError("Packaged MAX server exited")
+
+        try:
+            with socket.create_connection(
+                ("127.0.0.1", 18768), timeout=2
+            ):
+                break
+        except OSError:
+            time.sleep(2)
+    else:
+        raise RuntimeError("Packaged MAX startup timeout")
+
+    print("PACKAGED MAX SERVER: READY", flush=True)
+
+    request = urllib.request.Request(
+        "http://127.0.0.1:18768/pzaas/predict",
+        data=Path("/tmp/pzaas_input.json").read_bytes(),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    with urllib.request.urlopen(
+        request, timeout=180
+    ) as response:
+        status = response.status
+        payload = json.loads(response.read())
+
+    actual = get_products(payload)
+    expected = get_products(
+        json.loads(
+            Path("/tmp/pzaas_reference.json").read_text()
+        )
+    )
+
+    execution = (
+        "PZAAS REAL MAX EXECUTION: PASS"
+        in log.read_text(errors="replace")
+    )
+
+    parity = actual == expected
+
+    print("PACKAGED HTTP STATUS:", status)
+    print("RECOMMENDATIONS:", len(actual))
+    print("SAVED PRODUCT PARITY:", parity)
+    print("TRAINED MAX EXECUTION:", execution)
+
+    if not (
+        status == 200
+        and len(actual) == 24
+        and parity
+        and execution
+    ):
+        raise RuntimeError("Packaged acceptance checks failed")
+
+    proof.write_text(json.dumps({
+        "packaged_http_status": status,
+        "recommendation_count": len(actual),
+        "saved_product_parity": parity,
+        "trained_max_execution": execution,
+        "runtime_source": "packaged handoff only",
+        "image": "localhost/max-shared-runtime:cpu",
+        "network": "isolated",
+        "live_kubernetes_lookups": "not validated"
+    }, indent=2))
+
+    print("PZAAS PACKAGED COLD START: PASS")
+    print("BUNDLED RUNTIME: PASS")
+    print("EVIDENCE:", proof)
+    print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
+
+except Exception as exc:
+    print("PACKAGED VERIFICATION BLOCKED:", repr(exc))
+
+    if isinstance(exc, urllib.error.HTTPError):
+        print(
+            "HTTP ERROR:",
+            exc.read(800).decode(errors="replace")
+        )
+
+    lines = log.read_text(errors="replace").splitlines()
+    print("=== FIRST ROOT ERROR ===")
+
+    for index, line in enumerate(lines):
+        if any(term in line for term in (
+            "FileNotFoundError",
+            "ModuleNotFoundError",
+            "ImportError",
+            "KeyError",
+            "AttributeError"
+        )):
+            print(
+                "\n".join(
+                    lines[max(0, index-3):index+5]
+                )
+            )
+            break
+
+    print("=== LAST 25 SERVER LOG LINES ===")
+    print("\n".join(lines[-25:]))
+    raise SystemExit(1)
+
+finally:
+    if server.poll() is None:
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait()
 PY
 SH

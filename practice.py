@@ -2,12 +2,15 @@
 cd /application1/sajjna8 && python3 - <<'PY'
 from pathlib import Path
 import ast
-import json
+import difflib
 import hashlib
+import json
+import re
 
 shared = Path("/application1/sajjna8/max_shared_infra")
+analysis = shared / "analysis"
 
-sources = {
+roots = {
     "CTA": Path(
         "/application1/sajjna8/rt-pzaas-cta-offers-v1/"
         "artifacts/v1.168-max/maxserve_cta_extension"
@@ -18,119 +21,181 @@ sources = {
     ),
     "PZAAS": Path(
         "/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106/"
-        "model/artifacts/v1.472-max/maxserve_pzaas_extension/"
-        "pzaas_native_serve_dev"
+        "model/artifacts/v1.472-max/maxserve_pzaas_extension"
     )
 }
 
-keywords = (
-    "scheduler", "router", "queue", "context",
-    "worker", "launcher", "registration",
-    "factory", "http_pipeline"
-)
+components = [
+    "queue_compat",
+    "native_scheduler",
+    "router",
+    "worker_adapter",
+    "spawn_worker"
+]
+
+output = analysis / "shared_implementation_comparison_20261106.json"
 
 if not (shared / "bin/run_max_model.sh").is_file():
-    raise SystemExit("STOP: Shared launcher missing")
+    raise SystemExit("STOP: Shared infrastructure missing")
 
-print("=== MULTI-MODEL MAX SERVING INVENTORY ===")
-print("SHARED INFRA:", shared)
-print("ORIGINAL MODELS: READ-ONLY")
+if output.exists():
+    raise SystemExit("STOP: Comparison already exists; not overwritten")
+
+print("=== SHARED MAX IMPLEMENTATION COMPARISON ===")
+
+def normalized(source):
+    return re.sub(
+        r"cta|bplan|pzaas",
+        "model",
+        source,
+        flags=re.IGNORECASE
+    )
+
+def load(model, component):
+    root = roots[model]
+
+    if not root.is_dir():
+        return {"status": "source_missing"}
+
+    filename = f"{model.lower()}_{component}.py"
+
+    matches = [
+        p for p in root.rglob(filename)
+        if not any(
+            "reference" in part.lower()
+            or "backup" in part.lower()
+            for part in p.parts
+        )
+    ]
+
+    if len(matches) != 1:
+        return {
+            "status": "missing_or_ambiguous",
+            "matches": [str(p) for p in matches]
+        }
+
+    path = matches[0]
+    source = path.read_text(errors="replace")
+
+    try:
+        tree = ast.parse(source)
+        norm_tree = ast.parse(normalized(source))
+    except SyntaxError as exc:
+        return {"status": "syntax_error", "error": str(exc)}
+
+    definitions = []
+    for node in tree.body:
+        if isinstance(node, (
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef
+        )):
+            definitions.append(node.name)
+
+    imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            imports.append(node.module or "")
+
+    return {
+        "status": "found",
+        "path": str(path),
+        "lines": len(source.splitlines()),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "definitions": definitions,
+        "imports": sorted(set(imports)),
+        "normalized_ast": ast.dump(norm_tree),
+        "normalized_text": normalized(source)
+    }
 
 report = {}
 
-for model, root in sources.items():
-    print(f"\n=== {model} ===")
-    print("SOURCE:", root)
+for component in components:
+    print(f"\n=== {component.upper()} ===")
 
-    if not root.is_dir():
-        print("SOURCE NOT FOUND - NO PATH GUESSED")
-        report[model] = {"status": "source_missing"}
-        continue
-
-    components = []
-
-    for path in sorted(root.rglob("*.py")):
-        if (
-            "__pycache__" in path.parts
-            or "_cta_native_reference" in path.parts
-            or not any(k in path.name.lower() for k in keywords)
-        ):
-            continue
-
-        content = path.read_text(errors="replace")
-
-        try:
-            tree = ast.parse(content)
-        except SyntaxError as exc:
-            print("SYNTAX REVIEW:", path.name, str(exc))
-            continue
-
-        definitions = [
-            node.name for node in tree.body
-            if isinstance(node, (
-                ast.ClassDef,
-                ast.FunctionDef,
-                ast.AsyncFunctionDef
-            ))
-        ]
-
-        imports = sorted({
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            and node.module
-        })
-
-        entry = {
-            "path": str(path),
-            "lines": len(content.splitlines()),
-            "sha256": hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest(),
-            "definitions": definitions,
-            "imports": imports
-        }
-
-        components.append(entry)
-
-        print(
-            f"{path.name}: "
-            f"{entry['lines']} lines; "
-            f"definitions={','.join(definitions[:5]) or '-'}"
-        )
-
-    report[model] = {
-        "status": "inspected",
-        "component_count": len(components),
-        "components": components
+    entries = {
+        model: load(model, component)
+        for model in roots
     }
 
-    print("SERVING COMPONENTS:", len(components))
+    report[component] = {}
 
-destination = shared / "analysis"
-destination.mkdir(exist_ok=True)
+    for model, item in entries.items():
+        report[component][model] = {
+            k: v for k, v in item.items()
+            if k not in ("normalized_ast", "normalized_text")
+        }
+        print(
+            f"{model}: {item['status']}",
+            f"{item.get('lines', 0)} lines",
+            f"definitions={','.join(item.get('definitions', [])[:4])}"
+        )
 
-output = destination / "serve_component_inventory_20261106.json"
+    if not all(
+        item["status"] == "found"
+        for item in entries.values()
+    ):
+        print("COMPARISON: INCOMPLETE")
+        continue
 
-if output.exists():
-    raise SystemExit(
-        "STOP: Inventory already exists. "
-        "Existing file preserved."
+    models = list(entries)
+    base = entries[models[0]]
+
+    identical = all(
+        entries[m]["normalized_ast"] == base["normalized_ast"]
+        for m in models[1:]
     )
 
+    report[component]["normalized_ast_match"] = identical
+
+    print(
+        "MODEL-NAME-NORMALIZED AST:",
+        "MATCH" if identical else "DIFFERENT"
+    )
+
+    for model in models[1:]:
+        other = entries[model]
+
+        similarity = difflib.SequenceMatcher(
+            None,
+            base["normalized_text"],
+            other["normalized_text"],
+            autojunk=False
+        ).ratio()
+
+        print(
+            f"CTA vs {model} similarity:",
+            f"{similarity:.1%}"
+        )
+
+        differences = list(difflib.unified_diff(
+            base["normalized_text"].splitlines(),
+            other["normalized_text"].splitlines(),
+            fromfile="CTA",
+            tofile=model,
+            lineterm=""
+        ))
+
+        report[component][f"CTA_vs_{model}"] = {
+            "similarity": round(similarity, 4),
+            "diff": differences
+        }
+
+    print(
+        "EXTRACTION STATUS:",
+        "CANDIDATE - REVIEW REQUIRED"
+        if identical
+        else "REQUIRES ADAPTER DESIGN"
+    )
+
+analysis.mkdir(parents=True, exist_ok=True)
 output.write_text(json.dumps(report, indent=2))
 
-print("\n=== SHARED EXTRACTION READINESS ===")
-
-for model, info in report.items():
-    print(
-        model,
-        "SOURCE:", info["status"],
-        "COMPONENTS:", info.get("component_count", 0)
-    )
-
-print("INVENTORY:", output)
-print("NO MODEL CODE COPIED OR MODIFIED")
-print("NO CONTAINERS STARTED OR STOPPED")
-print("NEXT: IDENTIFY COMMON IMPLEMENTATIONS")
+print("\n=== RESULT ===")
+print("IMPLEMENTATION COMPARISON: COMPLETE")
+print("REPORT:", output)
+print("ORIGINAL MODEL CODE: UNCHANGED")
+print("CTA / BPLAN / PZAAS HANDOFFS: UNCHANGED")
+print("RUNNING CONTAINERS: UNCHANGED")
+print("NEXT: EXTRACT VERIFIED COMMON COMPONENTS")
 PY

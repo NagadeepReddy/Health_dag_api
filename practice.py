@@ -1,64 +1,69 @@
 
 cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
-import ast
 
-root = Path("artifacts/v1.472-max/maxserve_pzaas_extension")
-names = (
-    "pzaas_worker_adapter.py",
-    "pzaas_pipeline_factory.py",
-    "pzaas_native_factory.py",
+root = Path(
+    "artifacts/v1.472-max/maxserve_pzaas_extension"
 )
 
-print("=== PZAAS ORIGINAL PIPELINE BASELINE ENTRY POINTS ===")
+worker = root / "pzaas_native_serve_dev/pzaas_worker_adapter.py"
 
-found = False
+print("=== WORKER INITIALIZATION ===")
 
-for name in names:
-    matches = sorted(root.rglob(name))
+if not worker.is_file():
+    raise SystemExit("STOP: Worker adapter missing")
 
-    for path in matches:
-        found = True
-        lines = path.read_text().splitlines()
-        tree = ast.parse("\n".join(lines), filename=str(path))
+lines = worker.read_text().splitlines()
 
-        print(f"\nFILE: {path}")
+for i in range(min(24, len(lines))):
+    print(f"{i+1}: {lines[i]}")
 
-        print("--- Imports ---")
-        for line in lines[:28]:
-            if line.startswith(("from ", "import ")):
-                print(line)
+print("\n=== PIPELINE FACTORY AND MAX HOOK WIRING ===")
 
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                print(f"\nFUNCTION: {node.name} at line {node.lineno}")
-                if node.name in (
-                    "create_pipeline", "pipeline_factory",
-                    "make_pipeline", "build_pipeline"
-                ):
-                    for i in range(node.lineno, min(node.end_lineno, node.lineno + 34) + 1):
-                        print(f"{i}: {lines[i-1]}")
+terms = (
+    "pipeline_factory",
+    "attach_max",
+    "PZAASWorkerAdapter(",
+    "PZAASNativeWorkerAdapter(",
+    "pipeline.load(",
+    "def create_pipeline",
+    "def build_pipeline",
+    "def make_pipeline",
+)
 
-            elif isinstance(node, ast.ClassDef):
-                print(f"\nCLASS: {node.name}")
-                for method in node.body:
-                    if not isinstance(
-                        method, (ast.FunctionDef, ast.AsyncFunctionDef)
-                    ):
-                        continue
+shown = 0
 
-                    print(f"  METHOD: {method.name} line {method.lineno}")
+for file in sorted(root.rglob("*.py")):
+    if file == worker:
+        continue
 
-                    if method.name in (
-                        "__init__", "predict_raw", "load",
-                        "predict", "create", "get_pipeline"
-                    ):
-                        end = min(method.end_lineno, method.lineno + 28)
-                        for i in range(method.lineno, end + 1):
-                            print(f"{i}: {lines[i-1]}")
+    content = file.read_text(errors="replace").splitlines()
 
-if not found:
-    print("NO MATCHING FACTORY / WORKER FILES FOUND")
+    matches = [
+        i for i, line in enumerate(content)
+        if any(term in line for term in terms)
+    ]
 
-print("\n=== ORIGINAL DS / MAX FILES: UNCHANGED ===")
+    if not matches:
+        continue
+
+    print(f"\nFILE: {file}")
+
+    indices = set()
+    for i in matches:
+        indices.update(
+            range(max(0, i-3), min(len(content), i+5))
+        )
+
+    for i in sorted(indices):
+        print(f"{i+1}: {content[i]}")
+        shown += 1
+        if shown >= 130:
+            break
+
+    if shown >= 130:
+        print("OUTPUT LIMIT REACHED")
+        break
+
+print("\n=== INSPECTION COMPLETE: NO FILES MODIFIED ===")
 PY

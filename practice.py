@@ -1,203 +1,139 @@
 
-cd /application1/sajjna8/rt-pzaas-v1.0 && bash <<'SH'
-set -euo pipefail
-
-HANDOFF="/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106"
-EVIDENCE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_http_evidence"
-FIXTURE="$PWD/artifacts/v1.472-max/maxserve_pzaas_extension/pzaas_native_serve_dev/pzaas_adjusted_sanity_input.json"
-REFERENCE="$EVIDENCE/pzaas_native_response.json"
-
-for path in \
-  "$HANDOFF/model" \
-  "$HANDOFF/runtime/python_deps" \
-  "$HANDOFF/runtime/launch_max_model.sh" \
-  "$HANDOFF/config/model.env" \
-  "$FIXTURE" \
-  "$REFERENCE"; do
-  test -e "$path" || {
-    echo "STOP: Missing $path"
-    exit 1
-  }
-done
-
-bash -n "$HANDOFF/runtime/launch_max_model.sh"
-source "$HANDOFF/config/model.env"
-
-test "$MODULE" = "pzaas_native_serve_dev.pzaas_native_launcher"
-test "$INTERNAL_PORT" = "18768"
-
-echo "GENERIC LAUNCHER SYNTAX: PASS"
-echo "PACKAGED MODEL CONFIGURATION: PASS"
-
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  run --rm -i --pull=never --network=none \
-  --memory=12g --pids-limit=512 \
-  -v "$HANDOFF/model:/workspace:ro" \
-  -v "$HANDOFF/runtime/python_deps:/shared_deps:ro" \
-  -v "$FIXTURE:/tmp/pzaas_input.json:ro" \
-  -v "$REFERENCE:/tmp/pzaas_reference.json:ro" \
-  -v "$EVIDENCE:/evidence:rw" \
-  -w /workspace \
-  -e PYTHONDONTWRITEBYTECODE=1 \
-  -e "PYTHONPATH=$MODEL_PYTHONPATH" \
-  --entrypoint /opt/venv/bin/python \
-  localhost/max-shared-runtime:cpu -u - <<'PY'
-import json
-import socket
-import subprocess
-import sys
-import time
-import urllib.error
-import urllib.request
+cd /application1/sajjna8/rt-pzaas-v1.0 && python3 - <<'PY'
 from pathlib import Path
+from collections import defaultdict
+import hashlib
 
-log = Path("/evidence/pzaas_packaged_cold_start.log")
-proof = Path("/evidence/pzaas_packaged_cold_start_proof.json")
+root = Path("/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106")
 
-def unpack(value):
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except ValueError:
-            return value
-    return value
+if not root.is_dir():
+    raise SystemExit("STOP: Packaged handoff missing")
 
-def get_products(payload):
-    data = unpack(payload["jsonData"])
-    prediction = unpack(data["prediction"])
-    result = unpack(prediction["productList"])
-    if not isinstance(result, list):
-        raise ValueError("Invalid productList")
-    return result
+files = sorted(p for p in root.rglob("*") if p.is_file())
+size = sum(p.stat().st_size for p in files)
 
-print("=== PACKAGED PZAAS COLD START ===", flush=True)
+print("=== FINAL PZAAS HANDOFF AUDIT ===")
+print("TOTAL FILES:", len(files))
+print("TOTAL SIZE GiB:", round(size / 1024**3, 2))
 
-with log.open("w") as output:
-    server = subprocess.Popen(
-        [
-            sys.executable,
-            "-u",
-            "-m",
-            "pzaas_native_serve_dev.pzaas_native_launcher"
-        ],
-        stdout=output,
-        stderr=subprocess.STDOUT
+print("\n=== COMPONENT SIZES ===")
+
+for name in ("model", "runtime", "config", "docs"):
+    folder = root / name
+    subset = [p for p in files if folder in p.parents]
+    total = sum(p.stat().st_size for p in subset)
+    print(f"{name}: {len(subset)} files, {total / 1048576:.1f} MiB")
+
+print("\n=== LARGEST FILES ===")
+
+for path in sorted(
+    files, key=lambda p: p.stat().st_size, reverse=True
+)[:12]:
+    print(
+        f"{path.stat().st_size / 1048576:.1f} MiB",
+        path.relative_to(root)
     )
 
-try:
-    deadline = time.monotonic() + 150
+print("\n=== POSSIBLE UNNECESSARY FILES ===")
 
-    while time.monotonic() < deadline:
-        if server.poll() is not None:
-            raise RuntimeError("Packaged MAX server exited")
+suspect = []
+for path in files:
+    rel = path.relative_to(root)
+    parts = [part.lower() for part in rel.parts]
+    name = path.name.lower()
 
-        try:
-            with socket.create_connection(
-                ("127.0.0.1", 18768), timeout=2
-            ):
-                break
-        except OSError:
-            time.sleep(2)
-    else:
-        raise RuntimeError("Packaged MAX startup timeout")
-
-    print("PACKAGED MAX SERVER: READY", flush=True)
-
-    request = urllib.request.Request(
-        "http://127.0.0.1:18768/pzaas/predict",
-        data=Path("/tmp/pzaas_input.json").read_bytes(),
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-
-    with urllib.request.urlopen(
-        request, timeout=180
-    ) as response:
-        status = response.status
-        payload = json.loads(response.read())
-
-    actual = get_products(payload)
-    expected = get_products(
-        json.loads(
-            Path("/tmp/pzaas_reference.json").read_text()
-        )
-    )
-
-    execution = (
-        "PZAAS REAL MAX EXECUTION: PASS"
-        in log.read_text(errors="replace")
-    )
-
-    parity = actual == expected
-
-    print("PACKAGED HTTP STATUS:", status)
-    print("RECOMMENDATIONS:", len(actual))
-    print("SAVED PRODUCT PARITY:", parity)
-    print("TRAINED MAX EXECUTION:", execution)
-
-    if not (
-        status == 200
-        and len(actual) == 24
-        and parity
-        and execution
+    if (
+        any(part in {
+            "__pycache__", ".pytest_cache", "tests",
+            "test", "benchmarks", ".git"
+        } for part in parts[:-1])
+        or name.startswith("test_")
+        or name.endswith((
+            ".pyc", ".pyo", ".log", ".bak",
+            ".tmp", ".whl", ".before_pack72"
+        ))
     ):
-        raise RuntimeError("Packaged acceptance checks failed")
+        suspect.append(path)
 
-    proof.write_text(json.dumps({
-        "packaged_http_status": status,
-        "recommendation_count": len(actual),
-        "saved_product_parity": parity,
-        "trained_max_execution": execution,
-        "runtime_source": "packaged handoff only",
-        "image": "localhost/max-shared-runtime:cpu",
-        "network": "isolated",
-        "live_kubernetes_lookups": "not validated"
-    }, indent=2))
+print("CLEANUP CANDIDATES:", len(suspect))
 
-    print("PZAAS PACKAGED COLD START: PASS")
-    print("BUNDLED RUNTIME: PASS")
-    print("EVIDENCE:", proof)
-    print("ORIGINAL DS / CTA / BPLAN: UNCHANGED")
+for path in suspect[:20]:
+    print("REVIEW:", path.relative_to(root))
 
-except Exception as exc:
-    print("PACKAGED VERIFICATION BLOCKED:", repr(exc))
+if len(suspect) > 20:
+    print("ADDITIONAL CANDIDATES:", len(suspect) - 20)
 
-    if isinstance(exc, urllib.error.HTTPError):
-        print(
-            "HTTP ERROR:",
-            exc.read(800).decode(errors="replace")
-        )
+print("\n=== CONTENT DUPLICATES (1 MiB OR LARGER) ===")
 
-    lines = log.read_text(errors="replace").splitlines()
-    print("=== FIRST ROOT ERROR ===")
+by_size = defaultdict(list)
 
-    for index, line in enumerate(lines):
-        if any(term in line for term in (
-            "FileNotFoundError",
-            "ModuleNotFoundError",
-            "ImportError",
-            "KeyError",
-            "AttributeError"
-        )):
-            print(
-                "\n".join(
-                    lines[max(0, index-3):index+5]
-                )
-            )
-            break
+for path in files:
+    n = path.stat().st_size
+    if n >= 1048576:
+        by_size[n].append(path)
 
-    print("=== LAST 25 SERVER LOG LINES ===")
-    print("\n".join(lines[-25:]))
-    raise SystemExit(1)
+duplicates = []
+for group in by_size.values():
+    if len(group) < 2:
+        continue
 
-finally:
-    if server.poll() is None:
-        server.terminate()
-        try:
-            server.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            server.kill()
-            server.wait()
+    by_hash = defaultdict(list)
+
+    for path in group:
+        h = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(
+                lambda: stream.read(1024 * 1024), b""
+            ):
+                h.update(chunk)
+        by_hash[h.hexdigest()].append(path)
+
+    for identical in by_hash.values():
+        if len(identical) > 1:
+            duplicates.append(identical)
+
+savings = sum(
+    (len(group) - 1) * group[0].stat().st_size
+    for group in duplicates
+)
+
+print("DUPLICATE GROUPS:", len(duplicates))
+print("POTENTIAL SAVINGS MiB:", round(savings / 1048576, 1))
+
+for group in duplicates[:8]:
+    print("DUPLICATE GROUP:")
+    for path in group[:5]:
+        print(" ", path.relative_to(root))
+
+print("\n=== SHARED LAUNCHER CHECK ===")
+
+launcher = root / "runtime/launch_max_model.sh"
+config = root / "config/model.env"
+
+if not launcher.is_file() or not config.is_file():
+    raise SystemExit("STOP: Shared launcher/config missing")
+
+launcher_text = launcher.read_text()
+config_text = config.read_text()
+
+print(
+    "MODEL-INDEPENDENT LAUNCHER SOURCE:",
+    not any(
+        name in launcher_text.lower()
+        for name in ("cta", "bplan", "pzaas")
+    )
+)
+print(
+    "MODEL CONFIG SEPARATED:",
+    "MODULE=" in config_text
+    and "MODEL_PYTHONPATH=" in config_text
+)
+print(
+    "VM-SPECIFIC PODMAN DEFAULT:",
+    "/application1/podman/storage" in launcher_text
+)
+
+print("\n=== AUDIT COMPLETE ===")
+print("PACKAGED COLD START: PREVIOUSLY PASSED")
+print("NO FILES MODIFIED OR DELETED")
 PY
-SH

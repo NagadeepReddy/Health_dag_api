@@ -1,171 +1,115 @@
 
 cd /application1/sajjna8 && python3 - <<'PY'
-import json
-import os
-import signal
-import socket
-import subprocess
-import time
-import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
+import re
 
-root = Path("/application1/sajjna8/max_shared_infra")
-package = Path("/application1/sajjna8/PZAAS_MAX_CLEAN_HANDOFF_20261106")
-fixture = Path(
-    "/application1/sajjna8/rt-pzaas-v1.0/"
+infra = Path("/application1/sajjna8/max_shared_infra")
+base = Path(
+    "/application1/sajjna8/"
+    "PZAAS_MAX_CLEAN_HANDOFF_20261106/model/"
     "artifacts/v1.472-max/maxserve_pzaas_extension/"
-    "pzaas_native_serve_dev/pzaas_adjusted_sanity_input.json"
+    "pzaas_native_serve_dev"
 )
 
-launcher = root / "bin/run_max_model.sh"
-evidence = root / "analysis"
+files = {
+    "NATIVE LAUNCHER": "pzaas_native_launcher.py",
+    "QUEUE INSTALLATION": "pzaas_queue_compat.py",
+    "SCHEDULER": "pzaas_native_scheduler.py",
+    "ROUTER": "pzaas_router.py",
+    "WORKER STARTUP": "pzaas_spawn_worker.py",
+    "WORKER LIFECYCLE": "pzaas_worker_adapter.py",
+}
 
-for path in (
-    launcher,
-    package / "model",
-    package / "runtime/python_deps",
-    package / "config/model.env",
-    fixture,
+patterns = {
+    "NATIVE LAUNCHER":
+        r"queue|scheduler|register|router|worker|spawn|app|uvicorn",
+    "QUEUE INSTALLATION":
+        r"install|SchedulerZmqConfigs|response_type|response_queue",
+    "SCHEDULER":
+        r"^class |^def |^    def |queue|scheduler|install",
+    "ROUTER":
+        r"^def |^async def |register|route|scheduler|queue",
+    "WORKER STARTUP":
+        r"import |initialize|worker|factory|install|register",
+    "WORKER LIFECYCLE":
+        r"^class |^    def |initialize|attach_max|predict_raw",
+}
+
+print("=== SHARED MAX INTEGRATION POINTS ===")
+
+for label, filename in files.items():
+    path = base / filename
+
+    print(f"\n=== {label} ===")
+    print("FILE:", filename)
+
+    if not path.is_file():
+        print("STOP: EXPECTED FILE MISSING")
+        continue
+
+    lines = path.read_text(
+        errors="replace"
+    ).splitlines()
+
+    matches = [
+        i for i, line in enumerate(lines)
+        if re.search(
+            patterns[label],
+            line,
+            re.IGNORECASE
+        )
+    ]
+
+    print("TOTAL LINES:", len(lines))
+    print("MATCHING LINES:", len(matches))
+
+    for i in matches[:14]:
+        print(f"{i+1:4}: {lines[i][:180]}")
+
+    if len(matches) > 14:
+        print(
+            "ADDITIONAL MATCHES:",
+            len(matches) - 14
+        )
+
+print("\n=== SHARED COMPONENTS ===")
+
+for name in (
+    "typed_queue",
+    "scheduler_hooks",
+    "router_contract",
+    "worker_lifecycle",
 ):
-    if not path.exists():
-        raise SystemExit(f"STOP: Required input missing: {path}")
+    path = (
+        infra / "python/max_runtime_shared"
+        / f"{name}.py"
+    )
+    print(
+        name,
+        "READY" if path.is_file() else "MISSING"
+    )
 
-subprocess.run(
-    ["bash", "-n", str(launcher)],
-    check=True
+print("\n=== SHARED LAUNCHER ===")
+
+launcher = infra / "bin/run_max_model.sh"
+
+if not launcher.is_file():
+    raise SystemExit("STOP: Shared launcher missing")
+
+text = launcher.read_text()
+
+print("LAUNCHER: PRESENT")
+print(
+    "SHARED PYTHON MOUNT:",
+    "PRESENT"
+    if "/shared_runtime" in text
+    else "NOT YET CONFIGURED"
 )
 
-port = None
-for candidate in range(18810, 18841):
-    with socket.socket() as sock:
-        try:
-            sock.bind(("127.0.0.1", candidate))
-            port = candidate
-            break
-        except OSError:
-            pass
-
-if port is None:
-    raise SystemExit("STOP: No free test port")
-
-evidence.mkdir(parents=True, exist_ok=True)
-stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-log = evidence / f"shared_pzaas_e2e_{stamp}.log"
-proof = evidence / f"shared_pzaas_e2e_{stamp}.json"
-
-env = os.environ.copy()
-env["HOST_PORT"] = str(port)
-
-print("=== INDEPENDENT SHARED MAX INTEGRATION ===", flush=True)
-print("SHARED LAUNCHER:", launcher, flush=True)
-print("VERIFIED MODEL PACKAGE:", package, flush=True)
-print("TEST PORT:", port, flush=True)
-
-with log.open("w") as stream:
-    server = subprocess.Popen(
-        ["bash", str(launcher), "start", str(package)],
-        env=env,
-        cwd=str(root),
-        stdout=stream,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-
-try:
-    deadline = time.monotonic() + 180
-
-    while time.monotonic() < deadline:
-        if server.poll() is not None:
-            raise RuntimeError("Shared launcher exited")
-
-        try:
-            with socket.create_connection(
-                ("127.0.0.1", port), timeout=2
-            ):
-                break
-        except OSError:
-            time.sleep(2)
-    else:
-        raise RuntimeError("Shared launcher startup timeout")
-
-    print("SHARED INFRA SERVER: READY", flush=True)
-
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/pzaas/predict",
-        data=fixture.read_bytes(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
-    with urllib.request.urlopen(
-        request, timeout=180
-    ) as response:
-        status = response.status
-        result = json.loads(response.read())
-
-    def unpack(value):
-        if isinstance(value, str):
-            return json.loads(value)
-        return value
-
-    data = unpack(result["jsonData"])
-    prediction = unpack(data["prediction"])
-    products = unpack(prediction["productList"])
-
-    if not isinstance(products, list):
-        raise RuntimeError("Invalid productList response")
-
-    trained = False
-    for _ in range(20):
-        if "PZAAS REAL MAX EXECUTION: PASS" in log.read_text(
-            errors="replace"
-        ):
-            trained = True
-            break
-        time.sleep(0.5)
-
-    print("HTTP STATUS:", status, flush=True)
-    print("RECOMMENDATIONS:", len(products), flush=True)
-    print("TRAINED MAX EXECUTION:", trained, flush=True)
-
-    if status != 200 or len(products) != 24 or not trained:
-        raise RuntimeError("Shared infrastructure acceptance failed")
-
-    proof.write_text(json.dumps({
-        "shared_launcher": "PASS",
-        "model": "PZAAS v1.472",
-        "http_status": status,
-        "recommendations": len(products),
-        "trained_max_execution": trained,
-        "model_package_modified": False,
-        "shared_python_modules_wired": False,
-        "live_kubernetes_lookups": "not validated"
-    }, indent=2))
-
-    print("\n=== RESULT ===")
-    print("SHARED INFRA REAL MODEL SERVING: PASS")
-    print("PZAAS HTTP 200: PASS")
-    print("24 RECOMMENDATIONS: PASS")
-    print("TRAINED MAX INFERENCE: PASS")
-    print("SHARED PYTHON MODULE WIRING: PENDING")
-    print("CTA / BPLAN / PZAAS HANDOFFS: UNCHANGED")
-    print("PROOF:", proof)
-
-except Exception as exc:
-    print("SHARED INTEGRATION BLOCKED:", repr(exc))
-    print("=== LAST 30 LOG LINES ===")
-    print("\n".join(
-        log.read_text(errors="replace").splitlines()[-30:]
-    ))
-    raise SystemExit(1)
-
-finally:
-    if server.poll() is None:
-        os.killpg(server.pid, signal.SIGTERM)
-        try:
-            server.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            os.killpg(server.pid, signal.SIGKILL)
-            server.wait()
+print("\n=== RESULT ===")
+print("INTEGRATION ENTRY POINTS: INSPECTED")
+print("ORIGINAL HANDOFF: UNCHANGED")
+print("NO FILES MODIFIED")
+print("NO CONTAINERS STARTED")
+print("NEXT: ISOLATED SHARED PYTHON WIRING")
 PY

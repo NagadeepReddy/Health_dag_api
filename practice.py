@@ -1,25 +1,29 @@
 
-cd /application1/sajjna8 && python3 - <<'PY'
-from pathlib import Path
+cd /application1/sajjna8 && podman \
+  --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never --network=none \
+  -v /application1/sajjna8/max_shared_infra/python:/shared_infra/python:ro \
+  -e PYTHONPATH=/shared_infra/python \
+  --entrypoint /opt/venv/bin/python \
+  localhost/max-shared-runtime:cpu \
+  -B -c '
+import importlib
 
-root = Path("/application1/sajjna8")
-repo = root / "rt-pzaas-sim-v1"
+print("=== STANDALONE SHARED MAX INFRA TEST ===")
 
-print("=== NEXT MODEL: PZAAS-SIM v1.50 ===")
-print("SHARED MAX:", "PRESENT" if (root / "max_shared_infra").is_dir() else "MISSING")
+modules = [
+    "max_runtime_shared.typed_queue",
+    "max_runtime_shared.scheduler_hooks",
+    "max_runtime_shared.router_contract",
+    "max_runtime_shared.worker_lifecycle",
+]
 
-if repo.is_dir():
-    print("MODEL REPOSITORY: FOUND")
-    print("PATH:", repo)
-    for p in sorted(repo.iterdir()):
-        if p.name in ("artifacts", "models", "src", "requirements.txt", "README.md"):
-            print("MODEL COMPONENT:", p)
-    print("NEXT: CONNECT PZAAS-SIM THROUGH EXISTING SHARED MAX")
-else:
-    print("MODEL REPOSITORY: NOT CLONED")
-    print("NEXT: OBTAIN rt-pzaas-sim-v1 REPOSITORY")
+for name in modules:
+    module = importlib.import_module(name)
+    print("PASS:", name, "|", module.__file__)
 
-print("SHARED INFRASTRUCTURE: UNCHANGED")
-print("ORIGINAL MODELS: UNCHANGED")
-print("NO CONTAINERS STARTED")
-PY
+print("SHARED COMPONENT IMPORTS: PASS")
+print("CTA / BPLAN / PZAAS MODEL MOUNTS: NONE")
+print("ORIGINAL FILES: UNCHANGED")
+'

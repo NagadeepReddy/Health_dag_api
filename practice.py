@@ -1,6 +1,11 @@
-long redisReadStartNs = System.nanoTime();
+long redisWriteStartNs = System.nanoTime();
 
-Map<String, String> rowData = hashOperations.entries(readApplicationConfigValues.getCacheModelResponseHash().concat(insightName).concat(HYPHEN).concat(id));
+stringRedisTemplate.opsForHash().put(
+    readApplicationConfigValues.getCacheModelResponseHash()
+        .concat(realTimeModelResponse.getInsightName())
+        .concat(HYPHEN).concat(identifier),
+    "INSIGHT_NAME",
+    realTimeModelResponse.getInsightName());
 
-logger.info("REDIS_READ_LATENCY_MS={}",
-    (System.nanoTime() - redisReadStartNs) / 1_000_000.0);
+logger.info("REDIS_WRITE_INSIGHT_NAME_MS={}",
+    (System.nanoTime() - redisWriteStartNs) / 1_000_000.0);

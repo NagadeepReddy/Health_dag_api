@@ -1,1 +1,1 @@
-Select-String -Path Dockerfile -Pattern 'FROM|jdk|java|maven'
+Select-String -Path Jenkinsfile -Pattern 'jdk|java|maven|mvn|docker|agent|tool' -Context 1,1

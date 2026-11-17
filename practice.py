@@ -1,1 +1,1 @@
-Select-String -Path pom.xml -Pattern 'java.version|maven.compiler|spring-boot-starter-parent' -Context 0,2
+Get-ChildItem 'C:\Program Files\Java','C:\Program Files\Eclipse Adoptium','C:\Program Files\Microsoft' -ErrorAction SilentlyContinue | Select-Object FullName

@@ -1,1 +1,1 @@
-Get-Content .mvn\wrapper\maven-wrapper.properties
+Select-String -Path pom.xml -Pattern 'java.version|maven.compiler|spring-boot-starter-parent' -Context 0,2

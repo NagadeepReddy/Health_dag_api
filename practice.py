@@ -1,1 +1,1 @@
-Select-String -Path Jenkinsfile -Pattern 'jdk|java|maven|mvn|docker|agent|tool' -Context 1,1
+Select-String -Path .gitlab-ci.yml -Pattern 'image:|stages:|stage:|mvn|docker|jdk|java|include:|script:'

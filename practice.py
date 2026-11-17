@@ -1,1 +1,1 @@
-Select-String -Path .\settings.xml -Pattern '<mirror>|<mirrorOf>|<url>'
+Select-String -Path Dockerfile -Pattern 'FROM|jdk|java|maven'

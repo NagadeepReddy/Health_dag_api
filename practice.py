@@ -1,1 +1,1 @@
-Get-ChildItem .\helm-chart\dev\templates -Name
+Get-Content .\helm-chart\dev\templates\service.yaml

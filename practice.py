@@ -1,1 +1,1 @@
-Select-String -Path pom.xml -Pattern 'artifactory|<repositories>|<url>'
+Get-ChildItem -Force .mvn -Recurse -File | Select-Object FullName

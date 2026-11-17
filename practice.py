@@ -1,1 +1,1 @@
-Get-ChildItem -Force .mvn -Recurse -File | Select-Object FullName
+Get-Content .mvn\wrapper\maven-wrapper.properties

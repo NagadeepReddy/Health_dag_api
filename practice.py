@@ -1,19 +1,11 @@
-long jsonStartNs = System.nanoTime();
-
-String modelResponseJson =
-    objectMapper.writeValueAsString(realTimeModelResponse);
-
-logger.info("REDIS_JSON_SERIALIZATION_MS={}",
-    (System.nanoTime() - jsonStartNs) / 1_000_000.0);
-
-long modelWriteStartNs = System.nanoTime();
+long createdDateStartNs = System.nanoTime();
 
 stringRedisTemplate.opsForHash().put(
     readApplicationConfigValues.getCacheModelResponseHash()
         .concat(realTimeModelResponse.getInsightName())
         .concat(HYPHEN).concat(identifier),
-    "MODEL_RESPONSE",
-    modelResponseJson);
+    "CREATED_DATE",
+    String.valueOf(timestamp.toInstant()));
 
-logger.info("REDIS_WRITE_MODEL_RESPONSE_MS={}",
-    (System.nanoTime() - modelWriteStartNs) / 1_000_000.0);
+logger.info("REDIS_WRITE_CREATED_DATE_MS={}",
+    (System.nanoTime() - createdDateStartNs) / 1_000_000.0);

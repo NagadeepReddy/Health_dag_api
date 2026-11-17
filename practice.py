@@ -1,1 +1,1 @@
-git ls-files '*Jenkinsfile*' '*Dockerfile*' '.gitlab-ci.yml' '*settings.xml'
+Select-String -Path .\settings.xml -Pattern '<mirror>|<mirrorOf>|<url>'

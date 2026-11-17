@@ -1,1 +1,2 @@
-podman info --format '{{.Store.GraphRoot}}'
+findmnt -T /application
+ls -ld /application

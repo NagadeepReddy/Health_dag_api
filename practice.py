@@ -1,2 +1,3 @@
-ls -ld /application
-test -w /application && echo WRITABLE || echo NOT_WRITABLE
+java -version
+javac -version
+mvn -version

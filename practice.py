@@ -1,4 +1,2 @@
-[xml]$s = Get-Content .\settings.xml -Raw
-$s.settings.servers.server | ForEach-Object {
-  "Server configured: $([bool]$_.id); Password configured: $([bool]$_.password)"
-}
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 15 \
+'https://oneartifactoryci.verizon.com/artifactory/ienv-vcg-jarvis-maven-virtual/'

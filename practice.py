@@ -1,2 +1,1 @@
-git ls-tree -r --name-only origin/triton \
-  | grep -E 'config\.pbtxt|model\.py|Dockerfile\.triton'
+git show origin/triton:artifacts/v1.168-triton/rt-pzaas-cta-offers-v1/config.pbtxt

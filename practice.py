@@ -1,4 +1,3 @@
-exit
 cd /application1/sajjna8/tfy_triton_work
 
 df -h /application1

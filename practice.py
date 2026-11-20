@@ -1,5 +1,9 @@
-cd /application1/sajjna8/tfy_triton_work/rt-aal-upg-lead-v1
+cd /application1/sajjna8/tfy_triton_work
 
-grep -RniE \
-  --include='*.py' --include='*.md' --include='*.sh' \
-  'sanity_output|load_input_[123]' . | head -30
+for f in load_input_1.json load_input_2.json sanity_output.json; do
+  install -m 644 \
+    "rt-aal-upg-lead-v1/artifacts/v1.4/samples/$f" \
+    "aal_triton_stage/input/$f"
+done
+
+ls -lh aal_triton_stage/input/

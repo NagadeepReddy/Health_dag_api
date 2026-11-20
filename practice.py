@@ -1,7 +1,5 @@
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  ps -a --filter name=aal-triton-check
+D=/application1/sajjna8/tfy_triton_work/aal_triton_stage/triton_repo
 
-podman --root /application1/podman/storage \
-  --runroot /run/containers/storage \
-  logs --tail 70 aal-triton-check
+ls -ld "$D"
+chmod 755 "$D"
+ls -ld "$D"

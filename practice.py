@@ -1,11 +1,8 @@
-cd /application1/sajjna8/tfy_triton_work
-
-df -h /application1
-
-install -d -m 755 aal_triton_stage/weights
-
-install -m 644 \
-  rt-aal-upg-lead-v1/artifacts/v1.4/core-artifact/model_2.pt \
-  aal_triton_stage/weights/model_2.pt
-
-ls -lh aal_triton_stage/weights/
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  run --rm --pull=never --network=none \
+  --memory=2g --cpus=1 \
+  -v /application1/sajjna8/tfy_triton_work/aal_triton_stage/weights:/weights:ro \
+  --entrypoint python3 \
+  ienv-docker-np.oneartifactoryci.verizon.com/jarvis/nvidia/tritonserver:rt-cta-offers \
+  -c 'import torch; s=torch.load("/weights/model_2.pt",map_location="cpu",weights_only=True); print("CHECKPOINT LOAD PASS:",type(s).__name__,len(s))'

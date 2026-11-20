@@ -1,5 +1,7 @@
 podman --root /application1/podman/storage \
   --runroot /run/containers/storage \
-  history --format '{{.CreatedBy}}' \
+  run --rm --pull=never --network=none \
+  --memory=2g --cpus=1 \
+  --entrypoint /bin/sh \
   ienv-docker-np.oneartifactoryci.verizon.com/jarvis/nvidia/tritonserver:rt-cta-offers \
-  | head -20
+  -c 'python3 -m pip show torch transformers tokenizers scikit-learn'

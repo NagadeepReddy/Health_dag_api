@@ -15,7 +15,7 @@ from models import RTSMultiLabel
 from transformers import AutoTokenizer
 
 p = "/mnt/all-MiniLM-L6-v2"
-names = ["AAL", "UPG", "No_purchase"]
+names = ["AAL", "UPG", "pred_No_purchase"]
 t = AutoTokenizer.from_pretrained(p, local_files_only=True)
 m = RTSMultiLabel(384, 3, p, False)
 s = torch.load("/weights/model_2.pt", map_location="cpu", weights_only=True)

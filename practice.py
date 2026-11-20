@@ -1,1 +1,5 @@
-git show origin/triton:artifacts/v1.168-triton/rt-pzaas-cta-offers-v1/1/model.py | sed -n '1,180p'
+cd /application1/sajjna8/tfy_triton_work
+
+mkdir -p aal_triton_stage/triton_repo/rt-aal-upg-leads-v1/1
+
+ls -ld aal_triton_stage/triton_repo/rt-aal-upg-leads-v1/1

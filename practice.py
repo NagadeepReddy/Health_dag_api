@@ -1,6 +1,7 @@
-D=/application1/sajjna8/tfy_triton_work/aal_triton_stage/triton_repo
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  start aal-triton-check
 
-chmod -R a+rX "$D"
-
-ls -l "$D/rt-aal-upg-leads-v1/config.pbtxt"
-ls -ld "$D/rt-aal-upg-leads-v1/1/__pycache__"
+podman --root /application1/podman/storage \
+  --runroot /run/containers/storage \
+  logs --tail 100 aal-triton-check

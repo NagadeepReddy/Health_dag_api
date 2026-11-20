@@ -1,7 +1,5 @@
-mkdir -p /application1/sajjna8/tfy_triton_work
-cd /application1/sajjna8/tfy_triton_work
+cd /application1/sajjna8/tfy_triton_work/rt-aal-upg-lead-v1
 
-git clone -b development --single-branch \
-https://gitlab.verizon.com/jarvis/jarvis_models/vcg-realtime-ssd/rt-aal-upg-lead-v1.git
-
-
+git branch --show-current
+ls -lh artifacts/v1.4/core-artifact/
+ls -lh artifacts/v1.4/config/

@@ -1,2 +1,2 @@
-cd /application1/sajjna8/rt-pzaas-cta-offers-v1
-git branch -a
+git ls-tree -r --name-only origin/triton \
+  | grep -E 'config\.pbtxt|model\.py|Dockerfile\.triton'

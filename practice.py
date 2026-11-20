@@ -1,5 +1,3 @@
-exit
-
 cd /application1/sajjna8/tfy_triton_work
 
 install -d -m 755 aal_triton_stage/encoder

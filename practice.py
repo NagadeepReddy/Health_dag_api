@@ -1,1 +1,1 @@
-sed -n '1,120p' artifacts/v1.4/utils/dependency-utils/models.py
+podman images --format '{{.Repository}}:{{.Tag}}' | grep -Ei 'triton|mlserver'

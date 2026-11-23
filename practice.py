@@ -1,3 +1,1 @@
-command -v gcloud
-command -v gsutil
-namei -l /application1/google-cloud-sdk/bin/gcloud
+/application1/google-cloud-sdk/bin/gcloud auth list

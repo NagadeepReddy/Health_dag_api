@@ -1,1 +1,1 @@
-/application1/google-cloud-sdk/bin/gcloud auth list
+Sriram shared this repo with the `optio-files` branch in response to my question about GCS paths and SDK authentication for TrueFoundry migrations. I wanted to check the instructions there, but I'm getting a 404.

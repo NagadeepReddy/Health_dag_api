@@ -1,1 +1,1 @@
-Sriram shared this repo with the `optio-files` branch in response to my question about GCS paths and SDK authentication for TrueFoundry migrations. I wanted to check the instructions there, but I'm getting a 404.
+Sriram shared this repo (`optio-files` branch) along with the Google Cloud SDK path in response to my GCS migration question. I'm getting a 404, so I couldn't verify what's inside.

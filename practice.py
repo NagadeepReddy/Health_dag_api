@@ -1,1 +1,1 @@
-Sriram shared this repo (`optio-files` branch) along with the Google Cloud SDK path in response to my GCS migration question. I'm getting a 404, so I couldn't verify what's inside.
+Due to organizational changes, the AID accounts are not listed in the MaaS portal. All IENV applications are reporting to AID accounts. Please assist with provisioning access to Verizon_GTS_AID_PR and Verizon_GTS_AID_NP for Iconic support and monitoring.

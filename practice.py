@@ -1,1 +1,1 @@
-Due to organizational changes, the AID accounts are not listed in the MaaS portal. All IENV applications are reporting to AID accounts. Please assist with provisioning access to Verizon_GTS_AID_PR and Verizon_GTS_AID_NP for Iconic support and monitoring.
+okay
